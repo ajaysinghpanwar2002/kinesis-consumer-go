@@ -21,17 +21,18 @@ type RetryConfig struct {
 }
 
 type Config struct {
-	StreamName       string
-	StreamARN        string
-	Region           string
-	StartPosition    StartPosition
-	StartTimestamp   *time.Time
-	ShardConcurrency int
-	BatchSize        int32
-	PollInterval     time.Duration
-	Retry            RetryConfig
-	CheckpointEvery  int
-	Logger           *slog.Logger
+	StreamName        string
+	StreamARN         string
+	Region            string
+	StartPosition     StartPosition
+	StartTimestamp    *time.Time
+	ShardConcurrency  int
+	BatchSize         int32
+	PollInterval      time.Duration
+	ShardSyncInterval time.Duration
+	Retry             RetryConfig
+	CheckpointEvery   int
+	Logger            *slog.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -46,6 +47,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.PollInterval == 0 {
 		c.PollInterval = time.Second
+	}
+	if c.ShardSyncInterval == 0 {
+		c.ShardSyncInterval = time.Minute
 	}
 	if c.Retry.MaxAttempts == 0 {
 		c.Retry.MaxAttempts = 3
@@ -74,6 +78,9 @@ func (c Config) validate() error {
 	}
 	if c.ShardConcurrency < 1 {
 		return errors.New("shardConcurrency must be >= 1")
+	}
+	if c.ShardSyncInterval < time.Second {
+		return errors.New("shardSyncInterval must be >= 1s")
 	}
 	if c.Retry.MaxAttempts < 1 {
 		return errors.New("retry max attempts must be >= 1")

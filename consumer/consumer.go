@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 
 type HandlerFunc func(ctx context.Context, record types.Record) error
 type BatchHandlerFunc func(ctx context.Context, records []types.Record) error
+
+const shardCompletedPrefix = "SHARD_END"
 
 type Consumer struct {
 	cfg          Config
@@ -84,26 +87,24 @@ func (c *Consumer) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	shards, err := c.listShards(ctx)
-	if err != nil {
-		return err
-	}
-	if len(shards) == 0 {
-		return fmt.Errorf("no shards found for stream %s", c.streamKey())
-	}
+	tracker := newShardTracker()
+	knownShards := make(map[string]types.Shard)
+	errCh := make(chan error, 1)
 
-	errCh := make(chan error, len(shards))
+	startShard := func(shardID string) {
+		if !tracker.markActive(shardID) {
+			return
+		}
 
-	for _, shardID := range shards {
-		shardID := shardID
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
+
 			var err error
 			if c.leaseManager != nil {
-				err = c.consumeShardWithLease(ctx, shardID)
+				err = c.consumeShardWithLease(ctx, shardID, tracker)
 			} else {
-				err = c.consumeShard(ctx, shardID)
+				err = c.consumeShard(ctx, shardID, tracker)
 			}
 			if err != nil {
 				select {
@@ -112,30 +113,71 @@ func (c *Consumer) Start(ctx context.Context) error {
 				}
 				cancel()
 			}
+			tracker.markInactive(shardID)
 		}()
 	}
 
-	done := make(chan struct{})
-	go func() {
-		c.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case err := <-errCh:
-		<-done
+	shards, err := c.listShards(ctx)
+	if err != nil {
 		return err
-	case <-ctx.Done():
-		<-done
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return nil
+	}
+	if len(shards) == 0 {
+		return fmt.Errorf("no shards found for stream %s", c.streamKey())
+	}
+
+	c.addShards(knownShards, shards)
+	if err := c.startReadyShards(ctx, knownShards, tracker, startShard); err != nil {
+		return err
+	}
+
+	ticker := time.NewTicker(c.cfg.ShardSyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-errCh:
+			cancel()
+			c.wg.Wait()
+			return err
+		default:
 		}
-		return ctx.Err()
+
+		select {
+		case <-ctx.Done():
+			cancel()
+			c.wg.Wait()
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return nil
+			}
+			return ctx.Err()
+		case err := <-errCh:
+			cancel()
+			c.wg.Wait()
+			return err
+		case <-ticker.C:
+			if ctx.Err() != nil {
+				continue
+			}
+
+			newShards, err := c.listShards(ctx)
+			if err != nil {
+				c.logger.Error("list shards", slog.String("stream", c.streamKey()), slog.String("error", err.Error()))
+				continue
+			}
+			c.addShards(knownShards, newShards)
+			if err := c.startReadyShards(ctx, knownShards, tracker, startShard); err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				cancel()
+			}
+		}
 	}
 }
 
-func (c *Consumer) listShards(ctx context.Context) ([]string, error) {
-	var shardIDs []string
+func (c *Consumer) listShards(ctx context.Context) ([]types.Shard, error) {
+	var shards []types.Shard
 	var nextToken *string
 
 	for {
@@ -155,7 +197,7 @@ func (c *Consumer) listShards(ctx context.Context) ([]string, error) {
 		}
 		for _, shard := range out.Shards {
 			if shard.ShardId != nil {
-				shardIDs = append(shardIDs, *shard.ShardId)
+				shards = append(shards, shard)
 			}
 		}
 		if out.NextToken == nil {
@@ -164,10 +206,10 @@ func (c *Consumer) listShards(ctx context.Context) ([]string, error) {
 		nextToken = out.NextToken
 	}
 
-	return shardIDs, nil
+	return shards, nil
 }
 
-func (c *Consumer) consumeShardWithLease(ctx context.Context, shardID string) error {
+func (c *Consumer) consumeShardWithLease(ctx context.Context, shardID string, tracker *shardTracker) error {
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -185,7 +227,7 @@ func (c *Consumer) consumeShardWithLease(ctx context.Context, shardID string) er
 		}
 
 		c.logger.Info("acquired shard lease", slog.String("shard", shardID), slog.String("owner", c.leaseOwner))
-		err = c.consumeWithLeaseRenewal(ctx, shardID, l)
+		err = c.consumeWithLeaseRenewal(ctx, shardID, l, tracker)
 		if err != nil {
 			if errors.Is(err, lease.ErrNotOwned) {
 				c.logger.Warn("lost shard lease", slog.String("shard", shardID), slog.String("owner", c.leaseOwner), slog.String("stream", c.streamKey()))
@@ -197,14 +239,14 @@ func (c *Consumer) consumeShardWithLease(ctx context.Context, shardID string) er
 	}
 }
 
-func (c *Consumer) consumeWithLeaseRenewal(ctx context.Context, shardID string, l lease.Lease) error {
+func (c *Consumer) consumeWithLeaseRenewal(ctx context.Context, shardID string, l lease.Lease, tracker *shardTracker) error {
 	shardCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	renewErrCh := make(chan error, 1)
 	go c.renewLeaseLoop(shardCtx, shardID, l, renewErrCh, cancel)
 
-	err := c.consumeShard(shardCtx, shardID)
+	err := c.consumeShard(shardCtx, shardID, tracker)
 
 	var renewErr error
 	select {
@@ -249,7 +291,7 @@ func (c *Consumer) renewLeaseLoop(ctx context.Context, shardID string, l lease.L
 	}
 }
 
-func (c *Consumer) consumeShard(ctx context.Context, shardID string) error {
+func (c *Consumer) consumeShard(ctx context.Context, shardID string, tracker *shardTracker) error {
 	iterator, err := c.initialIterator(ctx, shardID)
 	if err != nil {
 		return err
@@ -281,7 +323,7 @@ func (c *Consumer) consumeShard(ctx context.Context, shardID string) error {
 		if len(out.Records) == 0 {
 			iterator = out.NextShardIterator
 			if iterator == nil {
-				return c.flushCheckpoint(ctx, shardID, lastSeq)
+				return c.completeShard(ctx, shardID, lastSeq, tracker)
 			}
 			if err := sleepWithContext(ctx, c.cfg.PollInterval); err != nil {
 				return nil
@@ -311,7 +353,7 @@ func (c *Consumer) consumeShard(ctx context.Context, shardID string) error {
 
 		iterator = out.NextShardIterator
 		if iterator == nil {
-			return c.flushCheckpoint(ctx, shardID, lastSeq)
+			return c.completeShard(ctx, shardID, lastSeq, tracker)
 		}
 	}
 }
@@ -320,6 +362,9 @@ func (c *Consumer) initialIterator(ctx context.Context, shardID string) (*string
 	seq, err := c.store.Get(ctx, c.streamKey(), shardID)
 	if err != nil {
 		return nil, fmt.Errorf("shard %s get checkpoint: %w", shardID, err)
+	}
+	if isShardCompletedCheckpoint(seq) {
+		return nil, fmt.Errorf("shard %s is already marked complete", shardID)
 	}
 
 	input := &kinesis.GetShardIteratorInput{
@@ -458,14 +503,119 @@ func (c *Consumer) handleWithRetry(ctx context.Context, record types.Record) err
 	return fmt.Errorf("handler failed after %d attempts: %w", c.cfg.Retry.MaxAttempts, lastErr)
 }
 
-func (c *Consumer) flushCheckpoint(ctx context.Context, shardID, seq string) error {
-	if seq == "" {
-		return nil
-	}
-	if err := c.store.Save(ctx, c.streamKey(), shardID, seq); err != nil {
+func (c *Consumer) completeShard(ctx context.Context, shardID, seq string, tracker *shardTracker) error {
+	checkpoint := shardCompletionValue(seq)
+	if err := c.store.Save(ctx, c.streamKey(), shardID, checkpoint); err != nil {
 		return fmt.Errorf("shard %s final checkpoint: %w", shardID, err)
 	}
+	tracker.markCompleted(shardID)
 	return nil
+}
+
+func (c *Consumer) shardCompleted(ctx context.Context, shardID string, tracker *shardTracker) (bool, error) {
+	if tracker.isCompleted(shardID) {
+		return true, nil
+	}
+
+	seq, err := c.store.Get(ctx, c.streamKey(), shardID)
+	if err != nil {
+		return false, fmt.Errorf("shard %s get checkpoint: %w", shardID, err)
+	}
+	if isShardCompletedCheckpoint(seq) {
+		tracker.markCompleted(shardID)
+		return true, nil
+	}
+	return false, nil
+}
+
+func (c *Consumer) startReadyShards(ctx context.Context, shardMap map[string]types.Shard, tracker *shardTracker, startShard func(string)) error {
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	for shardID, shard := range shardMap {
+		if shardID == "" || tracker.isActive(shardID) || tracker.isCompleted(shardID) {
+			continue
+		}
+
+		completed, err := c.shardCompleted(ctx, shardID, tracker)
+		if err != nil {
+			return err
+		}
+		if completed {
+			continue
+		}
+
+		ready, err := c.parentsReady(ctx, shard, shardMap, tracker)
+		if err != nil {
+			return err
+		}
+		if ready {
+			startShard(shardID)
+		}
+	}
+	return nil
+}
+
+func (c *Consumer) parentsReady(ctx context.Context, shard types.Shard, shardMap map[string]types.Shard, tracker *shardTracker) (bool, error) {
+	parents := shardParents(shard)
+	if len(parents) == 0 {
+		return true, nil
+	}
+
+	for _, parentID := range parents {
+		if parentID == "" {
+			continue
+		}
+		if tracker.isCompleted(parentID) {
+			continue
+		}
+
+		done, err := c.shardCompleted(ctx, parentID, tracker)
+		if err != nil {
+			return false, err
+		}
+		if !done {
+			if _, exists := shardMap[parentID]; !exists {
+				// Parent shard is not returned by ListShards (trimmed/expired),
+				// so we cannot wait on its completion marker.
+				continue
+			}
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (c *Consumer) addShards(dst map[string]types.Shard, shards []types.Shard) {
+	for _, shard := range shards {
+		if shard.ShardId == nil {
+			continue
+		}
+		dst[aws.ToString(shard.ShardId)] = shard
+	}
+}
+
+func shardCompletionValue(seq string) string {
+	if seq == "" {
+		return shardCompletedPrefix
+	}
+	return shardCompletedPrefix + ":" + seq
+}
+
+func isShardCompletedCheckpoint(seq string) bool {
+	return strings.HasPrefix(seq, shardCompletedPrefix)
+}
+
+func shardParents(shard types.Shard) []string {
+	parents := make([]string, 0, 2)
+	if shard.ParentShardId != nil && *shard.ParentShardId != "" {
+		parents = append(parents, *shard.ParentShardId)
+	}
+	if shard.AdjacentParentShardId != nil && *shard.AdjacentParentShardId != "" {
+		parents = append(parents, *shard.AdjacentParentShardId)
+	}
+	return parents
 }
 
 func (c *Consumer) streamKey() string {
@@ -473,6 +623,68 @@ func (c *Consumer) streamKey() string {
 		return c.cfg.StreamName
 	}
 	return c.cfg.StreamARN
+}
+
+type shardTracker struct {
+	mu        sync.Mutex
+	active    map[string]struct{}
+	completed map[string]struct{}
+}
+
+func newShardTracker() *shardTracker {
+	return &shardTracker{
+		active:    make(map[string]struct{}),
+		completed: make(map[string]struct{}),
+	}
+}
+
+func (t *shardTracker) markActive(shardID string) bool {
+	if shardID == "" {
+		return false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if _, done := t.completed[shardID]; done {
+		return false
+	}
+	if _, running := t.active[shardID]; running {
+		return false
+	}
+	t.active[shardID] = struct{}{}
+	return true
+}
+
+func (t *shardTracker) markInactive(shardID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.active, shardID)
+}
+
+func (t *shardTracker) markCompleted(shardID string) {
+	if shardID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	delete(t.active, shardID)
+	t.completed[shardID] = struct{}{}
+}
+
+func (t *shardTracker) isActive(shardID string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.active[shardID]
+	return ok
+}
+
+func (t *shardTracker) isCompleted(shardID string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.completed[shardID]
+	return ok
 }
 
 func defaultOwner() string {

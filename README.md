@@ -41,6 +41,7 @@ _ = c.Start(ctx) // blocks until ctx is cancelled or an error occurs
 - `BatchSize`: max records per `GetRecords` (default 100).
 - `ShardConcurrency`: number of handler goroutines per shard (default 1). Values >1 process records in parallel within a shard (ordering is no longer guaranteed).
 - `PollInterval`: sleep when no records (default 1s).
+- `ShardSyncInterval`: how often to refresh shard assignments/list shards for new shards (default 1m).
 - `Retry`: `MaxAttempts` and `Backoff` for handler retries (defaults: 3, 1s).
 - `CheckpointEvery`: checkpoint after N processed records (default 100).
 - `Logger`: optional `*slog.Logger` (defaults to no-op).
@@ -57,6 +58,11 @@ batchHandler := func(ctx context.Context, records []types.Record) error {
 
 c, _ := consumer.New(cfg, client, store, nil, consumer.WithBatchHandler(batchHandler))
 ```
+
+### Shard management
+
+- The consumer now runs a background shard-discovery loop (`ListShards` every `ShardSyncInterval`) and will automatically start workers for new shards without a restart.
+- Parent-child ordering is respected: child shards only start after their parent shards have been fully processed. Closed shards are checkpointed with a `SHARD_END:<last_seq>` marker to unlock their children.
 
 ### Shard leasing (optional)
 
