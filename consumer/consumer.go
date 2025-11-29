@@ -24,6 +24,8 @@ type BatchHandlerFunc func(ctx context.Context, records []types.Record) error
 
 const shardCompletedPrefix = "SHARD_END"
 
+var errShardCompleted = errors.New("shard already completed")
+
 type Consumer struct {
 	cfg          Config
 	client       *kinesis.Client
@@ -292,8 +294,11 @@ func (c *Consumer) renewLeaseLoop(ctx context.Context, shardID string, l lease.L
 }
 
 func (c *Consumer) consumeShard(ctx context.Context, shardID string, tracker *shardTracker) error {
-	iterator, err := c.initialIterator(ctx, shardID)
+	iterator, err := c.initialIterator(ctx, shardID, tracker)
 	if err != nil {
+		if errors.Is(err, errShardCompleted) {
+			return nil
+		}
 		return err
 	}
 	if iterator == nil {
@@ -358,13 +363,14 @@ func (c *Consumer) consumeShard(ctx context.Context, shardID string, tracker *sh
 	}
 }
 
-func (c *Consumer) initialIterator(ctx context.Context, shardID string) (*string, error) {
+func (c *Consumer) initialIterator(ctx context.Context, shardID string, tracker *shardTracker) (*string, error) {
 	seq, err := c.store.Get(ctx, c.streamKey(), shardID)
 	if err != nil {
 		return nil, fmt.Errorf("shard %s get checkpoint: %w", shardID, err)
 	}
 	if isShardCompletedCheckpoint(seq) {
-		return nil, fmt.Errorf("shard %s is already marked complete", shardID)
+		tracker.markCompleted(shardID)
+		return nil, errShardCompleted
 	}
 
 	input := &kinesis.GetShardIteratorInput{
