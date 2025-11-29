@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 
 	"github.com/pratilipi/kinesis-consumer-go/checkpoint"
+	"github.com/pratilipi/kinesis-consumer-go/lease"
 )
 
 type HandlerFunc func(ctx context.Context, record types.Record) error
@@ -25,6 +27,11 @@ type Consumer struct {
 	store        checkpoint.Store
 	handler      HandlerFunc
 	batchHandler BatchHandlerFunc
+	leaseManager lease.Manager
+	leaseOwner   string
+	leaseTTL     time.Duration
+	leaseRenew   time.Duration
+	leaseRetry   time.Duration
 	logger       *slog.Logger
 	wg           sync.WaitGroup
 }
@@ -44,6 +51,9 @@ func New(cfg Config, client *kinesis.Client, store checkpoint.Store, handler Han
 	if handler == nil && opt.batchHandler == nil {
 		return nil, errors.New("handler is required (provide WithBatchHandler for batch processing)")
 	}
+	if opt.leaseManager != nil && opt.leaseOwner == "" {
+		opt.leaseOwner = defaultOwner()
+	}
 
 	cfg = cfg.withDefaults()
 	if err := cfg.validate(); err != nil {
@@ -61,6 +71,11 @@ func New(cfg Config, client *kinesis.Client, store checkpoint.Store, handler Han
 		store:        store,
 		handler:      handler,
 		batchHandler: opt.batchHandler,
+		leaseManager: opt.leaseManager,
+		leaseOwner:   opt.leaseOwner,
+		leaseTTL:     opt.leaseTTL,
+		leaseRenew:   opt.leaseRenewInterval,
+		leaseRetry:   opt.leaseRetryInterval,
 		logger:       logger,
 	}, nil
 }
@@ -84,7 +99,13 @@ func (c *Consumer) Start(ctx context.Context) error {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			if err := c.consumeShard(ctx, shardID); err != nil {
+			var err error
+			if c.leaseManager != nil {
+				err = c.consumeShardWithLease(ctx, shardID)
+			} else {
+				err = c.consumeShard(ctx, shardID)
+			}
+			if err != nil {
 				select {
 				case errCh <- err:
 				default:
@@ -144,6 +165,88 @@ func (c *Consumer) listShards(ctx context.Context) ([]string, error) {
 	}
 
 	return shardIDs, nil
+}
+
+func (c *Consumer) consumeShardWithLease(ctx context.Context, shardID string) error {
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		l, acquired, err := c.leaseManager.Acquire(ctx, c.streamKey(), shardID, c.leaseOwner, c.leaseTTL)
+		if err != nil {
+			return fmt.Errorf("shard %s lease acquire: %w", shardID, err)
+		}
+		if !acquired {
+			if err := sleepWithContext(ctx, c.leaseRetry); err != nil {
+				return nil
+			}
+			continue
+		}
+
+		c.logger.Info("acquired shard lease", slog.String("shard", shardID), slog.String("owner", c.leaseOwner))
+		err = c.consumeWithLeaseRenewal(ctx, shardID, l)
+		if err != nil {
+			if errors.Is(err, lease.ErrNotOwned) {
+				c.logger.Warn("lost shard lease", slog.String("shard", shardID), slog.String("owner", c.leaseOwner), slog.String("stream", c.streamKey()))
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+}
+
+func (c *Consumer) consumeWithLeaseRenewal(ctx context.Context, shardID string, l lease.Lease) error {
+	shardCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	renewErrCh := make(chan error, 1)
+	go c.renewLeaseLoop(shardCtx, shardID, l, renewErrCh, cancel)
+
+	err := c.consumeShard(shardCtx, shardID)
+
+	var renewErr error
+	select {
+	case renewErr = <-renewErrCh:
+	default:
+	}
+
+	if releaseErr := l.Release(context.Background()); releaseErr != nil && !errors.Is(releaseErr, lease.ErrNotOwned) {
+		if err == nil {
+			err = fmt.Errorf("shard %s release lease: %w", shardID, releaseErr)
+		} else {
+			err = fmt.Errorf("%w; shard %s release lease: %v", err, shardID, releaseErr)
+		}
+	}
+
+	if err == nil && renewErr != nil {
+		err = fmt.Errorf("shard %s lease renewal: %w", shardID, renewErr)
+	} else if renewErr != nil {
+		err = fmt.Errorf("%w; shard %s lease renewal: %v", err, shardID, renewErr)
+	}
+	return err
+}
+
+func (c *Consumer) renewLeaseLoop(ctx context.Context, shardID string, l lease.Lease, errCh chan<- error, cancel context.CancelFunc) {
+	ticker := time.NewTicker(c.leaseRenew)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := l.Renew(ctx, c.leaseTTL); err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 func (c *Consumer) consumeShard(ctx context.Context, shardID string) error {
@@ -370,6 +473,11 @@ func (c *Consumer) streamKey() string {
 		return c.cfg.StreamName
 	}
 	return c.cfg.StreamARN
+}
+
+func defaultOwner() string {
+	hostname, _ := os.Hostname()
+	return fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), time.Now().UnixNano())
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) error {

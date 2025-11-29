@@ -16,6 +16,7 @@ import (
 
 	"github.com/pratilipi/kinesis-consumer-go/checkpoint"
 	"github.com/pratilipi/kinesis-consumer-go/consumer"
+	"github.com/pratilipi/kinesis-consumer-go/lease"
 )
 
 func main() {
@@ -33,6 +34,7 @@ func main() {
 		Addr: "localhost:6379",
 	})
 	store := checkpoint.NewRedisStore(redisClient, "kinesis:checkpoint", 30*24*time.Hour)
+	leaseMgr := lease.NewRedisManager(redisClient, "kinesis:lease")
 
 	handler := func(ctx context.Context, record types.Record) error {
 		slog.InfoContext(ctx, "received record",
@@ -49,7 +51,8 @@ func main() {
 	}
 
 	// Add consumer.WithBatchHandler(yourBatchHandler) to process full GetRecords batches instead of individual records.
-	c, err := consumer.New(consumerCfg, kinesisClient, store, handler)
+	c, err := consumer.New(consumerCfg, kinesisClient, store, handler,
+		consumer.WithLeaseManager(leaseMgr, "", 0, 0, 0))
 	if err != nil {
 		log.Fatalf("create consumer: %v", err)
 	}
