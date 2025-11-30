@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   localstack:
     image: localstack/localstack:3
@@ -7,6 +5,9 @@ services:
       - SERVICES=kinesis
       - AWS_DEFAULT_REGION=us-east-1
       - DEBUG=0
+      - LOCALSTACK_HOST=localstack
+      - HOSTNAME_EXTERNAL=localstack
+      - KINESIS_PROVIDER=kinesis-mock
     ports:
       - "4566:4566"
     volumes:
@@ -26,6 +27,9 @@ services:
     environment:
       - AWS_ENDPOINT=http://localstack:4566
       - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_EC2_METADATA_DISABLED=true
       - STREAM_NAME=bench-stream
       - REDIS_ADDR=redis:6379
       - SHARD_CONCURRENCY=4
@@ -45,6 +49,9 @@ services:
     environment:
       - AWS_ENDPOINT=http://localstack:4566
       - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_EC2_METADATA_DISABLED=true
       - STREAM_NAME=bench-stream
       - SHARD_COUNT=4
       - BATCH_SIZE=500
