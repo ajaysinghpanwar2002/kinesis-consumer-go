@@ -1,91 +1,106 @@
 # Kinesis Consumer Go
 
-Reusable Kinesis consumer with pluggable checkpoint storage and a simple handler API.
+Small, reusable Kinesis consumer with automatic shard tracking, pluggable checkpoint storage, optional shard leasing, and both record-level and batch handlers.
+
+## What you get
+- Auto-discovery of shards with parent/child ordering: children start only after parents are fully processed and checkpointed.
+- At-least-once delivery with pluggable checkpoints (memory, Redis, or your own store) and shard-completion markers.
+- Optional shard leasing (Redis/Valkey provided) so multiple consumer processes do not double-process shards.
+- Configurable retries/backoff, per-shard parallelism, and batch vs per-record handling.
+- Background shard sync to pick up stream resharding without restarts; graceful shutdown via context cancellation.
 
 ## Install
 
 ```bash
 go get github.com/pratilipi/kinesis-consumer-go/consumer
 go get github.com/pratilipi/kinesis-consumer-go/checkpoint
+go get github.com/pratilipi/kinesis-consumer-go/lease    # only if you want leasing
 ```
 
-## Quick start
+## How it works (mental model)
+- On start, shards are listed and a tracker keeps state for active and completed shards. Parents must be marked complete before children run.
+- For each shard, the consumer resumes from the checkpointed sequence number (or a start position), requests records with `GetRecords`, and calls your handler.
+- Handler errors are retried up to `Retry.MaxAttempts` with a linear backoff (`attempt * Retry.Backoff`).
+- Checkpoints are written every `CheckpointEvery` records and when a shard ends. Closed shards are marked with `SHARD_END[:seq]` to unblock children.
+- A background ticker re-lists shards every `ShardSyncInterval` to discover new shards.
+- If a `lease.Manager` is provided, shards are processed only while the lease is owned and renewed; losing the lease stops work on that shard.
+
+## Quick start (per-record handler)
+1) Configure AWS credentials/region (standard AWS SDK v2) and create a `kinesis.Client`.  
+2) Pick a checkpoint store (Redis for shared durability; in-memory for tests).  
+3) Optionally set up a lease manager if multiple consumers will read the same stream.  
+4) Write a handler and start the consumer; cancel the context to stop.
 
 ```go
-ctx := context.Background()
-awsCfg, _ := awsconfig.LoadDefaultConfig(ctx)
-client := kinesis.NewFromConfig(awsCfg)
+ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+defer stop()
 
+awsCfg, _ := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion("us-east-1"))
+kinesisClient := kinesis.NewFromConfig(awsCfg)
+
+redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 store := checkpoint.NewRedisStore(redisClient, "kinesis:checkpoint", 30*24*time.Hour)
-handler := func(ctx context.Context, record types.Record) error {
+leaseMgr := lease.NewRedisManager(redisClient, "kinesis:lease") // optional
+
+handler := func(ctx context.Context, rec types.Record) error {
     // your business logic here
     return nil
 }
 
-leaseMgr := lease.NewRedisManager(redisClient, "kinesis:lease")
+cfg := consumer.Config{
+    StreamName:       "my-stream",                 // or StreamARN
+    StartPosition:    consumer.StartLatest,        // StartTrimHorizon | StartAtTimestamp (+StartTimestamp)
+    ShardConcurrency: 2,                           // per-shard goroutines; >1 drops ordering within a shard
+    BatchSize:        500,                         // GetRecords limit
+    CheckpointEvery:  100,                         // checkpoint frequency
+    Retry:            consumer.RetryConfig{MaxAttempts: 3, Backoff: time.Second},
+}
 
-c, _ := consumer.New(consumer.Config{
-    StreamName:      "my-stream",
-    StartPosition:   consumer.StartLatest,
-    ShardConcurrency: 4, // process up to 4 records in parallel per shard
-    CheckpointEvery: 100,
-}, client, store, handler, consumer.WithLeaseManager(leaseMgr, "", 0, 0, 0))
+cons, err := consumer.New(cfg, kinesisClient, store, handler,
+    consumer.WithLeaseManager(leaseMgr, "", 0, 0, 0)) // omit option to run without leasing
+if err != nil {
+    slog.Error("create consumer", slog.Any("err", err))
+    return
+}
 
-_ = c.Start(ctx) // blocks until ctx is cancelled or an error occurs
+if err := cons.Start(ctx); err != nil {
+    slog.Error("consumer stopped", slog.Any("err", err))
+}
 ```
 
-## Configuration
-
-- `StreamName` or `StreamARN`: identify the stream (one is required).
-- `StartPosition`: `LATEST`, `TRIM_HORIZON`, or `AT_TIMESTAMP` (with `StartTimestamp`).
-- `BatchSize`: max records per `GetRecords` (default 100).
-- `ShardConcurrency`: number of handler goroutines per shard (default 1). Values >1 process records in parallel within a shard (ordering is no longer guaranteed).
-- `PollInterval`: sleep when no records (default 1s).
-- `ShardSyncInterval`: how often to refresh shard assignments/list shards for new shards (default 1m).
-- `Retry`: `MaxAttempts` and `Backoff` for handler retries (defaults: 3, 1s).
-- `CheckpointEvery`: checkpoint after N processed records (default 100).
-- `Logger`: optional `*slog.Logger` (defaults to no-op).
-
-### Batch handler (optional)
-
-If you prefer to work with batches directly, provide a batch handler via the `WithBatchHandler` option:
+## Batch handler mode
+If you prefer to process the entire `GetRecords` response yourself, supply a batch handler (the per-record handler is ignored):
 
 ```go
 batchHandler := func(ctx context.Context, records []types.Record) error {
-    // handle a full batch returned by GetRecords
+    // process or fan out the batch
     return nil
 }
 
-c, _ := consumer.New(cfg, client, store, nil, consumer.WithBatchHandler(batchHandler))
+cons, err := consumer.New(cfg, kinesisClient, store, nil, consumer.WithBatchHandler(batchHandler))
 ```
 
-### Shard management
-
-- The consumer now runs a background shard-discovery loop (`ListShards` every `ShardSyncInterval`) and will automatically start workers for new shards without a restart.
-- Parent-child ordering is respected: child shards only start after their parent shards have been fully processed. Closed shards are checkpointed with a `SHARD_END:<last_seq>` marker to unlock their children.
-
-### Shard leasing (optional)
-
-Use shard leasing to coordinate multiple consumer processes so only one handles a shard at a time. Provide a `lease.Manager` implementation (Redis/Valkey is built in):
-
-```go
-leaseMgr := lease.NewRedisManager(redisClient, "kinesis:lease")
-// owner and timings are optional; defaults are applied when 0/"" is passed.
-c, _ := consumer.New(cfg, client, store, handler, consumer.WithLeaseManager(
-    leaseMgr,
-    "",             // owner (auto-generated if empty)
-    30*time.Second, // lease TTL
-    10*time.Second, // renew interval
-    5*time.Second,  // retry interval when a shard is busy
-))
-```
+## Configuration reference
+- `StreamName` or `StreamARN` (required): identifies the stream.
+- `StartPosition`: `LATEST` (default), `TRIM_HORIZON`, or `AT_TIMESTAMP` (requires `StartTimestamp`).
+- `BatchSize` (default 100): max records per `GetRecords`.
+- `ShardConcurrency` (default 1): per-shard goroutines for the **record** handler; values >1 process records in parallel and break ordering.
+- `PollInterval` (default 1s): sleep when no records are returned.
+- `ShardSyncInterval` (default 1m): how often to list shards and start new ones.
+- `Retry` (defaults: max attempts 3, backoff 1s): linear backoff for handler retries.
+- `CheckpointEvery` (default 100): write checkpoints after this many processed records.
+- `Logger`: optional `*slog.Logger` (defaults to a no-op logger).
+- `Region`: configure on your AWS client; included here for convenience only.
 
 ## Checkpoint stores
+- In-memory: `checkpoint.NewMemoryStore()` (tests/local only; no persistence).
+- Redis/Valkey: `checkpoint.NewRedisStore(redisClient, prefix, ttl)` (default prefix `kinesis:checkpoint`, TTL 30d).
+- Custom: implement `checkpoint.Store` to plug in any backend.
 
-- In-memory: `checkpoint.NewMemoryStore()` (tests/local).
-- Redis/Valkey: `checkpoint.NewRedisStore(redisClient, prefix, ttl)`.
-- Implement `checkpoint.Store` for other backends (e.g., MySQL) without touching consumer logic.
+## Shard leasing (optional)
+Provide a `lease.Manager` (Redis implementation included) to ensure only one consumer owns a shard at a time. Configure TTL/renew/retry timing via `WithLeaseManager`; an owner ID is auto-generated if empty.
 
-## Example
-
-See `examples/basic` for a runnable main that wires AWS config, Redis checkpointing, and a simple handler.
+## Run the example
+- `examples/basic`: minimal consumer wiring (AWS client, Redis checkpoint/lease, metrics, optional pprof).  
+  Run with env vars like `STREAM_NAME`, `AWS_REGION`, `AWS_ENDPOINT` (e.g., LocalStack), `REDIS_ADDR`, `START_POSITION`, `START_TIMESTAMP_RFC3339`, `SHARD_CONCURRENCY`, `CHECKPOINT_EVERY`, `BATCH_SIZE`.
+- `cmd/producer`: helper to load a stream for benchmarking; configurable via `STREAM_NAME`, `AWS_REGION`, `AWS_ENDPOINT`, `SHARD_COUNT`, `BATCH_SIZE`, `WORKERS`, `PAYLOAD_BYTES`.
