@@ -47,10 +47,10 @@ func WithBatchHandler(handler BatchHandlerFunc) Option {
 }
 
 // WithLeaseManager enables shard leasing for multi-consumer coordination.
-// Provide a lease.Manager implementation (e.g., lease.NewRedisManager) plus
-// optional owner/TTL timings. If owner is empty, a default will be generated.
-// ttl: lease lifetime; renewInterval: how often to extend the lease;
-// retryInterval: how often to retry when a shard is owned elsewhere.
+// Provide a lease.Manager implementation plus optional owner/TTL timings.
+// If owner is empty, a default will be generated. ttl: lease lifetime;
+// renewInterval: how often to extend the lease; retryInterval: how often to
+// retry when a shard is owned elsewhere.
 func WithLeaseManager(manager lease.Manager, owner string, ttl, renewInterval, retryInterval time.Duration) Option {
 	return func(cfg *consumerOptions) error {
 		if manager == nil {

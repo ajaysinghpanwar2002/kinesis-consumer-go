@@ -4,8 +4,8 @@ Small, reusable Kinesis consumer with automatic shard tracking, pluggable checkp
 
 ## What you get
 - Auto-discovery of shards with parent/child ordering: children start only after parents are fully processed and checkpointed.
-- At-least-once delivery with pluggable checkpoints (memory, Redis, or your own store) and shard-completion markers.
-- Optional shard leasing (Redis/Valkey provided) so multiple consumer processes do not double-process shards.
+- At-least-once delivery with pluggable checkpoints (memory implementation included) and shard-completion markers.
+- Optional shard leasing (bring your own `lease.Manager`) so multiple consumer processes do not double-process shards.
 - Configurable retries/backoff, per-shard parallelism, and batch vs per-record handling.
 - Background shard sync to pick up stream resharding without restarts; graceful shutdown via context cancellation.
 
@@ -14,7 +14,7 @@ Small, reusable Kinesis consumer with automatic shard tracking, pluggable checkp
 ```bash
 go get github.com/pratilipi/kinesis-consumer-go/consumer
 go get github.com/pratilipi/kinesis-consumer-go/checkpoint
-go get github.com/pratilipi/kinesis-consumer-go/lease    # only if you want leasing
+go get github.com/pratilipi/kinesis-consumer-go/lease    # if you need the lease interfaces/sentinel errors
 ```
 
 ## How it works (mental model)
@@ -27,7 +27,7 @@ go get github.com/pratilipi/kinesis-consumer-go/lease    # only if you want leas
 
 ## Quick start (per-record handler)
 1) Configure AWS credentials/region (standard AWS SDK v2) and create a `kinesis.Client`.  
-2) Pick a checkpoint store (Redis for shared durability; in-memory for tests).  
+2) Pick a checkpoint store (in-memory provided; implement `checkpoint.Store` for durability).  
 3) Optionally set up a lease manager if multiple consumers will read the same stream.  
 4) Write a handler and start the consumer; cancel the context to stop.
 
@@ -38,9 +38,7 @@ defer stop()
 awsCfg, _ := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion("us-east-1"))
 kinesisClient := kinesis.NewFromConfig(awsCfg)
 
-redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-store := checkpoint.NewRedisStore(redisClient, "kinesis:checkpoint", 30*24*time.Hour)
-leaseMgr := lease.NewRedisManager(redisClient, "kinesis:lease") // optional
+store := checkpoint.NewMemoryStore() // replace with your durable implementation
 
 handler := func(ctx context.Context, rec types.Record) error {
     // your business logic here
@@ -57,7 +55,8 @@ cfg := consumer.Config{
 }
 
 cons, err := consumer.New(cfg, kinesisClient, store, handler,
-    consumer.WithLeaseManager(leaseMgr, "", 0, 0, 0)) // omit option to run without leasing
+    // consumer.WithLeaseManager(yourLeaseManager, "", 0, 0, 0), // optional
+)
 if err != nil {
     slog.Error("create consumer", slog.Any("err", err))
     return
@@ -93,13 +92,7 @@ cons, err := consumer.New(cfg, kinesisClient, store, nil, consumer.WithBatchHand
 
 ## Checkpoint stores
 - In-memory: `checkpoint.NewMemoryStore()` (tests/local only; no persistence).
-- Redis/Valkey: `checkpoint.NewRedisStore(redisClient, prefix, ttl)` (default prefix `kinesis:checkpoint`, TTL 30d).
-- Custom: implement `checkpoint.Store` to plug in any backend.
+- Custom: implement `checkpoint.Store` to plug in any backend (e.g., DynamoDB, PostgreSQL, Redis in your app).
 
 ## Shard leasing (optional)
-Provide a `lease.Manager` (Redis implementation included) to ensure only one consumer owns a shard at a time. Configure TTL/renew/retry timing via `WithLeaseManager`; an owner ID is auto-generated if empty.
-
-## Run the example
-- `examples/basic`: minimal consumer wiring (AWS client, Redis checkpoint/lease, metrics, optional pprof).  
-  Run with env vars like `STREAM_NAME`, `AWS_REGION`, `AWS_ENDPOINT` (e.g., LocalStack), `REDIS_ADDR`, `START_POSITION`, `START_TIMESTAMP_RFC3339`, `SHARD_CONCURRENCY`, `CHECKPOINT_EVERY`, `BATCH_SIZE`.
-- `cmd/producer`: helper to load a stream for benchmarking; configurable via `STREAM_NAME`, `AWS_REGION`, `AWS_ENDPOINT`, `SHARD_COUNT`, `BATCH_SIZE`, `WORKERS`, `PAYLOAD_BYTES`.
+Provide a `lease.Manager` to ensure only one consumer owns a shard at a time. Configure TTL/renew/retry timing via `WithLeaseManager`; an owner ID is auto-generated if empty. Implementations should return `lease.ErrNotOwned` when a renew/release is attempted by a non-owner.
