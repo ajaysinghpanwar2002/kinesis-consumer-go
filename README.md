@@ -90,7 +90,6 @@ cons, err := consumer.New(cfg, kinesisClient, store, nil, consumer.WithBatchHand
 - `Retry` (defaults: max attempts 3, backoff 1s): linear backoff for handler retries.
 - `CheckpointEvery` (default 100): write checkpoints after this many processed records.
 - `Logger`: optional `*slog.Logger` (defaults to a no-op logger).
-- `Region`: configure on your AWS client; included here for convenience only.
 
 ## Checkpoint stores
 - In-memory: `checkpoint.NewMemoryStore()` (tests/local only; no persistence).

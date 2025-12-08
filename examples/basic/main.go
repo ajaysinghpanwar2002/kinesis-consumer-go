@@ -104,7 +104,6 @@ func main() {
 
 	cfg := consumer.Config{
 		StreamName:       streamName,
-		Region:           region,
 		StartPosition:    startPosition,
 		StartTimestamp:   startTimestamp,
 		ShardConcurrency: shardConcurrency,

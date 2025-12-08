@@ -3,10 +3,13 @@ package checkpoint
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+const shardCompletedPrefix = "SHARD_END"
 
 type RedisStore struct {
 	client redis.Cmdable
@@ -43,7 +46,15 @@ func (s *RedisStore) Save(ctx context.Context, streamName, shardID, sequenceNumb
 	if sequenceNumber == "" {
 		return nil
 	}
-	return s.client.Set(ctx, s.key(streamName, shardID), sequenceNumber, s.ttl).Err()
+
+	ttl := s.ttl
+	if strings.HasPrefix(sequenceNumber, shardCompletedPrefix) {
+		// Persist shard completion markers so child shards are not blocked
+		// when the store TTL is configured.
+		ttl = 0
+	}
+
+	return s.client.Set(ctx, s.key(streamName, shardID), sequenceNumber, ttl).Err()
 }
 
 func (s *RedisStore) Delete(ctx context.Context, streamName, shardID string) error {

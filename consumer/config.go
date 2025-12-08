@@ -23,7 +23,6 @@ type RetryConfig struct {
 type Config struct {
 	StreamName        string
 	StreamARN         string
-	Region            string
 	StartPosition     StartPosition
 	StartTimestamp    *time.Time
 	ShardConcurrency  int
