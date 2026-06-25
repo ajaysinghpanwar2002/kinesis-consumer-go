@@ -9,7 +9,7 @@ import (
 // Consumer owns Kinesis shard consumption for one worker process.
 type Consumer struct {
 	cfg          Config
-	client       *Client
+	client       kinesisAPI
 	store        checkpoint.Store
 	handler      HandlerFunc
 	batchHandler BatchHandlerFunc
