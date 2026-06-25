@@ -2,8 +2,12 @@ package consumer
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"time"
 
 	"github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
+	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
 
 // Consumer owns Kinesis shard consumption for one worker process.
@@ -13,6 +17,8 @@ type Consumer struct {
 	store        checkpoint.Store
 	handler      HandlerFunc
 	batchHandler BatchHandlerFunc
+	leaseManager lease.Manager
+	leaseOwner   string
 	tuning       tuningConfig
 }
 
@@ -41,12 +47,19 @@ func New(cfg Config, client *Client, store checkpoint.Store, handler HandlerFunc
 		return nil, err
 	}
 
+	leaseManager, leaseOwner, err := leaseSettings(store, opt)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Consumer{
 		cfg:          resolvedCfg,
 		client:       client,
 		store:        store,
 		handler:      handler,
 		batchHandler: batchHandler,
+		leaseManager: leaseManager,
+		leaseOwner:   leaseOwner,
 		tuning:       opt.tuning,
 	}, nil
 }
@@ -74,4 +87,27 @@ func finalizeConfig(cfg Config) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func leaseSettings(store checkpoint.Store, opt options) (lease.Manager, string, error) {
+	manager := opt.lease.manager
+	if manager == nil {
+		if provider, ok := store.(lease.Provider); ok {
+			auto, err := provider.LeaseManager()
+			if err != nil {
+				return nil, "", fmt.Errorf("create lease manager from store: %w", err)
+			}
+			manager = auto
+		}
+	}
+	if manager == nil {
+		return nil, "", errors.New("lease manager is required; use a store that provides leasing or WithLeaseManager")
+	}
+
+	return manager, defaultOwner(), nil
+}
+
+func defaultOwner() string {
+	hostname, _ := os.Hostname()
+	return fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), time.Now().UnixNano())
 }

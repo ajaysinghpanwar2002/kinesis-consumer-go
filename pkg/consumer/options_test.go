@@ -81,6 +81,11 @@ func TestOptionValidation(t *testing.T) {
 			want: "shardConcurrency must be >= 1",
 		},
 		{
+			name: "lease manager",
+			opt:  WithLeaseManager(nil),
+			want: "lease manager cannot be nil",
+		},
+		{
 			name: "rebalance min interval",
 			opt:  WithRebalance(0, 0, time.Second, 1),
 			want: "rebalance minInterval must be > 0",
@@ -135,9 +140,11 @@ func TestOptionsApplyValues(t *testing.T) {
 		called = true
 		return nil
 	}
+	leaseMgr := fakeLeaseManager{}
 
 	cfg, err := applyOptions([]Option{
 		WithBatchHandler(handler),
+		WithLeaseManager(leaseMgr),
 		WithRetry(2, 3*time.Second),
 		WithPolling(4*time.Second, 5*time.Second),
 		WithBatching(6, 7),
@@ -157,6 +164,9 @@ func TestOptionsApplyValues(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("batchHandler was not called")
+	}
+	if cfg.lease.manager != leaseMgr {
+		t.Fatalf("lease manager was not applied")
 	}
 
 	if cfg.tuning.retryMaxAttempts != 2 {

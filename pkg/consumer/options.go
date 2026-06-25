@@ -3,6 +3,8 @@ package consumer
 import (
 	"errors"
 	"time"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
 
 // Option configures optional consumer behavior.
@@ -10,7 +12,12 @@ type Option func(*options) error
 
 type options struct {
 	batchHandler BatchHandlerFunc
+	lease        leaseOptions
 	tuning       tuningConfig
+}
+
+type leaseOptions struct {
+	manager lease.Manager
 }
 
 func defaultOptions() options {
@@ -98,6 +105,17 @@ func WithShardConcurrency(concurrency int) Option {
 			return errors.New("shardConcurrency must be >= 1")
 		}
 		cfg.tuning.shardConcurrency = concurrency
+		return nil
+	}
+}
+
+// WithLeaseManager enables shard leasing for multi-consumer coordination.
+func WithLeaseManager(manager lease.Manager) Option {
+	return func(cfg *options) error {
+		if manager == nil {
+			return errors.New("lease manager cannot be nil")
+		}
+		cfg.lease.manager = manager
 		return nil
 	}
 }
