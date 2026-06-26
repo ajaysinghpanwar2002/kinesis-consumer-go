@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
 
 func TestStartPropagatesShardListingError(t *testing.T) {
@@ -71,6 +72,138 @@ func TestStartSendsWorkerHeartbeat(t *testing.T) {
 	assertHeartbeatCall(t, call, "stream", "owner", 30*time.Millisecond)
 }
 
+func TestStartAttemptsAcquisitionForDiscoveredShardIDs(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 2),
+		results: []acquireResult{
+			{acquired: false},
+			{acquired: false},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+			},
+		},
+		manager,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	_ = waitAcquireCall(t, manager)
+	assertAcquireShardOrder(t, manager.calls, []string{"shard-1", "shard-2"})
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartReturnsAcquisitionError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingAcquireManager{
+		err: errBoom,
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.tuning.retryMaxAttempts = 1
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "acquire shard leases shard-1: acquire shard lease shard-1: boom" {
+		t.Fatalf("Start() error = %v, want %q", err, "acquire shard leases shard-1: acquire shard lease shard-1: boom")
+	}
+}
+
+func TestStartReleasesAcquiredLeasesOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	cancel()
+	waitStartDone(t, done, nil)
+
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+	if shardLease.ctx == nil {
+		t.Fatal("Release context = nil, want context")
+	}
+}
+
+func TestStartDoesNotReleaseNotAcquiredShards(t *testing.T) {
+	t.Parallel()
+
+	acquiredLease := &recordingReleaseLease{}
+	notAcquiredLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 2),
+		results: []acquireResult{
+			{lease: acquiredLease, acquired: true},
+			{lease: notAcquiredLease, acquired: false},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+			},
+		},
+		manager,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	_ = waitAcquireCall(t, manager)
+	cancel()
+	waitStartDone(t, done, nil)
+
+	if acquiredLease.calls != 1 {
+		t.Fatalf("acquired Release calls = %d, want 1", acquiredLease.calls)
+	}
+	if notAcquiredLease.calls != 0 {
+		t.Fatalf("not acquired Release calls = %d, want 0", notAcquiredLease.calls)
+	}
+}
+
 func TestStartBlocksUntilContextCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -116,6 +249,22 @@ func newTestStartConsumer(client *fakeKinesisClient, manager *recordingHeartbeat
 	c := newTestHeartbeatConsumer(manager)
 	c.client = client
 	return c
+}
+
+func newTestStartConsumerWithLeaseManager(client *fakeKinesisClient, manager lease.Manager) *Consumer {
+	tuning := defaultTuning()
+	tuning.heartbeatInterval = 10 * time.Millisecond
+	tuning.heartbeatTTL = 30 * time.Millisecond
+
+	return &Consumer{
+		cfg: Config{
+			StreamName: "stream",
+		},
+		client:       client,
+		leaseManager: manager,
+		leaseOwner:   "owner",
+		tuning:       tuning,
+	}
 }
 
 func runStart(ctx context.Context, c *Consumer) <-chan error {

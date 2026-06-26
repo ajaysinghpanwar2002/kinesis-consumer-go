@@ -46,6 +46,23 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return fmt.Errorf("no shards found for stream %s", c.streamKey())
 	}
 
+	shardIDs := make([]string, 0, len(shards))
+	for _, shard := range shards {
+		if shard.ShardId != nil {
+			shardIDs = append(shardIDs, *shard.ShardId)
+		}
+	}
+
+	shardLeases, err := c.acquireShardLeases(runCtx, shardIDs)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for shardID, shardLease := range shardLeases {
+			_ = c.releaseShardLease(context.Background(), shardID, shardLease)
+		}
+	}()
+
 	<-runCtx.Done()
 	if errors.Is(runCtx.Err(), context.Canceled) {
 		return nil
