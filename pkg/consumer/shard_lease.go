@@ -47,6 +47,21 @@ func (c *Consumer) acquireShardLeaseWithRetry(ctx context.Context, shardID strin
 	return nil, false, lastErr
 }
 
+func (c *Consumer) acquireShardLeases(ctx context.Context, shardIDs []string) (map[string]lease.Lease, error) {
+	leases := make(map[string]lease.Lease, len(shardIDs))
+	for _, shardID := range shardIDs {
+		shardLease, acquired, err := c.acquireShardLeaseWithRetry(ctx, shardID)
+		if err != nil {
+			return nil, fmt.Errorf("acquire shard leases %s: %w", shardID, err)
+		}
+		if !acquired || shardLease == nil {
+			continue
+		}
+		leases[shardID] = shardLease
+	}
+	return leases, nil
+}
+
 func (c *Consumer) renewShardLease(ctx context.Context, shardID string, shardLease lease.Lease) error {
 	if shardLease == nil {
 		return nil

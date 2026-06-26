@@ -330,6 +330,115 @@ func TestAcquireShardLeaseWithRetryStopsWhenContextCanceledDuringBackoff(t *test
 	}
 }
 
+func TestAcquireShardLeasesEmptyShardListReturnsEmptyMap(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{}
+	c := newTestAcquireConsumer(manager)
+
+	got, err := c.acquireShardLeases(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("acquireShardLeases() error = %v, want nil", err)
+	}
+	if got == nil {
+		t.Fatal("acquireShardLeases() leases = nil, want empty map")
+	}
+	if len(got) != 0 {
+		t.Fatalf("acquireShardLeases() len = %d, want 0", len(got))
+	}
+	if len(manager.calls) != 0 {
+		t.Fatalf("Acquire calls = %d, want 0", len(manager.calls))
+	}
+}
+
+func TestAcquireShardLeasesReturnsAcquiredLeasesByShardID(t *testing.T) {
+	t.Parallel()
+
+	lease1 := fakeShardLease{}
+	lease2 := &recordingRenewLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: lease1, acquired: true},
+			{lease: lease2, acquired: true},
+		},
+	}
+	c := newTestAcquireConsumer(manager)
+
+	got, err := c.acquireShardLeases(context.Background(), []string{"shard-1", "shard-2"})
+	if err != nil {
+		t.Fatalf("acquireShardLeases() error = %v, want nil", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("acquireShardLeases() len = %d, want 2", len(got))
+	}
+	if got["shard-1"] != lease1 {
+		t.Fatalf("acquireShardLeases()[shard-1] = %v, want %v", got["shard-1"], lease1)
+	}
+	if got["shard-2"] != lease2 {
+		t.Fatalf("acquireShardLeases()[shard-2] = %v, want %v", got["shard-2"], lease2)
+	}
+	assertAcquireShardOrder(t, manager.calls, []string{"shard-1", "shard-2"})
+}
+
+func TestAcquireShardLeasesSkipsNotAcquiredAndNilLeases(t *testing.T) {
+	t.Parallel()
+
+	wantLease := fakeShardLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: wantLease, acquired: true},
+			{acquired: false},
+			{acquired: true},
+		},
+	}
+	c := newTestAcquireConsumer(manager)
+
+	got, err := c.acquireShardLeases(context.Background(), []string{"shard-1", "shard-2", "shard-3"})
+	if err != nil {
+		t.Fatalf("acquireShardLeases() error = %v, want nil", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("acquireShardLeases() len = %d, want 1", len(got))
+	}
+	if got["shard-1"] != wantLease {
+		t.Fatalf("acquireShardLeases()[shard-1] = %v, want %v", got["shard-1"], wantLease)
+	}
+	if _, ok := got["shard-2"]; ok {
+		t.Fatal("acquireShardLeases()[shard-2] exists, want skipped")
+	}
+	if _, ok := got["shard-3"]; ok {
+		t.Fatal("acquireShardLeases()[shard-3] exists, want skipped")
+	}
+	assertAcquireShardOrder(t, manager.calls, []string{"shard-1", "shard-2", "shard-3"})
+}
+
+func TestAcquireShardLeasesStopsOnAcquisitionError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: fakeShardLease{}, acquired: true},
+			{err: errBoom},
+			{lease: fakeShardLease{}, acquired: true},
+		},
+	}
+	c := newTestAcquireConsumer(manager)
+	c.tuning.retryMaxAttempts = 1
+
+	got, err := c.acquireShardLeases(context.Background(), []string{"shard-1", "shard-2", "shard-3"})
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("acquireShardLeases() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "acquire shard leases shard-2: acquire shard lease shard-2: boom" {
+		t.Fatalf("acquireShardLeases() error = %v, want %q", err, "acquire shard leases shard-2: acquire shard lease shard-2: boom")
+	}
+	if got != nil {
+		t.Fatalf("acquireShardLeases() leases = %v, want nil", got)
+	}
+	assertAcquireShardOrder(t, manager.calls, []string{"shard-1", "shard-2"})
+}
+
 func TestRenewShardLeaseNilLeaseNoop(t *testing.T) {
 	t.Parallel()
 
@@ -481,6 +590,19 @@ func waitAcquireCall(t *testing.T, manager *recordingAcquireManager) acquireCall
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Acquire call")
 		return acquireCall{}
+	}
+}
+
+func assertAcquireShardOrder(t *testing.T, calls []acquireCall, shardIDs []string) {
+	t.Helper()
+
+	if len(calls) != len(shardIDs) {
+		t.Fatalf("Acquire calls = %d, want %d", len(calls), len(shardIDs))
+	}
+	for i, shardID := range shardIDs {
+		if calls[i].shardID != shardID {
+			t.Fatalf("Acquire call %d shardID = %q, want %q", i, calls[i].shardID, shardID)
+		}
 	}
 }
 
