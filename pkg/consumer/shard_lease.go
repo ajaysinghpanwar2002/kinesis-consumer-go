@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -86,6 +87,12 @@ func (c *Consumer) renewShardLeaseLoop(ctx context.Context, shardID string, shar
 			return ctx.Err()
 		case <-ticker.C:
 			if err := c.renewShardLease(ctx, shardID, shardLease); err != nil {
+				if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return nil
+					}
+					return ctx.Err()
+				}
 				return err
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
@@ -57,13 +58,42 @@ func (c *Consumer) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	renewCtx, stopRenew := context.WithCancel(runCtx)
+	renewErrCh := make(chan error, len(shardLeases))
+	var renewWG sync.WaitGroup
+	for shardID, shardLease := range shardLeases {
+		renewWG.Add(1)
+		go func(shardID string, shardLease lease.Lease) {
+			defer renewWG.Done()
+			if err := c.renewShardLeaseLoop(renewCtx, shardID, shardLease); err != nil {
+				select {
+				case renewErrCh <- err:
+				default:
+				}
+				cancel()
+			}
+		}(shardID, shardLease)
+	}
 	defer func() {
+		stopRenew()
+		renewWG.Wait()
 		for shardID, shardLease := range shardLeases {
 			_ = c.releaseShardLease(context.Background(), shardID, shardLease)
 		}
 	}()
 
-	<-runCtx.Done()
+	select {
+	case err := <-renewErrCh:
+		cancel()
+		return err
+	case <-runCtx.Done():
+	}
+
+	select {
+	case err := <-renewErrCh:
+		return err
+	default:
+	}
 	if errors.Is(runCtx.Err(), context.Canceled) {
 		return nil
 	}

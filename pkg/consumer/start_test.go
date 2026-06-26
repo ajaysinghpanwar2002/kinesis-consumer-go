@@ -204,6 +204,136 @@ func TestStartDoesNotReleaseNotAcquiredShards(t *testing.T) {
 	}
 }
 
+func TestStartRenewsAcquiredLease(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingRenewLease{ch: make(chan renewCall, 1)}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.tuning.heartbeatInterval = time.Millisecond
+	c.tuning.heartbeatTTL = 45 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	call := waitRenewCall(t, shardLease)
+	cancel()
+	waitStartDone(t, done, nil)
+
+	if call.ttl != 45*time.Millisecond {
+		t.Fatalf("Renew ttl = %v, want %v", call.ttl, 45*time.Millisecond)
+	}
+	if call.ctx == nil {
+		t.Fatal("Renew context = nil, want context")
+	}
+}
+
+func TestStartReturnsRenewalError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLease := &recordingRenewLease{err: errBoom}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.tuning.heartbeatInterval = time.Millisecond
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "renew shard lease shard-1: boom" {
+		t.Fatalf("Start() error = %v, want %q", err, "renew shard lease shard-1: boom")
+	}
+}
+
+func TestStartWaitsForRenewalLoopsBeforeRelease(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &orderedRenewReleaseLease{
+		events: make(chan string, 3),
+	}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.tuning.heartbeatInterval = time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	waitEvent(t, shardLease.events, "renew-start")
+	cancel()
+	waitStartDone(t, done, nil)
+
+	waitEvent(t, shardLease.events, "renew-done")
+	waitEvent(t, shardLease.events, "release")
+}
+
+func TestStartDoesNotRenewNotAcquiredShard(t *testing.T) {
+	t.Parallel()
+
+	notAcquiredLease := &recordingRenewLease{ch: make(chan renewCall, 1)}
+	manager := &recordingAcquireManager{
+		result:   notAcquiredLease,
+		acquired: false,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.tuning.heartbeatInterval = time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	select {
+	case <-notAcquiredLease.ch:
+		t.Fatal("Renew called for not-acquired shard")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
 func TestStartBlocksUntilContextCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -295,5 +425,34 @@ func waitStartDone(t *testing.T, done <-chan error, want error) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Start to return")
+	}
+}
+
+type orderedRenewReleaseLease struct {
+	events chan string
+}
+
+func (l *orderedRenewReleaseLease) Renew(ctx context.Context, _ time.Duration) error {
+	l.events <- "renew-start"
+	<-ctx.Done()
+	l.events <- "renew-done"
+	return ctx.Err()
+}
+
+func (l *orderedRenewReleaseLease) Release(context.Context) error {
+	l.events <- "release"
+	return nil
+}
+
+func waitEvent(t *testing.T, events <-chan string, want string) {
+	t.Helper()
+
+	select {
+	case got := <-events:
+		if got != want {
+			t.Fatalf("event = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for event %q", want)
 	}
 }
