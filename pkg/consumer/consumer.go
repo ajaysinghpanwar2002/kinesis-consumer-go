@@ -58,39 +58,38 @@ func (c *Consumer) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	renewCtx, stopRenew := context.WithCancel(runCtx)
-	renewErrCh := make(chan error, len(shardLeases))
-	var renewWG sync.WaitGroup
+	workerErrCh := make(chan error, len(shardLeases))
+	workerDone := make(chan struct{})
+	var workerWG sync.WaitGroup
 	for shardID, shardLease := range shardLeases {
-		renewWG.Add(1)
+		workerWG.Add(1)
 		go func(shardID string, shardLease lease.Lease) {
-			defer renewWG.Done()
-			if err := c.renewShardLeaseLoop(renewCtx, shardID, shardLease); err != nil {
+			defer workerWG.Done()
+			if err := c.runShardWorker(runCtx, shardID, shardLease); err != nil {
 				select {
-				case renewErrCh <- err:
+				case workerErrCh <- err:
 				default:
 				}
 				cancel()
 			}
 		}(shardID, shardLease)
 	}
-	defer func() {
-		stopRenew()
-		renewWG.Wait()
-		for shardID, shardLease := range shardLeases {
-			_ = c.releaseShardLease(context.Background(), shardID, shardLease)
-		}
+	go func() {
+		defer close(workerDone)
+		workerWG.Wait()
 	}()
 
 	select {
-	case err := <-renewErrCh:
+	case err := <-workerErrCh:
 		cancel()
+		<-workerDone
 		return err
 	case <-runCtx.Done():
 	}
+	<-workerDone
 
 	select {
-	case err := <-renewErrCh:
+	case err := <-workerErrCh:
 		return err
 	default:
 	}
