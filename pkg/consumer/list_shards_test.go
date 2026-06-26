@@ -25,6 +25,7 @@ type fakeKinesisClient struct {
 	getRecordsCtx   context.Context
 	getRecordsCalls []kinesis.GetRecordsInput
 	getRecordsOut   *kinesis.GetRecordsOutput
+	getRecordsOuts  []*kinesis.GetRecordsOutput
 	getRecordsErr   error
 }
 
@@ -74,6 +75,11 @@ func (c *fakeKinesisClient) GetRecords(ctx context.Context, params *kinesis.GetR
 	}
 	if c.getRecordsErr != nil {
 		return nil, c.getRecordsErr
+	}
+	if len(c.getRecordsOuts) > 0 {
+		out := c.getRecordsOuts[0]
+		c.getRecordsOuts = c.getRecordsOuts[1:]
+		return out, nil
 	}
 	if c.getRecordsOut == nil {
 		return &kinesis.GetRecordsOutput{}, nil
