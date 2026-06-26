@@ -20,18 +20,43 @@ type recordingAcquireManager struct {
 	fakeLeaseManager
 
 	call     acquireCall
+	calls    []acquireCall
+	callCh   chan acquireCall
 	result   lease.Lease
+	acquired bool
+	err      error
+	results  []acquireResult
+}
+
+type acquireResult struct {
+	lease    lease.Lease
 	acquired bool
 	err      error
 }
 
 func (m *recordingAcquireManager) Acquire(_ context.Context, streamName, shardID, owner string, ttl time.Duration) (lease.Lease, bool, error) {
-	m.call = acquireCall{
+	call := acquireCall{
 		streamName: streamName,
 		shardID:    shardID,
 		owner:      owner,
 		ttl:        ttl,
 	}
+	m.call = call
+	m.calls = append(m.calls, call)
+
+	if m.callCh != nil {
+		select {
+		case m.callCh <- call:
+		default:
+		}
+	}
+
+	if len(m.results) > 0 {
+		result := m.results[0]
+		m.results = m.results[1:]
+		return result.lease, result.acquired, result.err
+	}
+
 	return m.result, m.acquired, m.err
 }
 
@@ -124,6 +149,153 @@ func TestAcquireShardLeaseWrapsError(t *testing.T) {
 	}
 }
 
+func TestAcquireShardLeaseWithRetrySuccessWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	wantLease := fakeShardLease{}
+	manager := &recordingAcquireManager{
+		result:   wantLease,
+		acquired: true,
+	}
+	c := newTestAcquireConsumer(manager)
+
+	gotLease, acquired, err := c.acquireShardLeaseWithRetry(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("acquireShardLeaseWithRetry() error = %v, want nil", err)
+	}
+	if !acquired {
+		t.Fatal("acquireShardLeaseWithRetry() acquired = false, want true")
+	}
+	if gotLease != wantLease {
+		t.Fatalf("acquireShardLeaseWithRetry() lease = %v, want %v", gotLease, wantLease)
+	}
+	if len(manager.calls) != 1 {
+		t.Fatalf("Acquire calls = %d, want 1", len(manager.calls))
+	}
+}
+
+func TestAcquireShardLeaseWithRetryRetriesThenSucceeds(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	wantLease := fakeShardLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{err: errBoom},
+			{err: errBoom},
+			{lease: wantLease, acquired: true},
+		},
+	}
+	c := newTestAcquireConsumer(manager)
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = 0
+
+	gotLease, acquired, err := c.acquireShardLeaseWithRetry(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("acquireShardLeaseWithRetry() error = %v, want nil", err)
+	}
+	if !acquired {
+		t.Fatal("acquireShardLeaseWithRetry() acquired = false, want true")
+	}
+	if gotLease != wantLease {
+		t.Fatalf("acquireShardLeaseWithRetry() lease = %v, want %v", gotLease, wantLease)
+	}
+	if len(manager.calls) != 3 {
+		t.Fatalf("Acquire calls = %d, want 3", len(manager.calls))
+	}
+}
+
+func TestAcquireShardLeaseWithRetryDoesNotRetryNotAcquired(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{}
+	c := newTestAcquireConsumer(manager)
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = 0
+
+	gotLease, acquired, err := c.acquireShardLeaseWithRetry(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("acquireShardLeaseWithRetry() error = %v, want nil", err)
+	}
+	if acquired {
+		t.Fatal("acquireShardLeaseWithRetry() acquired = true, want false")
+	}
+	if gotLease != nil {
+		t.Fatalf("acquireShardLeaseWithRetry() lease = %v, want nil", gotLease)
+	}
+	if len(manager.calls) != 1 {
+		t.Fatalf("Acquire calls = %d, want 1", len(manager.calls))
+	}
+}
+
+func TestAcquireShardLeaseWithRetryReturnsLastErrorAfterExhaustion(t *testing.T) {
+	t.Parallel()
+
+	errFirst := errors.New("first")
+	errLast := errors.New("last")
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{err: errFirst},
+			{err: errLast},
+		},
+	}
+	c := newTestAcquireConsumer(manager)
+	c.tuning.retryMaxAttempts = 2
+	c.tuning.retryBackoff = 0
+
+	gotLease, acquired, err := c.acquireShardLeaseWithRetry(context.Background(), "shard-1")
+	if !errors.Is(err, errLast) {
+		t.Fatalf("acquireShardLeaseWithRetry() error = %v, want wraps %v", err, errLast)
+	}
+	if err == nil || err.Error() != "acquire shard lease shard-1: last" {
+		t.Fatalf("acquireShardLeaseWithRetry() error = %v, want %q", err, "acquire shard lease shard-1: last")
+	}
+	if acquired {
+		t.Fatal("acquireShardLeaseWithRetry() acquired = true, want false")
+	}
+	if gotLease != nil {
+		t.Fatalf("acquireShardLeaseWithRetry() lease = %v, want nil", gotLease)
+	}
+	if len(manager.calls) != 2 {
+		t.Fatalf("Acquire calls = %d, want 2", len(manager.calls))
+	}
+}
+
+func TestAcquireShardLeaseWithRetryStopsWhenContextCanceledDuringBackoff(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingAcquireManager{
+		err:    errBoom,
+		callCh: make(chan acquireCall, 1),
+	}
+	c := newTestAcquireConsumer(manager)
+	c.tuning.retryMaxAttempts = 2
+	c.tuning.retryBackoff = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.acquireShardLeaseWithRetry(ctx, "shard-1")
+		done <- err
+	}()
+
+	waitAcquireCall(t, manager)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("acquireShardLeaseWithRetry() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for acquireShardLeaseWithRetry to return")
+	}
+	if len(manager.calls) != 1 {
+		t.Fatalf("Acquire calls = %d, want 1", len(manager.calls))
+	}
+}
+
 func newTestAcquireConsumer(manager *recordingAcquireManager) *Consumer {
 	tuning := defaultTuning()
 	tuning.heartbeatTTL = 30 * time.Millisecond
@@ -135,6 +307,18 @@ func newTestAcquireConsumer(manager *recordingAcquireManager) *Consumer {
 		leaseManager: manager,
 		leaseOwner:   "owner",
 		tuning:       tuning,
+	}
+}
+
+func waitAcquireCall(t *testing.T, manager *recordingAcquireManager) acquireCall {
+	t.Helper()
+
+	select {
+	case call := <-manager.callCh:
+		return call
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Acquire call")
+		return acquireCall{}
 	}
 }
 
