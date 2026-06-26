@@ -73,6 +73,25 @@ func (c *Consumer) renewShardLease(ctx context.Context, shardID string, shardLea
 	return nil
 }
 
+func (c *Consumer) renewShardLeaseLoop(ctx context.Context, shardID string, shardLease lease.Lease) error {
+	ticker := time.NewTicker(c.tuning.heartbeatInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			if ctx.Err() == context.Canceled {
+				return nil
+			}
+			return ctx.Err()
+		case <-ticker.C:
+			if err := c.renewShardLease(ctx, shardID, shardLease); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func (c *Consumer) releaseShardLease(ctx context.Context, shardID string, shardLease lease.Lease) error {
 	if shardLease == nil {
 		return nil

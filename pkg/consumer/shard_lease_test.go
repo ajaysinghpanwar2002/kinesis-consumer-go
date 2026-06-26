@@ -91,12 +91,24 @@ type recordingRenewLease struct {
 	ttl   time.Duration
 	calls int
 	err   error
+	ch    chan renewCall
+}
+
+type renewCall struct {
+	ctx context.Context
+	ttl time.Duration
 }
 
 func (l *recordingRenewLease) Renew(ctx context.Context, ttl time.Duration) error {
 	l.ctx = ctx
 	l.ttl = ttl
 	l.calls++
+	if l.ch != nil {
+		select {
+		case l.ch <- renewCall{ctx: ctx, ttl: ttl}:
+		default:
+		}
+	}
 	return l.err
 }
 
@@ -502,6 +514,80 @@ func TestRenewShardLeaseWrapsError(t *testing.T) {
 	}
 }
 
+func TestRenewShardLeaseLoopStopsOnContextCancellationWithoutRenewing(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	shardLease := &recordingRenewLease{}
+	c := newTestLeaseLoopConsumer(time.Hour, 30*time.Millisecond)
+
+	err := c.renewShardLeaseLoop(ctx, "shard-1", shardLease)
+	if err != nil {
+		t.Fatalf("renewShardLeaseLoop() error = %v, want nil", err)
+	}
+	if shardLease.calls != 0 {
+		t.Fatalf("Renew calls = %d, want 0", shardLease.calls)
+	}
+}
+
+func TestRenewShardLeaseLoopRenewsOnTick(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingRenewLease{ch: make(chan renewCall, 1)}
+	c := newTestLeaseLoopConsumer(time.Millisecond, 45*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRenewShardLeaseLoop(ctx, c, "shard-1", shardLease)
+
+	call := waitRenewCall(t, shardLease)
+	cancel()
+	waitRenewLoopDone(t, done, nil)
+
+	if call.ctx != ctx {
+		t.Fatalf("Renew context = %v, want %v", call.ctx, ctx)
+	}
+	if call.ttl != 45*time.Millisecond {
+		t.Fatalf("Renew ttl = %v, want %v", call.ttl, 45*time.Millisecond)
+	}
+}
+
+func TestRenewShardLeaseLoopStopsOnRenewalError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLease := &recordingRenewLease{err: errBoom}
+	c := newTestLeaseLoopConsumer(time.Millisecond, 30*time.Millisecond)
+
+	err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("renewShardLeaseLoop() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "renew shard lease shard-1: boom" {
+		t.Fatalf("renewShardLeaseLoop() error = %v, want %q", err, "renew shard lease shard-1: boom")
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Renew calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func TestRenewShardLeaseLoopReturnsContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	shardLease := &recordingRenewLease{}
+	c := newTestLeaseLoopConsumer(time.Hour, 30*time.Millisecond)
+
+	err := c.renewShardLeaseLoop(ctx, "shard-1", shardLease)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("renewShardLeaseLoop() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if shardLease.calls != 0 {
+		t.Fatalf("Renew calls = %d, want 0", shardLease.calls)
+	}
+}
+
 func TestReleaseShardLeaseNilLeaseNoop(t *testing.T) {
 	t.Parallel()
 
@@ -567,6 +653,15 @@ func newTestLeaseConsumer(heartbeatTTL time.Duration) *Consumer {
 	}
 }
 
+func newTestLeaseLoopConsumer(heartbeatInterval, heartbeatTTL time.Duration) *Consumer {
+	return &Consumer{
+		tuning: tuningConfig{
+			heartbeatInterval: heartbeatInterval,
+			heartbeatTTL:      heartbeatTTL,
+		},
+	}
+}
+
 func newTestAcquireConsumer(manager *recordingAcquireManager) *Consumer {
 	tuning := defaultTuning()
 	tuning.heartbeatTTL = 30 * time.Millisecond
@@ -578,6 +673,39 @@ func newTestAcquireConsumer(manager *recordingAcquireManager) *Consumer {
 		leaseManager: manager,
 		leaseOwner:   "owner",
 		tuning:       tuning,
+	}
+}
+
+func runRenewShardLeaseLoop(ctx context.Context, c *Consumer, shardID string, shardLease lease.Lease) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		done <- c.renewShardLeaseLoop(ctx, shardID, shardLease)
+	}()
+	return done
+}
+
+func waitRenewCall(t *testing.T, shardLease *recordingRenewLease) renewCall {
+	t.Helper()
+
+	select {
+	case call := <-shardLease.ch:
+		return call
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Renew call")
+		return renewCall{}
+	}
+}
+
+func waitRenewLoopDone(t *testing.T, done <-chan error, want error) {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, want) {
+			t.Fatalf("renewShardLeaseLoop() error = %v, want %v", err, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for renewShardLeaseLoop to return")
 	}
 }
 
