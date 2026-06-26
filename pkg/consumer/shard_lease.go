@@ -47,6 +47,17 @@ func (c *Consumer) acquireShardLeaseWithRetry(ctx context.Context, shardID strin
 	return nil, false, lastErr
 }
 
+func (c *Consumer) releaseShardLease(ctx context.Context, shardID string, shardLease lease.Lease) error {
+	if shardLease == nil {
+		return nil
+	}
+
+	if err := shardLease.Release(ctx); err != nil {
+		return fmt.Errorf("release shard lease %s: %w", shardID, err)
+	}
+	return nil
+}
+
 func sleepWithContext(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return nil

@@ -70,6 +70,22 @@ func (fakeShardLease) Release(context.Context) error {
 	return nil
 }
 
+type recordingReleaseLease struct {
+	ctx   context.Context
+	calls int
+	err   error
+}
+
+func (l *recordingReleaseLease) Renew(context.Context, time.Duration) error {
+	return nil
+}
+
+func (l *recordingReleaseLease) Release(ctx context.Context) error {
+	l.ctx = ctx
+	l.calls++
+	return l.err
+}
+
 func TestAcquireShardLeaseSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -293,6 +309,63 @@ func TestAcquireShardLeaseWithRetryStopsWhenContextCanceledDuringBackoff(t *test
 	}
 	if len(manager.calls) != 1 {
 		t.Fatalf("Acquire calls = %d, want 1", len(manager.calls))
+	}
+}
+
+func TestReleaseShardLeaseNilLeaseNoop(t *testing.T) {
+	t.Parallel()
+
+	err := (&Consumer{}).releaseShardLease(context.Background(), "shard-1", nil)
+	if err != nil {
+		t.Fatalf("releaseShardLease() error = %v, want nil", err)
+	}
+}
+
+func TestReleaseShardLeaseSuccess(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+
+	err := (&Consumer{}).releaseShardLease(context.Background(), "shard-1", shardLease)
+	if err != nil {
+		t.Fatalf("releaseShardLease() error = %v, want nil", err)
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func TestReleaseShardLeaseForwardsContext(t *testing.T) {
+	t.Parallel()
+
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "value")
+	shardLease := &recordingReleaseLease{}
+
+	err := (&Consumer{}).releaseShardLease(ctx, "shard-1", shardLease)
+	if err != nil {
+		t.Fatalf("releaseShardLease() error = %v, want nil", err)
+	}
+	if shardLease.ctx != ctx {
+		t.Fatalf("Release context = %v, want %v", shardLease.ctx, ctx)
+	}
+}
+
+func TestReleaseShardLeaseWrapsError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLease := &recordingReleaseLease{err: errBoom}
+
+	err := (&Consumer{}).releaseShardLease(context.Background(), "shard-1", shardLease)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("releaseShardLease() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "release shard lease shard-1: boom" {
+		t.Fatalf("releaseShardLease() error = %v, want %q", err, "release shard lease shard-1: boom")
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
 	}
 }
 
