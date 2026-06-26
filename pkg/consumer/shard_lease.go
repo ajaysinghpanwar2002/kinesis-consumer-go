@@ -47,6 +47,17 @@ func (c *Consumer) acquireShardLeaseWithRetry(ctx context.Context, shardID strin
 	return nil, false, lastErr
 }
 
+func (c *Consumer) renewShardLease(ctx context.Context, shardID string, shardLease lease.Lease) error {
+	if shardLease == nil {
+		return nil
+	}
+
+	if err := shardLease.Renew(ctx, c.tuning.heartbeatTTL); err != nil {
+		return fmt.Errorf("renew shard lease %s: %w", shardID, err)
+	}
+	return nil
+}
+
 func (c *Consumer) releaseShardLease(ctx context.Context, shardID string, shardLease lease.Lease) error {
 	if shardLease == nil {
 		return nil

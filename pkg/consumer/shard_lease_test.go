@@ -86,6 +86,24 @@ func (l *recordingReleaseLease) Release(ctx context.Context) error {
 	return l.err
 }
 
+type recordingRenewLease struct {
+	ctx   context.Context
+	ttl   time.Duration
+	calls int
+	err   error
+}
+
+func (l *recordingRenewLease) Renew(ctx context.Context, ttl time.Duration) error {
+	l.ctx = ctx
+	l.ttl = ttl
+	l.calls++
+	return l.err
+}
+
+func (l *recordingRenewLease) Release(context.Context) error {
+	return nil
+}
+
 func TestAcquireShardLeaseSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -312,6 +330,69 @@ func TestAcquireShardLeaseWithRetryStopsWhenContextCanceledDuringBackoff(t *test
 	}
 }
 
+func TestRenewShardLeaseNilLeaseNoop(t *testing.T) {
+	t.Parallel()
+
+	err := (&Consumer{}).renewShardLease(context.Background(), "shard-1", nil)
+	if err != nil {
+		t.Fatalf("renewShardLease() error = %v, want nil", err)
+	}
+}
+
+func TestRenewShardLeaseSuccess(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingRenewLease{}
+	c := newTestLeaseConsumer(30 * time.Millisecond)
+
+	err := c.renewShardLease(context.Background(), "shard-1", shardLease)
+	if err != nil {
+		t.Fatalf("renewShardLease() error = %v, want nil", err)
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Renew calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func TestRenewShardLeaseForwardsContextAndTTL(t *testing.T) {
+	t.Parallel()
+
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "value")
+	shardLease := &recordingRenewLease{}
+	c := newTestLeaseConsumer(45 * time.Millisecond)
+
+	err := c.renewShardLease(ctx, "shard-1", shardLease)
+	if err != nil {
+		t.Fatalf("renewShardLease() error = %v, want nil", err)
+	}
+	if shardLease.ctx != ctx {
+		t.Fatalf("Renew context = %v, want %v", shardLease.ctx, ctx)
+	}
+	if shardLease.ttl != 45*time.Millisecond {
+		t.Fatalf("Renew ttl = %v, want %v", shardLease.ttl, 45*time.Millisecond)
+	}
+}
+
+func TestRenewShardLeaseWrapsError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLease := &recordingRenewLease{err: errBoom}
+	c := newTestLeaseConsumer(30 * time.Millisecond)
+
+	err := c.renewShardLease(context.Background(), "shard-1", shardLease)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("renewShardLease() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "renew shard lease shard-1: boom" {
+		t.Fatalf("renewShardLease() error = %v, want %q", err, "renew shard lease shard-1: boom")
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Renew calls = %d, want 1", shardLease.calls)
+	}
+}
+
 func TestReleaseShardLeaseNilLeaseNoop(t *testing.T) {
 	t.Parallel()
 
@@ -366,6 +447,14 @@ func TestReleaseShardLeaseWrapsError(t *testing.T) {
 	}
 	if shardLease.calls != 1 {
 		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func newTestLeaseConsumer(heartbeatTTL time.Duration) *Consumer {
+	return &Consumer{
+		tuning: tuningConfig{
+			heartbeatTTL: heartbeatTTL,
+		},
 	}
 }
 
