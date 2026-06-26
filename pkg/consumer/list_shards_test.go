@@ -14,6 +14,11 @@ type fakeKinesisClient struct {
 	calls []kinesis.ListShardsInput
 	outs  []*kinesis.ListShardsOutput
 	err   error
+
+	getShardIteratorCtx   context.Context
+	getShardIteratorCalls []kinesis.GetShardIteratorInput
+	getShardIteratorOut   *kinesis.GetShardIteratorOutput
+	getShardIteratorErr   error
 }
 
 func (c *fakeKinesisClient) ListShards(ctx context.Context, params *kinesis.ListShardsInput, optFns ...func(*kinesis.Options)) (*kinesis.ListShardsOutput, error) {
@@ -33,6 +38,22 @@ func (c *fakeKinesisClient) ListShards(ctx context.Context, params *kinesis.List
 	out := c.outs[0]
 	c.outs = c.outs[1:]
 	return out, nil
+}
+
+func (c *fakeKinesisClient) GetShardIterator(ctx context.Context, params *kinesis.GetShardIteratorInput, optFns ...func(*kinesis.Options)) (*kinesis.GetShardIteratorOutput, error) {
+	_ = optFns
+
+	c.getShardIteratorCtx = ctx
+	if params != nil {
+		c.getShardIteratorCalls = append(c.getShardIteratorCalls, *params)
+	}
+	if c.getShardIteratorErr != nil {
+		return nil, c.getShardIteratorErr
+	}
+	if c.getShardIteratorOut == nil {
+		return &kinesis.GetShardIteratorOutput{}, nil
+	}
+	return c.getShardIteratorOut, nil
 }
 
 func TestListShardsPaginationSkipsNilShardIDs(t *testing.T) {
