@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +21,36 @@ type Consumer struct {
 	leaseManager lease.Manager
 	leaseOwner   string
 	tuning       tuningConfig
+}
+
+// Start begins the consumer lifecycle and blocks until the context is done.
+func (c *Consumer) Start(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		c.workerHeartbeatLoop(runCtx)
+	}()
+	defer func() {
+		cancel()
+		<-heartbeatDone
+	}()
+
+	shards, err := c.listShards(runCtx)
+	if err != nil {
+		return err
+	}
+	if len(shards) == 0 {
+		return fmt.Errorf("no shards found for stream %s", c.streamKey())
+	}
+
+	<-runCtx.Done()
+	if errors.Is(runCtx.Err(), context.Canceled) {
+		return nil
+	}
+	return runCtx.Err()
 }
 
 // New validates consumer dependencies and returns a configured Consumer.
