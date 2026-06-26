@@ -15,6 +15,8 @@ type fakeKinesisClient struct {
 	outs  []*kinesis.ListShardsOutput
 	err   error
 
+	callOrder []string
+
 	getShardIteratorCtx   context.Context
 	getShardIteratorCalls []kinesis.GetShardIteratorInput
 	getShardIteratorOut   *kinesis.GetShardIteratorOutput
@@ -48,6 +50,7 @@ func (c *fakeKinesisClient) ListShards(ctx context.Context, params *kinesis.List
 func (c *fakeKinesisClient) GetShardIterator(ctx context.Context, params *kinesis.GetShardIteratorInput, optFns ...func(*kinesis.Options)) (*kinesis.GetShardIteratorOutput, error) {
 	_ = optFns
 
+	c.callOrder = append(c.callOrder, "GetShardIterator")
 	c.getShardIteratorCtx = ctx
 	if params != nil {
 		c.getShardIteratorCalls = append(c.getShardIteratorCalls, *params)
@@ -64,6 +67,7 @@ func (c *fakeKinesisClient) GetShardIterator(ctx context.Context, params *kinesi
 func (c *fakeKinesisClient) GetRecords(ctx context.Context, params *kinesis.GetRecordsInput, optFns ...func(*kinesis.Options)) (*kinesis.GetRecordsOutput, error) {
 	_ = optFns
 
+	c.callOrder = append(c.callOrder, "GetRecords")
 	c.getRecordsCtx = ctx
 	if params != nil {
 		c.getRecordsCalls = append(c.getRecordsCalls, *params)
