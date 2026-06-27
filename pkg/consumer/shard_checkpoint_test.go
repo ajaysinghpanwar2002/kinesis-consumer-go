@@ -144,3 +144,120 @@ func TestSaveShardCheckpointWrapsStoreError(t *testing.T) {
 		t.Fatalf("saveShardCheckpoint() error = %v, want %q", err, "save shard checkpoint shard-1 sequence-1: boom")
 	}
 }
+
+func TestSaveShardCheckpointIfDueSkipsBelowThreshold(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 3},
+	}
+
+	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-1", 2)
+	if err != nil {
+		t.Fatalf("saveShardCheckpointIfDue() error = %v, want nil", err)
+	}
+	if count != 2 {
+		t.Fatalf("saveShardCheckpointIfDue() count = %d, want 2", count)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
+
+func TestSaveShardCheckpointIfDueSavesAtThreshold(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 3},
+	}
+
+	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-1", 3)
+	if err != nil {
+		t.Fatalf("saveShardCheckpointIfDue() error = %v, want nil", err)
+	}
+	if count != 0 {
+		t.Fatalf("saveShardCheckpointIfDue() count = %d, want 0", count)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	if store.saveCalls[0].sequenceNumber != "sequence-1" {
+		t.Fatalf("sequenceNumber = %q, want %q", store.saveCalls[0].sequenceNumber, "sequence-1")
+	}
+}
+
+func TestSaveShardCheckpointIfDueSavesAboveThreshold(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 3},
+	}
+
+	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-5", 5)
+	if err != nil {
+		t.Fatalf("saveShardCheckpointIfDue() error = %v, want nil", err)
+	}
+	if count != 2 {
+		t.Fatalf("saveShardCheckpointIfDue() count = %d, want 2", count)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	if store.saveCalls[0].sequenceNumber != "sequence-5" {
+		t.Fatalf("sequenceNumber = %q, want %q", store.saveCalls[0].sequenceNumber, "sequence-5")
+	}
+}
+
+func TestSaveShardCheckpointIfDueTreatsEmptySequenceAsNoop(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 3},
+	}
+
+	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "", 3)
+	if err != nil {
+		t.Fatalf("saveShardCheckpointIfDue() error = %v, want nil", err)
+	}
+	if count != 3 {
+		t.Fatalf("saveShardCheckpointIfDue() count = %d, want 3", count)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
+
+func TestSaveShardCheckpointIfDueWrapsSaveError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	store := &fakeCheckpointSaveStore{saveErr: errBoom}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 3},
+	}
+
+	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-1", 3)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("saveShardCheckpointIfDue() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "save due shard checkpoint shard-1: save shard checkpoint shard-1 sequence-1: boom" {
+		t.Fatalf("saveShardCheckpointIfDue() error = %v, want %q", err, "save due shard checkpoint shard-1: save shard checkpoint shard-1 sequence-1: boom")
+	}
+	if count != 3 {
+		t.Fatalf("saveShardCheckpointIfDue() count = %d, want 3", count)
+	}
+}
