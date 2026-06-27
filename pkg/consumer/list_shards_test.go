@@ -27,6 +27,7 @@ type fakeKinesisClient struct {
 	getRecordsOut   *kinesis.GetRecordsOutput
 	getRecordsOuts  []*kinesis.GetRecordsOutput
 	getRecordsErr   error
+	afterGetRecords func()
 }
 
 func (c *fakeKinesisClient) ListShards(ctx context.Context, params *kinesis.ListShardsInput, optFns ...func(*kinesis.Options)) (*kinesis.ListShardsOutput, error) {
@@ -79,10 +80,19 @@ func (c *fakeKinesisClient) GetRecords(ctx context.Context, params *kinesis.GetR
 	if len(c.getRecordsOuts) > 0 {
 		out := c.getRecordsOuts[0]
 		c.getRecordsOuts = c.getRecordsOuts[1:]
+		if c.afterGetRecords != nil {
+			c.afterGetRecords()
+		}
 		return out, nil
 	}
 	if c.getRecordsOut == nil {
+		if c.afterGetRecords != nil {
+			c.afterGetRecords()
+		}
 		return &kinesis.GetRecordsOutput{}, nil
+	}
+	if c.afterGetRecords != nil {
+		c.afterGetRecords()
 	}
 	return c.getRecordsOut, nil
 }
