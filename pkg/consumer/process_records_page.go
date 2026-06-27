@@ -20,3 +20,20 @@ func (c *Consumer) processRecordsPage(ctx context.Context, shardID string, out *
 	lastRecord := out.Records[len(out.Records)-1]
 	return aws.ToString(lastRecord.SequenceNumber), len(out.Records), nil
 }
+
+func (c *Consumer) processRecordsPageWithCheckpoint(ctx context.Context, shardID string, out *kinesis.GetRecordsOutput, processedSinceCheckpoint int) (string, int, error) {
+	lastSeq, processed, err := c.processRecordsPage(ctx, shardID, out)
+	if err != nil {
+		return "", processedSinceCheckpoint, fmt.Errorf("process records page with checkpoint %s: %w", shardID, err)
+	}
+	if processed == 0 {
+		return "", processedSinceCheckpoint, nil
+	}
+
+	accumulated := processedSinceCheckpoint + processed
+	count, err := c.saveShardCheckpointIfDue(ctx, shardID, lastSeq, accumulated)
+	if err != nil {
+		return lastSeq, count, fmt.Errorf("process records page checkpoint %s: %w", shardID, err)
+	}
+	return lastSeq, count, nil
+}
