@@ -359,3 +359,210 @@ func TestProcessRecordsPageWithCheckpointWrapsCheckpointError(t *testing.T) {
 		t.Fatalf("count = %d, want 3", count)
 	}
 }
+
+func TestProcessRecordsPagesWithCheckpointTreatsNilAndEmptyPageListsAsNoop(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 3},
+		handler: func(ctx context.Context, record Record) error {
+			calls++
+			return nil
+		},
+	}
+
+	for _, pages := range [][]*kinesis.GetRecordsOutput{nil, {}} {
+		lastSeq, count, err := c.processRecordsPagesWithCheckpoint(context.Background(), "shard-1", pages, 2)
+		if err != nil {
+			t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want nil", err)
+		}
+		if lastSeq != "" {
+			t.Fatalf("lastSeq = %q, want empty", lastSeq)
+		}
+		if count != 2 {
+			t.Fatalf("count = %d, want 2", count)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("handler calls = %d, want 0", calls)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
+
+func TestProcessRecordsPagesWithCheckpointProcessesPagesInOrder(t *testing.T) {
+	t.Parallel()
+
+	var handled []string
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			handled = append(handled, aws.ToString(record.SequenceNumber))
+			return nil
+		},
+	}
+	pages := []*kinesis.GetRecordsOutput{
+		{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
+		{Records: []types.Record{
+			{SequenceNumber: aws.String("sequence-2")},
+			{SequenceNumber: aws.String("sequence-3")},
+		}},
+	}
+
+	lastSeq, count, err := c.processRecordsPagesWithCheckpoint(context.Background(), "shard-1", pages, 1)
+	if err != nil {
+		t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-3" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-3")
+	}
+	if count != 4 {
+		t.Fatalf("count = %d, want 4", count)
+	}
+	wantHandled := []string{"sequence-1", "sequence-2", "sequence-3"}
+	if len(handled) != len(wantHandled) {
+		t.Fatalf("handled records = %v, want %v", handled, wantHandled)
+	}
+	for i := range wantHandled {
+		if handled[i] != wantHandled[i] {
+			t.Fatalf("handled records = %v, want %v", handled, wantHandled)
+		}
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
+
+func TestProcessRecordsPagesWithCheckpointCarriesCountAcrossPagesAndSaves(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 3},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+	pages := []*kinesis.GetRecordsOutput{
+		{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
+		{Records: []types.Record{{SequenceNumber: aws.String("sequence-2")}}},
+	}
+
+	lastSeq, count, err := c.processRecordsPagesWithCheckpoint(context.Background(), "shard-1", pages, 1)
+	if err != nil {
+		t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-2" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-2")
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	if store.saveCalls[0].sequenceNumber != "sequence-2" {
+		t.Fatalf("sequenceNumber = %q, want %q", store.saveCalls[0].sequenceNumber, "sequence-2")
+	}
+}
+
+func TestProcessRecordsPagesWithCheckpointPreservesLastSequenceAcrossEmptyPages(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 5},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+	pages := []*kinesis.GetRecordsOutput{
+		{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
+		{},
+		nil,
+	}
+
+	lastSeq, count, err := c.processRecordsPagesWithCheckpoint(context.Background(), "shard-1", pages, 1)
+	if err != nil {
+		t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
+
+func TestProcessRecordsPagesWithCheckpointStopsOnFirstPageError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	var handled []string
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			seq := aws.ToString(record.SequenceNumber)
+			if seq == "sequence-2" {
+				return errBoom
+			}
+			handled = append(handled, seq)
+			return nil
+		},
+	}
+	pages := []*kinesis.GetRecordsOutput{
+		{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
+		{Records: []types.Record{{SequenceNumber: aws.String("sequence-2")}}},
+		{Records: []types.Record{{SequenceNumber: aws.String("sequence-3")}}},
+	}
+
+	lastSeq, count, err := c.processRecordsPagesWithCheckpoint(context.Background(), "shard-1", pages, 1)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: boom" {
+		t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want %q", err, "process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: boom")
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+	wantHandled := []string{"sequence-1"}
+	if len(handled) != len(wantHandled) {
+		t.Fatalf("handled records = %v, want %v", handled, wantHandled)
+	}
+	for i := range wantHandled {
+		if handled[i] != wantHandled[i] {
+			t.Fatalf("handled records = %v, want %v", handled, wantHandled)
+		}
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
