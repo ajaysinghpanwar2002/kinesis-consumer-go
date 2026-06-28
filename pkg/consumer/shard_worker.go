@@ -25,9 +25,24 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 		}
 	}()
 
+	processErrCh := make(chan error, 1)
+	processDone := make(chan struct{})
+	go func() {
+		defer close(processDone)
+		if err := c.runShardRecordsLoop(workerCtx, shardID); err != nil {
+			select {
+			case processErrCh <- err:
+			default:
+			}
+		}
+		cancel()
+	}()
+
 	var err error
 	select {
 	case err = <-renewErrCh:
+		cancel()
+	case err = <-processErrCh:
 		cancel()
 	case <-workerCtx.Done():
 		if !errors.Is(workerCtx.Err(), context.Canceled) {
@@ -38,10 +53,18 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 			err = renewErr
 		default:
 		}
+		select {
+		case processErr := <-processErrCh:
+			if err == nil {
+				err = processErr
+			}
+		default:
+		}
 	}
 
 	stopRenew()
 	<-renewDone
+	<-processDone
 
 	if err == nil {
 		select {
@@ -49,9 +72,25 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 		default:
 		}
 	}
+	if err == nil {
+		select {
+		case err = <-processErrCh:
+		default:
+		}
+	}
 
 	if releaseErr := c.releaseShardLease(context.Background(), shardID, shardLease); releaseErr != nil && err == nil {
 		err = releaseErr
 	}
+	return err
+}
+
+func (c *Consumer) runShardRecordsLoop(ctx context.Context, shardID string) error {
+	process := c.processShardRecordsLoop
+	if c.processShardRecordsLoopFn != nil {
+		process = c.processShardRecordsLoopFn
+	}
+
+	_, _, err := process(ctx, shardID)
 	return err
 }

@@ -22,6 +22,8 @@ type Consumer struct {
 	leaseManager lease.Manager
 	leaseOwner   string
 	tuning       tuningConfig
+
+	processShardRecordsLoopFn func(context.Context, string) (string, int, error)
 }
 
 // Start begins the consumer lifecycle and blocks until the context is done.

@@ -394,6 +394,11 @@ func newTestStartConsumerWithLeaseManager(client *fakeKinesisClient, manager lea
 		leaseManager: manager,
 		leaseOwner:   "owner",
 		tuning:       tuning,
+		processShardRecordsLoopFn: func(ctx context.Context, shardID string) (string, int, error) {
+			_ = shardID
+			<-ctx.Done()
+			return "", 0, nil
+		},
 	}
 }
 

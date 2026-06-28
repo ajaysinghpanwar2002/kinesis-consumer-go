@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,12 +13,21 @@ import (
 func TestRunShardWorkerReleasesLeaseAfterContextCancellation(t *testing.T) {
 	t.Parallel()
 
+	processStarted := make(chan string, 1)
 	shardLease := &recordingReleaseLease{}
 	c := newTestShardWorkerConsumer(time.Hour, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		processStarted <- shardID
+		<-ctx.Done()
+		return "", 0, nil
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runShardWorker(ctx, c, "shard-1", shardLease)
 
+	if got := <-processStarted; got != "shard-1" {
+		t.Fatalf("processed shard = %q, want shard-1", got)
+	}
 	cancel()
 	waitShardWorkerDone(t, done, nil)
 
@@ -48,19 +58,65 @@ func TestRunShardWorkerStopsRenewalBeforeRelease(t *testing.T) {
 	waitEvent(t, shardLease.events, "release")
 }
 
+func TestRunShardWorkerStopsRenewalAndReleasesLeaseAfterProcessingError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	processErr := fmt.Errorf("process shard records loop shard-1: %w", errBoom)
+	processReturn := make(chan struct{})
+	shardLease := &orderedRenewReleaseLease{
+		events: make(chan string, 3),
+	}
+	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = ctx
+		_ = shardID
+		<-processReturn
+		return "", 0, processErr
+	}
+
+	done := runShardWorker(context.Background(), c, "shard-1", shardLease)
+
+	waitEvent(t, shardLease.events, "renew-start")
+	close(processReturn)
+	err := waitShardWorkerDone(t, done, errBoom)
+	if err.Error() != "process shard records loop shard-1: boom" {
+		t.Fatalf("runShardWorker() error = %v, want %q", err, "process shard records loop shard-1: boom")
+	}
+
+	waitEvent(t, shardLease.events, "renew-done")
+	waitEvent(t, shardLease.events, "release")
+}
+
 func TestRunShardWorkerReturnsRenewalError(t *testing.T) {
 	t.Parallel()
 
 	errBoom := errors.New("boom")
+	processStarted := make(chan struct{})
+	processCanceled := make(chan struct{})
 	shardLease := &recordingRenewLease{err: errBoom}
 	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		close(processStarted)
+		<-ctx.Done()
+		close(processCanceled)
+		return "", 0, nil
+	}
 
-	err := c.runShardWorker(context.Background(), "shard-1", shardLease)
+	done := runShardWorker(context.Background(), c, "shard-1", shardLease)
+	<-processStarted
+	err := waitShardWorkerDone(t, done, errBoom)
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("runShardWorker() error = %v, want wraps %v", err, errBoom)
 	}
 	if err == nil || err.Error() != "renew shard lease shard-1: boom" {
 		t.Fatalf("runShardWorker() error = %v, want %q", err, "renew shard lease shard-1: boom")
+	}
+	select {
+	case <-processCanceled:
+	default:
+		t.Fatal("processing was not canceled after renewal error")
 	}
 }
 
@@ -84,6 +140,11 @@ func newTestShardWorkerConsumer(heartbeatInterval, heartbeatTTL time.Duration) *
 			heartbeatInterval: heartbeatInterval,
 			heartbeatTTL:      heartbeatTTL,
 		},
+		processShardRecordsLoopFn: func(ctx context.Context, shardID string) (string, int, error) {
+			_ = shardID
+			<-ctx.Done()
+			return "", 0, nil
+		},
 	}
 }
 
@@ -95,7 +156,7 @@ func runShardWorker(ctx context.Context, c *Consumer, shardID string, shardLease
 	return done
 }
 
-func waitShardWorkerDone(t *testing.T, done <-chan error, want error) {
+func waitShardWorkerDone(t *testing.T, done <-chan error, want error) error {
 	t.Helper()
 
 	select {
@@ -103,7 +164,9 @@ func waitShardWorkerDone(t *testing.T, done <-chan error, want error) {
 		if !errors.Is(err, want) {
 			t.Fatalf("runShardWorker() error = %v, want %v", err, want)
 		}
+		return err
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for runShardWorker to return")
 	}
+	return nil
 }
