@@ -61,32 +61,23 @@ func TestProcessShardRecordsLoopCarriesCheckpointCountBetweenPasses(t *testing.T
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	getRecordsCalls := 0
-	client := &fakeKinesisClient{
-		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
-			ShardIterator: aws.String("iterator-1"),
-		},
-		getRecordsOuts: []*kinesis.GetRecordsOutput{
-			{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
-			{Records: []types.Record{{SequenceNumber: aws.String("sequence-2")}}},
-		},
-		afterGetRecords: func() {
-			getRecordsCalls++
-			if getRecordsCalls == 2 {
-				cancel()
-			}
-		},
-	}
-	store := &fakeCheckpointSaveStore{}
+	passCalls := 0
 	c := &Consumer{
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
-		handler: func(ctx context.Context, record Record) error {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
 			_ = ctx
-			_ = record
-			return nil
+			_ = shardID
+			passCalls++
+			if passCalls == 1 {
+				if processedSinceCheckpoint != 0 {
+					t.Fatalf("first processedSinceCheckpoint = %d, want 0", processedSinceCheckpoint)
+				}
+				return "sequence-1", 1, nil
+			}
+			if processedSinceCheckpoint != 1 {
+				t.Fatalf("second processedSinceCheckpoint = %d, want 1", processedSinceCheckpoint)
+			}
+			cancel()
+			return "sequence-2", 2, nil
 		},
 	}
 
@@ -100,8 +91,8 @@ func TestProcessShardRecordsLoopCarriesCheckpointCountBetweenPasses(t *testing.T
 	if count != 2 {
 		t.Fatalf("count = %d, want 2", count)
 	}
-	if len(store.saveCalls) != 0 {
-		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	if passCalls != 2 {
+		t.Fatalf("pass calls = %d, want 2", passCalls)
 	}
 }
 
