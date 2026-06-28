@@ -23,6 +23,14 @@ func (c *Consumer) saveShardCheckpoint(ctx context.Context, shardID, sequenceNum
 	return nil
 }
 
+func (c *Consumer) saveShardCompletionCheckpoint(ctx context.Context, shardID, sequenceNumber string) error {
+	checkpoint := shardCompletionValue(sequenceNumber)
+	if err := c.store.Save(ctx, c.streamKey(), shardID, checkpoint); err != nil {
+		return fmt.Errorf("save shard completion checkpoint %s %s: %w", shardID, checkpoint, err)
+	}
+	return nil
+}
+
 func (c *Consumer) saveShardCheckpointIfDue(ctx context.Context, shardID, sequenceNumber string, processedSinceCheckpoint int) (int, error) {
 	if processedSinceCheckpoint < c.tuning.checkpointEvery {
 		return processedSinceCheckpoint, nil

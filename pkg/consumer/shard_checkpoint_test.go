@@ -277,6 +277,115 @@ func TestSaveShardCheckpointWrapsStoreError(t *testing.T) {
 	}
 }
 
+func TestSaveShardCompletionCheckpointSavesStreamShardAndMarker(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	if err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
+		t.Fatalf("saveShardCompletionCheckpoint() error = %v, want nil", err)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	call := store.saveCalls[0]
+	if call.streamName != "stream" {
+		t.Fatalf("streamName = %q, want %q", call.streamName, "stream")
+	}
+	if call.shardID != "shard-1" {
+		t.Fatalf("shardID = %q, want %q", call.shardID, "shard-1")
+	}
+	if call.sequenceNumber != "SHARD_END:sequence-1" {
+		t.Fatalf("sequenceNumber = %q, want %q", call.sequenceNumber, "SHARD_END:sequence-1")
+	}
+}
+
+func TestSaveShardCompletionCheckpointSavesEmptySequenceMarker(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	if err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", ""); err != nil {
+		t.Fatalf("saveShardCompletionCheckpoint() error = %v, want nil", err)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	if store.saveCalls[0].sequenceNumber != "SHARD_END" {
+		t.Fatalf("sequenceNumber = %q, want %q", store.saveCalls[0].sequenceNumber, "SHARD_END")
+	}
+}
+
+func TestSaveShardCompletionCheckpointUsesStreamARN(t *testing.T) {
+	t.Parallel()
+
+	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:   Config{StreamARN: streamARN},
+		store: store,
+	}
+
+	if err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
+		t.Fatalf("saveShardCompletionCheckpoint() error = %v, want nil", err)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	if store.saveCalls[0].streamName != streamARN {
+		t.Fatalf("streamName = %q, want %q", store.saveCalls[0].streamName, streamARN)
+	}
+}
+
+func TestSaveShardCompletionCheckpointForwardsContext(t *testing.T) {
+	t.Parallel()
+
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "value")
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	if err := c.saveShardCompletionCheckpoint(ctx, "shard-1", "sequence-1"); err != nil {
+		t.Fatalf("saveShardCompletionCheckpoint() error = %v, want nil", err)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	if store.saveCalls[0].ctx != ctx {
+		t.Fatalf("Save context = %v, want %v", store.saveCalls[0].ctx, ctx)
+	}
+}
+
+func TestSaveShardCompletionCheckpointWrapsStoreError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	store := &fakeCheckpointSaveStore{saveErr: errBoom}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", "sequence-1")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("saveShardCompletionCheckpoint() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "save shard completion checkpoint shard-1 SHARD_END:sequence-1: boom" {
+		t.Fatalf("saveShardCompletionCheckpoint() error = %v, want %q", err, "save shard completion checkpoint shard-1 SHARD_END:sequence-1: boom")
+	}
+}
+
 func TestSaveShardCheckpointIfDueSkipsBelowThreshold(t *testing.T) {
 	t.Parallel()
 
