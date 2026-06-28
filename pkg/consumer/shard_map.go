@@ -1,6 +1,10 @@
 package consumer
 
-import "github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+)
 
 func mergeKnownShards(dst map[string]types.Shard, shards []types.Shard) {
 	for _, shard := range shards {
@@ -10,4 +14,13 @@ func mergeKnownShards(dst map[string]types.Shard, shards []types.Shard) {
 		}
 		dst[shardID] = shard
 	}
+}
+
+func (c *Consumer) refreshKnownShards(ctx context.Context, known map[string]types.Shard) error {
+	shards, err := c.listShards(ctx)
+	if err != nil {
+		return err
+	}
+	mergeKnownShards(known, shards)
+	return nil
 }
