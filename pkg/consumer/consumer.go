@@ -67,19 +67,23 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}
 	workerErrCh := make(chan error, len(shardLeases))
 	workerDone := make(chan struct{})
+	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
 	for shardID, shardLease := range shardLeases {
+		workerCtx, stopWorker := context.WithCancel(runCtx)
+		workers.add(shardID, stopWorker)
 		workerWG.Add(1)
-		go func(shardID string, shardLease lease.Lease) {
+		go func(ctx context.Context, shardID string, shardLease lease.Lease) {
 			defer workerWG.Done()
-			if err := c.runShardWorker(runCtx, shardID, shardLease); err != nil {
+			defer workers.done(shardID)
+			if err := c.runShardWorker(ctx, shardID, shardLease); err != nil {
 				select {
 				case workerErrCh <- err:
 				default:
 				}
 				cancel()
 			}
-		}(shardID, shardLease)
+		}(workerCtx, shardID, shardLease)
 	}
 	go func() {
 		defer close(workerDone)
@@ -89,9 +93,11 @@ func (c *Consumer) Start(ctx context.Context) error {
 	select {
 	case err := <-workerErrCh:
 		cancel()
+		workers.stopAll()
 		<-workerDone
 		return err
 	case <-runCtx.Done():
+		workers.stopAll()
 	}
 	<-workerDone
 

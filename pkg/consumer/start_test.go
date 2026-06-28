@@ -346,6 +346,46 @@ func TestStartReleasesAcquiredLeasesOnContextCancellation(t *testing.T) {
 	}
 }
 
+func TestStartStopsAllInitialWorkersOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	shardLeaseA := &recordingReleaseLease{}
+	shardLeaseB := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 2),
+		results: []acquireResult{
+			{lease: shardLeaseA, acquired: true},
+			{lease: shardLeaseB, acquired: true},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-a")},
+					{ShardId: aws.String("shard-b")},
+				}},
+			},
+		},
+		manager,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	_ = waitAcquireCall(t, manager)
+	cancel()
+	waitStartDone(t, done, nil)
+
+	if shardLeaseA.calls != 1 {
+		t.Fatalf("shard-a Release calls = %d, want 1", shardLeaseA.calls)
+	}
+	if shardLeaseB.calls != 1 {
+		t.Fatalf("shard-b Release calls = %d, want 1", shardLeaseB.calls)
+	}
+}
+
 func TestStartDoesNotReleaseNotAcquiredShards(t *testing.T) {
 	t.Parallel()
 
