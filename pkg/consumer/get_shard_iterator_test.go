@@ -166,6 +166,31 @@ func TestGetShardIteratorUsesConfiguredStartPositionWithoutCheckpoint(t *testing
 	}
 }
 
+func TestGetShardIteratorReturnsCompletedForShardEndCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  &fakeCheckpointSaveStore{checkpoint: "SHARD_END:sequence-1"},
+	}
+
+	got, err := c.getShardIterator(context.Background(), "shard-1")
+	if !errors.Is(err, errShardCompleted) {
+		t.Fatalf("getShardIterator() error = %v, want %v", err, errShardCompleted)
+	}
+	if err == nil || err.Error() != "get shard iterator shard-1: shard already completed" {
+		t.Fatalf("getShardIterator() error = %v, want %q", err, "get shard iterator shard-1: shard already completed")
+	}
+	if got != "" {
+		t.Fatalf("getShardIterator() = %q, want empty", got)
+	}
+	if len(client.getShardIteratorCalls) != 0 {
+		t.Fatalf("GetShardIterator calls = %d, want 0", len(client.getShardIteratorCalls))
+	}
+}
+
 func TestGetShardIteratorUsesCheckpointSequence(t *testing.T) {
 	t.Parallel()
 

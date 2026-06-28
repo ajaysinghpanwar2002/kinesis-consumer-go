@@ -52,6 +52,9 @@ func (c *Consumer) getShardIterator(ctx context.Context, shardID string) (string
 	if err != nil {
 		return "", fmt.Errorf("get shard iterator checkpoint %s: %w", shardID, err)
 	}
+	if isShardCompletedCheckpoint(seq) {
+		return "", fmt.Errorf("get shard iterator %s: %w", shardID, errShardCompleted)
+	}
 
 	input := &kinesis.GetShardIteratorInput{
 		ShardId:           aws.String(shardID),
