@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
@@ -83,16 +84,103 @@ func TestGetShardIteratorUsesStreamARN(t *testing.T) {
 	}
 }
 
+func TestGetShardIteratorUsesConfiguredStartPositionWithoutCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	timestamp := time.Unix(1700000000, 0).UTC()
+	tests := []struct {
+		name          string
+		cfg           Config
+		wantType      types.ShardIteratorType
+		wantTimestamp *time.Time
+	}{
+		{
+			name: "default latest",
+			cfg: Config{
+				StreamName: "stream",
+			},
+			wantType: types.ShardIteratorTypeLatest,
+		},
+		{
+			name: "explicit latest",
+			cfg: Config{
+				StreamName:    "stream",
+				StartPosition: StartLatest,
+			},
+			wantType: types.ShardIteratorTypeLatest,
+		},
+		{
+			name: "trim horizon",
+			cfg: Config{
+				StreamName:    "stream",
+				StartPosition: StartTrimHorizon,
+			},
+			wantType: types.ShardIteratorTypeTrimHorizon,
+		},
+		{
+			name: "at timestamp",
+			cfg: Config{
+				StreamName:     "stream",
+				StartPosition:  StartAtTimestamp,
+				StartTimestamp: &timestamp,
+			},
+			wantType:      types.ShardIteratorTypeAtTimestamp,
+			wantTimestamp: &timestamp,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &fakeKinesisClient{}
+			c := &Consumer{
+				cfg:    tt.cfg,
+				client: client,
+				store:  &fakeCheckpointSaveStore{},
+			}
+
+			if _, err := c.getShardIterator(context.Background(), "shard-1"); err != nil {
+				t.Fatalf("getShardIterator() error = %v, want nil", err)
+			}
+			if len(client.getShardIteratorCalls) != 1 {
+				t.Fatalf("GetShardIterator calls = %d, want 1", len(client.getShardIteratorCalls))
+			}
+			call := client.getShardIteratorCalls[0]
+			if call.ShardIteratorType != tt.wantType {
+				t.Fatalf("ShardIteratorType = %v, want %v", call.ShardIteratorType, tt.wantType)
+			}
+			if call.StartingSequenceNumber != nil {
+				t.Fatalf("StartingSequenceNumber = %q, want nil", aws.ToString(call.StartingSequenceNumber))
+			}
+			if tt.wantTimestamp == nil {
+				if call.Timestamp != nil {
+					t.Fatalf("Timestamp = %v, want nil", *call.Timestamp)
+				}
+				return
+			}
+			if call.Timestamp == nil || !call.Timestamp.Equal(*tt.wantTimestamp) {
+				t.Fatalf("Timestamp = %v, want %v", call.Timestamp, tt.wantTimestamp)
+			}
+		})
+	}
+}
+
 func TestGetShardIteratorUsesCheckpointSequence(t *testing.T) {
 	t.Parallel()
 
+	timestamp := time.Unix(1700000000, 0).UTC()
 	client := &fakeKinesisClient{
 		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
 			ShardIterator: aws.String("iterator-1"),
 		},
 	}
 	c := &Consumer{
-		cfg:    Config{StreamName: "stream"},
+		cfg: Config{
+			StreamName:     "stream",
+			StartPosition:  StartAtTimestamp,
+			StartTimestamp: &timestamp,
+		},
 		client: client,
 		store:  &fakeCheckpointSaveStore{checkpoint: "sequence-1"},
 	}
@@ -113,6 +201,9 @@ func TestGetShardIteratorUsesCheckpointSequence(t *testing.T) {
 	}
 	if aws.ToString(call.StartingSequenceNumber) != "sequence-1" {
 		t.Fatalf("StartingSequenceNumber = %q, want %q", aws.ToString(call.StartingSequenceNumber), "sequence-1")
+	}
+	if call.Timestamp != nil {
+		t.Fatalf("Timestamp = %v, want nil", *call.Timestamp)
 	}
 	if aws.ToString(call.StreamName) != "stream" {
 		t.Fatalf("StreamName = %q, want %q", aws.ToString(call.StreamName), "stream")

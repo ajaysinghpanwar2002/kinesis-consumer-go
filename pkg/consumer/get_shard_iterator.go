@@ -60,6 +60,16 @@ func (c *Consumer) getShardIterator(ctx context.Context, shardID string) (string
 	if seq != "" {
 		input.ShardIteratorType = types.ShardIteratorTypeAfterSequenceNumber
 		input.StartingSequenceNumber = aws.String(seq)
+	} else {
+		switch c.cfg.StartPosition {
+		case StartTrimHorizon:
+			input.ShardIteratorType = types.ShardIteratorTypeTrimHorizon
+		case StartAtTimestamp:
+			input.ShardIteratorType = types.ShardIteratorTypeAtTimestamp
+			input.Timestamp = c.cfg.StartTimestamp
+		default:
+			input.ShardIteratorType = types.ShardIteratorTypeLatest
+		}
 	}
 	if c.cfg.StreamARN != "" {
 		input.StreamARN = aws.String(c.cfg.StreamARN)
