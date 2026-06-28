@@ -2,7 +2,9 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
@@ -101,4 +103,40 @@ func (c *Consumer) refreshAndStartReadyShardWorkers(
 		workerErrCh,
 		stopRun,
 	)
+}
+
+func (c *Consumer) refreshAndStartReadyShardWorkersLoop(
+	ctx context.Context,
+	interval time.Duration,
+	knownShards map[string]types.Shard,
+	completionState *shardCompletionState,
+	workers *shardWorkerSet,
+	workerWG *sync.WaitGroup,
+	workerErrCh chan<- error,
+	stopRun context.CancelFunc,
+) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return nil
+			}
+			return ctx.Err()
+		case <-ticker.C:
+			if err := c.refreshAndStartReadyShardWorkers(
+				ctx,
+				knownShards,
+				completionState,
+				workers,
+				workerWG,
+				workerErrCh,
+				stopRun,
+			); err != nil {
+				return err
+			}
+		}
+	}
 }
