@@ -70,20 +70,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
 	for shardID, shardLease := range shardLeases {
-		workerCtx, stopWorker := context.WithCancel(runCtx)
-		workers.add(shardID, stopWorker)
-		workerWG.Add(1)
-		go func(ctx context.Context, shardID string, shardLease lease.Lease) {
-			defer workerWG.Done()
-			defer workers.done(shardID)
-			if err := c.runShardWorker(ctx, shardID, shardLease); err != nil {
-				select {
-				case workerErrCh <- err:
-				default:
-				}
-				cancel()
-			}
-		}(workerCtx, shardID, shardLease)
+		c.startRegisteredShardWorker(runCtx, shardID, shardLease, workers, &workerWG, workerErrCh, cancel)
 	}
 	go func() {
 		defer close(workerDone)
