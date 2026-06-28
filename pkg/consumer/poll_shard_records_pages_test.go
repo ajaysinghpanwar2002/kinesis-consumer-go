@@ -34,6 +34,7 @@ func TestPollShardRecordsPagesAdvancesToNextIterator(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	pages, err := c.pollShardRecordsPages(context.Background(), "shard-1")
@@ -76,6 +77,7 @@ func TestPollShardRecordsPagesContinuesAfterEmptyPageWithNextIterator(t *testing
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	pages, err := c.pollShardRecordsPages(context.Background(), "shard-1")
@@ -107,6 +109,7 @@ func TestPollShardRecordsPagesStopsOnIteratorExhaustion(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	pages, err := c.pollShardRecordsPages(context.Background(), "shard-1")
@@ -136,6 +139,7 @@ func TestPollShardRecordsPagesStopsOnContextCancellation(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 	cancel()
 
@@ -164,6 +168,7 @@ func TestPollShardRecordsPagesWrapsRecordsError(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	_, err := c.pollShardRecordsPages(context.Background(), "shard-1")

@@ -133,6 +133,7 @@ func TestProcessShardRecordsPassWrapsPollingError(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 2)

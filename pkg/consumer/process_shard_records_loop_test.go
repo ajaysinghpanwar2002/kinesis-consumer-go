@@ -157,6 +157,7 @@ func TestProcessShardRecordsLoopWrapsPassError(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	lastSeq, count, err := c.processShardRecordsLoop(context.Background(), "shard-1")

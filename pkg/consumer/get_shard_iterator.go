@@ -48,9 +48,18 @@ type GetShardIteratorOutput struct {
 */
 
 func (c *Consumer) getShardIterator(ctx context.Context, shardID string) (string, error) {
+	seq, err := c.readShardCheckpoint(ctx, shardID)
+	if err != nil {
+		return "", fmt.Errorf("get shard iterator checkpoint %s: %w", shardID, err)
+	}
+
 	input := &kinesis.GetShardIteratorInput{
 		ShardId:           aws.String(shardID),
 		ShardIteratorType: types.ShardIteratorTypeLatest,
+	}
+	if seq != "" {
+		input.ShardIteratorType = types.ShardIteratorTypeAfterSequenceNumber
+		input.StartingSequenceNumber = aws.String(seq)
 	}
 	if c.cfg.StreamARN != "" {
 		input.StreamARN = aws.String(c.cfg.StreamARN)

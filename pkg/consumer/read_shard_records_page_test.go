@@ -32,6 +32,7 @@ func TestReadShardRecordsPageGetsIteratorThenRecords(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	out, err := c.readShardRecordsPage(context.Background(), "shard-1")
@@ -71,6 +72,7 @@ func TestReadShardRecordsPageReturnsEmptyIteratorError(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	_, err := c.readShardRecordsPage(context.Background(), "shard-1")
@@ -90,6 +92,7 @@ func TestReadShardRecordsPageWrapsIteratorError(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	_, err := c.readShardRecordsPage(context.Background(), "shard-1")
@@ -117,6 +120,7 @@ func TestReadShardRecordsPageWrapsRecordsError(t *testing.T) {
 	c := &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		client: client,
+		store:  &fakeCheckpointSaveStore{},
 	}
 
 	_, err := c.readShardRecordsPage(context.Background(), "shard-1")
