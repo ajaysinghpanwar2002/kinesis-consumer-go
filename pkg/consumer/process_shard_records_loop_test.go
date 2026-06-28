@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -172,6 +173,51 @@ func TestProcessShardRecordsLoopWrapsPassError(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+func TestProcessShardRecordsLoopTreatsShardCompletedAsNormalCompletion(t *testing.T) {
+	t.Parallel()
+
+	passCalls := 0
+	sleepCalls := 0
+	c := &Consumer{
+		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			passCalls++
+			if passCalls == 1 {
+				return "sequence-1", processedSinceCheckpoint + 2, nil
+			}
+			if processedSinceCheckpoint != 2 {
+				t.Fatalf("processedSinceCheckpoint = %d, want 2", processedSinceCheckpoint)
+			}
+			return "", processedSinceCheckpoint, fmt.Errorf("poll shard records pages shard-1: %w", errShardCompleted)
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			_ = d
+			sleepCalls++
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsLoop() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+	if passCalls != 2 {
+		t.Fatalf("pass calls = %d, want 2", passCalls)
+	}
+	if sleepCalls != 0 {
+		t.Fatalf("sleep calls = %d, want 0", sleepCalls)
 	}
 }
 

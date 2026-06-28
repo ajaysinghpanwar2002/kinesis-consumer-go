@@ -28,6 +28,9 @@ func (c *Consumer) processShardRecordsLoop(ctx context.Context, shardID string) 
 		}
 		processedSinceCheckpoint = count
 		if err != nil {
+			if errors.Is(err, errShardCompleted) {
+				return lastSeq, processedSinceCheckpoint, nil
+			}
 			return lastSeq, processedSinceCheckpoint, fmt.Errorf("process shard records loop %s: %w", shardID, err)
 		}
 		if passLastSeq == "" && count == passStartCount {
