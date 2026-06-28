@@ -34,6 +34,33 @@ type acquireResult struct {
 	err      error
 }
 
+type claimCall struct {
+	ctx           context.Context
+	streamName    string
+	shardID       string
+	expectedOwner string
+	newOwner      string
+	ttl           time.Duration
+}
+
+type recordingClaimManager struct {
+	fakeLeaseManager
+
+	call    claimCall
+	calls   []claimCall
+	callCh  chan claimCall
+	result  lease.Lease
+	claimed bool
+	err     error
+	results []claimResult
+}
+
+type claimResult struct {
+	lease   lease.Lease
+	claimed bool
+	err     error
+}
+
 func (m *recordingAcquireManager) Acquire(_ context.Context, streamName, shardID, owner string, ttl time.Duration) (lease.Lease, bool, error) {
 	call := acquireCall{
 		streamName: streamName,
@@ -58,6 +85,34 @@ func (m *recordingAcquireManager) Acquire(_ context.Context, streamName, shardID
 	}
 
 	return m.result, m.acquired, m.err
+}
+
+func (m *recordingClaimManager) Claim(ctx context.Context, streamName, shardID, expectedOwner, newOwner string, ttl time.Duration) (lease.Lease, bool, error) {
+	call := claimCall{
+		ctx:           ctx,
+		streamName:    streamName,
+		shardID:       shardID,
+		expectedOwner: expectedOwner,
+		newOwner:      newOwner,
+		ttl:           ttl,
+	}
+	m.call = call
+	m.calls = append(m.calls, call)
+
+	if m.callCh != nil {
+		select {
+		case m.callCh <- call:
+		default:
+		}
+	}
+
+	if len(m.results) > 0 {
+		result := m.results[0]
+		m.results = m.results[1:]
+		return result.lease, result.claimed, result.err
+	}
+
+	return m.result, m.claimed, m.err
 }
 
 type fakeShardLease struct{}
@@ -339,6 +394,234 @@ func TestAcquireShardLeaseWithRetryStopsWhenContextCanceledDuringBackoff(t *test
 	}
 	if len(manager.calls) != 1 {
 		t.Fatalf("Acquire calls = %d, want 1", len(manager.calls))
+	}
+}
+
+func TestClaimShardLeaseSuccess(t *testing.T) {
+	t.Parallel()
+
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "value")
+	wantLease := fakeShardLease{}
+	manager := &recordingClaimManager{
+		result:  wantLease,
+		claimed: true,
+	}
+	c := newTestClaimConsumer(manager)
+
+	gotLease, claimed, err := c.claimShardLease(ctx, "shard-1", "donor")
+	if err != nil {
+		t.Fatalf("claimShardLease() error = %v, want nil", err)
+	}
+	if !claimed {
+		t.Fatal("claimShardLease() claimed = false, want true")
+	}
+	if gotLease != wantLease {
+		t.Fatalf("claimShardLease() lease = %v, want %v", gotLease, wantLease)
+	}
+	assertClaimCall(t, manager.call, ctx, "stream", "shard-1", "donor", "owner", 30*time.Millisecond)
+}
+
+func TestClaimShardLeaseNotClaimed(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingClaimManager{}
+	c := newTestClaimConsumer(manager)
+
+	gotLease, claimed, err := c.claimShardLease(context.Background(), "shard-1", "donor")
+	if err != nil {
+		t.Fatalf("claimShardLease() error = %v, want nil", err)
+	}
+	if claimed {
+		t.Fatal("claimShardLease() claimed = true, want false")
+	}
+	if gotLease != nil {
+		t.Fatalf("claimShardLease() lease = %v, want nil", gotLease)
+	}
+	assertClaimCall(t, manager.call, nil, "stream", "shard-1", "donor", "owner", 30*time.Millisecond)
+}
+
+func TestClaimShardLeaseUsesARNStreamKey(t *testing.T) {
+	t.Parallel()
+
+	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
+	manager := &recordingClaimManager{}
+	c := newTestClaimConsumer(manager)
+	c.cfg = Config{StreamARN: streamARN}
+
+	_, _, err := c.claimShardLease(context.Background(), "shard-1", "donor")
+	if err != nil {
+		t.Fatalf("claimShardLease() error = %v, want nil", err)
+	}
+	assertClaimCall(t, manager.call, nil, streamARN, "shard-1", "donor", "owner", 30*time.Millisecond)
+}
+
+func TestClaimShardLeaseWrapsError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingClaimManager{err: errBoom}
+	c := newTestClaimConsumer(manager)
+
+	gotLease, claimed, err := c.claimShardLease(context.Background(), "shard-1", "donor")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("claimShardLease() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "claim shard lease shard-1 from donor: boom" {
+		t.Fatalf("claimShardLease() error = %v, want %q", err, "claim shard lease shard-1 from donor: boom")
+	}
+	if claimed {
+		t.Fatal("claimShardLease() claimed = true, want false")
+	}
+	if gotLease != nil {
+		t.Fatalf("claimShardLease() lease = %v, want nil", gotLease)
+	}
+}
+
+func TestClaimShardLeaseWithRetrySuccessWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	wantLease := fakeShardLease{}
+	manager := &recordingClaimManager{
+		result:  wantLease,
+		claimed: true,
+	}
+	c := newTestClaimConsumer(manager)
+
+	gotLease, claimed, err := c.claimShardLeaseWithRetry(context.Background(), "shard-1", "donor")
+	if err != nil {
+		t.Fatalf("claimShardLeaseWithRetry() error = %v, want nil", err)
+	}
+	if !claimed {
+		t.Fatal("claimShardLeaseWithRetry() claimed = false, want true")
+	}
+	if gotLease != wantLease {
+		t.Fatalf("claimShardLeaseWithRetry() lease = %v, want %v", gotLease, wantLease)
+	}
+	if len(manager.calls) != 1 {
+		t.Fatalf("Claim calls = %d, want 1", len(manager.calls))
+	}
+}
+
+func TestClaimShardLeaseWithRetryRetriesThenSucceeds(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	wantLease := fakeShardLease{}
+	manager := &recordingClaimManager{
+		results: []claimResult{
+			{err: errBoom},
+			{err: errBoom},
+			{lease: wantLease, claimed: true},
+		},
+	}
+	c := newTestClaimConsumer(manager)
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = 0
+
+	gotLease, claimed, err := c.claimShardLeaseWithRetry(context.Background(), "shard-1", "donor")
+	if err != nil {
+		t.Fatalf("claimShardLeaseWithRetry() error = %v, want nil", err)
+	}
+	if !claimed {
+		t.Fatal("claimShardLeaseWithRetry() claimed = false, want true")
+	}
+	if gotLease != wantLease {
+		t.Fatalf("claimShardLeaseWithRetry() lease = %v, want %v", gotLease, wantLease)
+	}
+	if len(manager.calls) != 3 {
+		t.Fatalf("Claim calls = %d, want 3", len(manager.calls))
+	}
+}
+
+func TestClaimShardLeaseWithRetryDoesNotRetryNotClaimed(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingClaimManager{}
+	c := newTestClaimConsumer(manager)
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = 0
+
+	gotLease, claimed, err := c.claimShardLeaseWithRetry(context.Background(), "shard-1", "donor")
+	if err != nil {
+		t.Fatalf("claimShardLeaseWithRetry() error = %v, want nil", err)
+	}
+	if claimed {
+		t.Fatal("claimShardLeaseWithRetry() claimed = true, want false")
+	}
+	if gotLease != nil {
+		t.Fatalf("claimShardLeaseWithRetry() lease = %v, want nil", gotLease)
+	}
+	if len(manager.calls) != 1 {
+		t.Fatalf("Claim calls = %d, want 1", len(manager.calls))
+	}
+}
+
+func TestClaimShardLeaseWithRetryReturnsLastErrorAfterExhaustion(t *testing.T) {
+	t.Parallel()
+
+	errFirst := errors.New("first")
+	errLast := errors.New("last")
+	manager := &recordingClaimManager{
+		results: []claimResult{
+			{err: errFirst},
+			{err: errLast},
+		},
+	}
+	c := newTestClaimConsumer(manager)
+	c.tuning.retryMaxAttempts = 2
+	c.tuning.retryBackoff = 0
+
+	gotLease, claimed, err := c.claimShardLeaseWithRetry(context.Background(), "shard-1", "donor")
+	if !errors.Is(err, errLast) {
+		t.Fatalf("claimShardLeaseWithRetry() error = %v, want wraps %v", err, errLast)
+	}
+	if err == nil || err.Error() != "claim shard lease shard-1 from donor: last" {
+		t.Fatalf("claimShardLeaseWithRetry() error = %v, want %q", err, "claim shard lease shard-1 from donor: last")
+	}
+	if claimed {
+		t.Fatal("claimShardLeaseWithRetry() claimed = true, want false")
+	}
+	if gotLease != nil {
+		t.Fatalf("claimShardLeaseWithRetry() lease = %v, want nil", gotLease)
+	}
+	if len(manager.calls) != 2 {
+		t.Fatalf("Claim calls = %d, want 2", len(manager.calls))
+	}
+}
+
+func TestClaimShardLeaseWithRetryStopsWhenContextCanceledDuringBackoff(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingClaimManager{
+		err:    errBoom,
+		callCh: make(chan claimCall, 1),
+	}
+	c := newTestClaimConsumer(manager)
+	c.tuning.retryMaxAttempts = 2
+	c.tuning.retryBackoff = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.claimShardLeaseWithRetry(ctx, "shard-1", "donor")
+		done <- err
+	}()
+
+	waitClaimCall(t, manager)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("claimShardLeaseWithRetry() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for claimShardLeaseWithRetry to return")
+	}
+	if len(manager.calls) != 1 {
+		t.Fatalf("Claim calls = %d, want 1", len(manager.calls))
 	}
 }
 
@@ -676,6 +959,20 @@ func newTestAcquireConsumer(manager *recordingAcquireManager) *Consumer {
 	}
 }
 
+func newTestClaimConsumer(manager *recordingClaimManager) *Consumer {
+	tuning := defaultTuning()
+	tuning.heartbeatTTL = 30 * time.Millisecond
+
+	return &Consumer{
+		cfg: Config{
+			StreamName: "stream",
+		},
+		leaseManager: manager,
+		leaseOwner:   "owner",
+		tuning:       tuning,
+	}
+}
+
 func runRenewShardLeaseLoop(ctx context.Context, c *Consumer, shardID string, shardLease lease.Lease) <-chan error {
 	done := make(chan error, 1)
 	go func() {
@@ -721,6 +1018,18 @@ func waitAcquireCall(t *testing.T, manager *recordingAcquireManager) acquireCall
 	}
 }
 
+func waitClaimCall(t *testing.T, manager *recordingClaimManager) claimCall {
+	t.Helper()
+
+	select {
+	case call := <-manager.callCh:
+		return call
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Claim call")
+		return claimCall{}
+	}
+}
+
 func assertAcquireShardOrder(t *testing.T, calls []acquireCall, shardIDs []string) {
 	t.Helper()
 
@@ -748,5 +1057,28 @@ func assertAcquireCall(t *testing.T, call acquireCall, streamName, shardID, owne
 	}
 	if call.ttl != ttl {
 		t.Fatalf("Acquire ttl = %v, want %v", call.ttl, ttl)
+	}
+}
+
+func assertClaimCall(t *testing.T, call claimCall, ctx context.Context, streamName, shardID, expectedOwner, newOwner string, ttl time.Duration) {
+	t.Helper()
+
+	if ctx != nil && call.ctx != ctx {
+		t.Fatalf("Claim context = %v, want %v", call.ctx, ctx)
+	}
+	if call.streamName != streamName {
+		t.Fatalf("Claim streamName = %q, want %q", call.streamName, streamName)
+	}
+	if call.shardID != shardID {
+		t.Fatalf("Claim shardID = %q, want %q", call.shardID, shardID)
+	}
+	if call.expectedOwner != expectedOwner {
+		t.Fatalf("Claim expectedOwner = %q, want %q", call.expectedOwner, expectedOwner)
+	}
+	if call.newOwner != newOwner {
+		t.Fatalf("Claim newOwner = %q, want %q", call.newOwner, newOwner)
+	}
+	if call.ttl != ttl {
+		t.Fatalf("Claim ttl = %v, want %v", call.ttl, ttl)
 	}
 }

@@ -48,6 +48,46 @@ func (c *Consumer) acquireShardLeaseWithRetry(ctx context.Context, shardID strin
 	return nil, false, lastErr
 }
 
+func (c *Consumer) claimShardLease(ctx context.Context, shardID, expectedOwner string) (lease.Lease, bool, error) {
+	shardLease, claimed, err := c.leaseManager.Claim(
+		ctx,
+		c.streamKey(),
+		shardID,
+		expectedOwner,
+		c.leaseOwner,
+		c.tuning.heartbeatTTL,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("claim shard lease %s from %s: %w", shardID, expectedOwner, err)
+	}
+	return shardLease, claimed, nil
+}
+
+func (c *Consumer) claimShardLeaseWithRetry(ctx context.Context, shardID, expectedOwner string) (lease.Lease, bool, error) {
+	maxAttempts := c.tuning.retryMaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		shardLease, claimed, err := c.claimShardLease(ctx, shardID, expectedOwner)
+		if err == nil {
+			return shardLease, claimed, nil
+		}
+		lastErr = err
+
+		if attempt == maxAttempts {
+			break
+		}
+		if err := sleepWithContext(ctx, c.tuning.retryBackoff); err != nil {
+			return nil, false, err
+		}
+	}
+
+	return nil, false, lastErr
+}
+
 func (c *Consumer) acquireShardLeases(ctx context.Context, shardIDs []string) (map[string]lease.Lease, error) {
 	leases := make(map[string]lease.Lease, len(shardIDs))
 	for _, shardID := range shardIDs {
