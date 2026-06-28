@@ -58,6 +58,38 @@ func TestRunShardWorkerStopsRenewalBeforeRelease(t *testing.T) {
 	waitEvent(t, shardLease.events, "release")
 }
 
+func TestRunShardWorkerCompletesAfterProcessingCompletion(t *testing.T) {
+	t.Parallel()
+
+	processReturn := make(chan struct{})
+	processedShard := make(chan string, 1)
+	shardLease := &countingOrderedRenewReleaseLease{
+		events: make(chan string, 3),
+	}
+	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = ctx
+		processedShard <- shardID
+		<-processReturn
+		return "seq-1", 0, nil
+	}
+
+	done := runShardWorker(context.Background(), c, "shard-1", shardLease)
+
+	if got := <-processedShard; got != "shard-1" {
+		t.Fatalf("processed shard = %q, want shard-1", got)
+	}
+	waitEvent(t, shardLease.events, "renew-start")
+	close(processReturn)
+	waitShardWorkerDone(t, done, nil)
+
+	waitEvent(t, shardLease.events, "renew-done")
+	waitEvent(t, shardLease.events, "release")
+	if got := shardLease.releaseCalls(); got != 1 {
+		t.Fatalf("Release calls = %d, want 1", got)
+	}
+}
+
 func TestRunShardWorkerStopsRenewalAndReleasesLeaseAfterProcessingError(t *testing.T) {
 	t.Parallel()
 
@@ -169,4 +201,26 @@ func waitShardWorkerDone(t *testing.T, done <-chan error, want error) error {
 		t.Fatal("timed out waiting for runShardWorker to return")
 	}
 	return nil
+}
+
+type countingOrderedRenewReleaseLease struct {
+	events chan string
+	calls  int
+}
+
+func (l *countingOrderedRenewReleaseLease) Renew(ctx context.Context, _ time.Duration) error {
+	l.events <- "renew-start"
+	<-ctx.Done()
+	l.events <- "renew-done"
+	return ctx.Err()
+}
+
+func (l *countingOrderedRenewReleaseLease) Release(context.Context) error {
+	l.events <- "release"
+	l.calls++
+	return nil
+}
+
+func (l *countingOrderedRenewReleaseLease) releaseCalls() int {
+	return l.calls
 }
