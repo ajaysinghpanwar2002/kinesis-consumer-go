@@ -56,7 +56,6 @@ func (c *Consumer) Start(ctx context.Context) error {
 	mergeKnownShards(shardMap, shards)
 
 	workerErrCh := make(chan error, len(shardMap))
-	workerDone := make(chan struct{})
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
 	completionState := newShardCompletionState()
@@ -71,21 +70,49 @@ func (c *Consumer) Start(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
+
+	refreshDone := make(chan struct{})
 	go func() {
-		defer close(workerDone)
-		workerWG.Wait()
+		defer close(refreshDone)
+		if err := c.refreshAndStartReadyShardWorkersLoop(
+			runCtx,
+			c.tuning.shardSyncInterval,
+			shardMap,
+			completionState,
+			workers,
+			&workerWG,
+			workerErrCh,
+			cancel,
+		); err != nil {
+			if errors.Is(err, context.Canceled) {
+				if errors.Is(runCtx.Err(), context.Canceled) {
+					return
+				}
+				if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+					err = runCtx.Err()
+				}
+			}
+			select {
+			case workerErrCh <- err:
+			default:
+			}
+			cancel()
+		}
 	}()
 
 	select {
 	case err := <-workerErrCh:
 		cancel()
+		<-refreshDone
 		workers.stopAll()
-		<-workerDone
+		workerWG.Wait()
 		return err
 	case <-runCtx.Done():
+		cancel()
+		<-refreshDone
 		workers.stopAll()
 	}
-	<-workerDone
+	workerWG.Wait()
 
 	select {
 	case err := <-workerErrCh:

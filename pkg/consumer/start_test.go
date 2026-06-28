@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -230,6 +231,186 @@ func TestStartAcquiresChildWithCompletedParent(t *testing.T) {
 	_ = waitAcquireCall(t, manager)
 	assertAcquireShardOrder(t, manager.calls, []string{"child"})
 
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartAcquiresNewlyDiscoveredShardDuringRefresh(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 3),
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+			{acquired: false},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.tuning.shardSyncInterval = time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	first := waitAcquireCall(t, manager)
+	if first.shardID != "shard-1" {
+		t.Fatalf("first acquired shard = %q, want shard-1", first.shardID)
+	}
+	second := waitAcquireCall(t, manager)
+	if second.shardID != "shard-2" {
+		t.Fatalf("refresh acquired shard = %q, want shard-2", second.shardID)
+	}
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartAcquiresChildWhenParentCheckpointCompletesDuringRefresh(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 3),
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+			{acquired: false},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("parent")},
+					{ShardId: aws.String("child"), ParentShardId: aws.String("parent")},
+				}},
+				{Shards: []types.Shard{
+					{ShardId: aws.String("parent")},
+					{ShardId: aws.String("child"), ParentShardId: aws.String("parent")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.tuning.shardSyncInterval = time.Millisecond
+	store := newMutableReadinessCheckpointStore()
+	c.store = store
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	first := waitAcquireCall(t, manager)
+	if first.shardID != "parent" {
+		t.Fatalf("first acquired shard = %q, want parent", first.shardID)
+	}
+	store.set("parent", "SHARD_END:sequence-1")
+
+	second := waitAcquireCall(t, manager)
+	if second.shardID != "child" {
+		t.Fatalf("refresh acquired shard = %q, want child", second.shardID)
+	}
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartReturnsPeriodicRefreshListError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+			errs: []error{nil, errBoom},
+		},
+		manager,
+	)
+	c.tuning.shardSyncInterval = time.Millisecond
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "list shards: boom" {
+		t.Fatalf("Start() error = %v, want %q", err, "list shards: boom")
+	}
+}
+
+func TestStartReturnsPeriodicRefreshAcquisitionError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 3),
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+			{err: errBoom},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.tuning.shardSyncInterval = time.Millisecond
+	c.tuning.retryMaxAttempts = 1
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, errBoom)
+	}
+	want := "acquire shard leases shard-2: acquire shard lease shard-2: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Start() error = %v, want %q", err, want)
+	}
+}
+
+func TestStartSuppressesContextCanceledFromInFlightPeriodicRefresh(t *testing.T) {
+	t.Parallel()
+
+	client := &cancelingRefreshKinesisClient{
+		refreshStarted: make(chan struct{}),
+	}
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh:   make(chan acquireCall, 1),
+		result:   shardLease,
+		acquired: true,
+	}
+	c := newTestStartConsumerWithLeaseManager(client, manager)
+	c.tuning.shardSyncInterval = time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	waitRefreshListStarted(t, client.refreshStarted)
 	cancel()
 	waitStartDone(t, done, nil)
 }
@@ -597,14 +778,14 @@ func TestStartReturnsContextDeadlineExceeded(t *testing.T) {
 	}
 }
 
-func newTestStartConsumer(client *fakeKinesisClient, manager *recordingHeartbeatManager) *Consumer {
+func newTestStartConsumer(client kinesisAPI, manager *recordingHeartbeatManager) *Consumer {
 	c := newTestHeartbeatConsumer(manager)
 	c.client = client
 	c.store = &fakeCheckpointSaveStore{}
 	return c
 }
 
-func newTestStartConsumerWithLeaseManager(client *fakeKinesisClient, manager lease.Manager) *Consumer {
+func newTestStartConsumerWithLeaseManager(client kinesisAPI, manager lease.Manager) *Consumer {
 	tuning := defaultTuning()
 	tuning.heartbeatInterval = 10 * time.Millisecond
 	tuning.heartbeatTTL = 30 * time.Millisecond
@@ -694,4 +875,76 @@ func waitEvent(t *testing.T, events <-chan string, want string) {
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for event %q", want)
 	}
+}
+
+type cancelingRefreshKinesisClient struct {
+	fakeKinesisClient
+
+	listCalls      int
+	refreshOnce    sync.Once
+	refreshStarted chan struct{}
+}
+
+func (c *cancelingRefreshKinesisClient) ListShards(ctx context.Context, params *kinesis.ListShardsInput, optFns ...func(*kinesis.Options)) (*kinesis.ListShardsOutput, error) {
+	_ = optFns
+
+	if params != nil {
+		c.calls = append(c.calls, *params)
+	}
+	c.listCalls++
+	if c.listCalls == 1 {
+		return &kinesis.ListShardsOutput{
+			Shards: []types.Shard{{ShardId: aws.String("shard-1")}},
+		}, nil
+	}
+
+	c.refreshOnce.Do(func() {
+		close(c.refreshStarted)
+	})
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func waitRefreshListStarted(t *testing.T, refreshStarted <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-refreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for refresh ListShards call")
+	}
+}
+
+type mutableReadinessCheckpointStore struct {
+	mu          sync.Mutex
+	checkpoints map[string]string
+}
+
+func newMutableReadinessCheckpointStore() *mutableReadinessCheckpointStore {
+	return &mutableReadinessCheckpointStore{
+		checkpoints: make(map[string]string),
+	}
+}
+
+func (s *mutableReadinessCheckpointStore) Get(ctx context.Context, streamName, shardID string) (string, error) {
+	_ = ctx
+	_ = streamName
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checkpoints[shardID], nil
+}
+
+func (s *mutableReadinessCheckpointStore) Save(context.Context, string, string, string) error {
+	return nil
+}
+
+func (s *mutableReadinessCheckpointStore) Delete(context.Context, string, string) error {
+	return nil
+}
+
+func (s *mutableReadinessCheckpointStore) set(shardID, checkpoint string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpoints[shardID] = checkpoint
 }

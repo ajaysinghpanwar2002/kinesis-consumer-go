@@ -11,9 +11,11 @@ import (
 )
 
 type fakeKinesisClient struct {
-	calls []kinesis.ListShardsInput
-	outs  []*kinesis.ListShardsOutput
-	err   error
+	calls      []kinesis.ListShardsInput
+	outs       []*kinesis.ListShardsOutput
+	err        error
+	errs       []error
+	listCallCh chan kinesis.ListShardsInput
 
 	callOrder []string
 
@@ -36,6 +38,19 @@ func (c *fakeKinesisClient) ListShards(ctx context.Context, params *kinesis.List
 
 	if params != nil {
 		c.calls = append(c.calls, *params)
+		if c.listCallCh != nil {
+			select {
+			case c.listCallCh <- *params:
+			default:
+			}
+		}
+	}
+	if len(c.errs) > 0 {
+		err := c.errs[0]
+		c.errs = c.errs[1:]
+		if err != nil {
+			return nil, err
+		}
 	}
 	if c.err != nil {
 		return nil, c.err
