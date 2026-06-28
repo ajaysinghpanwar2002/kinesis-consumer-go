@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
@@ -200,5 +201,228 @@ func TestProcessShardRecordsLoopTreatsContextCancellationAsNormalShutdown(t *tes
 	}
 	if len(client.getShardIteratorCalls) != 0 {
 		t.Fatalf("GetShardIterator calls = %d, want 0", len(client.getShardIteratorCalls))
+	}
+}
+
+func TestProcessShardRecordsLoopSleepsAfterNoProgressPass(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	passCalls := 0
+	var slept time.Duration
+	c := &Consumer{
+		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			passCalls++
+			if passCalls == 2 {
+				cancel()
+			}
+			return "", processedSinceCheckpoint, nil
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			slept = d
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsLoop() error = %v, want nil", err)
+	}
+	if lastSeq != "" {
+		t.Fatalf("lastSeq = %q, want empty", lastSeq)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+	if passCalls != 2 {
+		t.Fatalf("pass calls = %d, want 2", passCalls)
+	}
+	if slept != 25*time.Millisecond {
+		t.Fatalf("slept = %v, want %v", slept, 25*time.Millisecond)
+	}
+}
+
+func TestProcessShardRecordsLoopDoesNotSleepAfterProgressPass(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	passCalls := 0
+	sleepCalls := 0
+	c := &Consumer{
+		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			passCalls++
+			if passCalls == 1 {
+				return "sequence-1", processedSinceCheckpoint + 1, nil
+			}
+			cancel()
+			return "", processedSinceCheckpoint, nil
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			_ = d
+			sleepCalls++
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsLoop() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	if sleepCalls != 1 {
+		t.Fatalf("sleep calls = %d, want 1", sleepCalls)
+	}
+}
+
+func TestProcessShardRecordsLoopDoesNotSleepAfterCheckpointCountProgress(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	passCalls := 0
+	sleepCalls := 0
+	c := &Consumer{
+		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			passCalls++
+			if passCalls == 1 {
+				return "", processedSinceCheckpoint + 1, nil
+			}
+			cancel()
+			return "", processedSinceCheckpoint, nil
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			_ = d
+			sleepCalls++
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsLoop() error = %v, want nil", err)
+	}
+	if lastSeq != "" {
+		t.Fatalf("lastSeq = %q, want empty", lastSeq)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	if sleepCalls != 1 {
+		t.Fatalf("sleep calls = %d, want 1", sleepCalls)
+	}
+}
+
+func TestProcessShardRecordsLoopCancellationDuringPauseReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &Consumer{
+		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			return "", processedSinceCheckpoint, nil
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = d
+			cancel()
+			return context.Canceled
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsLoop() error = %v, want nil", err)
+	}
+	if lastSeq != "" {
+		t.Fatalf("lastSeq = %q, want empty", lastSeq)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+func TestProcessShardRecordsLoopDeadlineDuringPauseReturnsError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
+	defer cancel()
+	c := &Consumer{
+		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			return "", processedSinceCheckpoint, nil
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			_ = d
+			return context.DeadlineExceeded
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("processShardRecordsLoop() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if err == nil || err.Error() != "process shard records loop shard-1: context deadline exceeded" {
+		t.Fatalf("processShardRecordsLoop() error = %v, want %q", err, "process shard records loop shard-1: context deadline exceeded")
+	}
+	if lastSeq != "" {
+		t.Fatalf("lastSeq = %q, want empty", lastSeq)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+func TestProcessShardRecordsLoopSkipsSleepAfterPassError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	sleepCalls := 0
+	c := &Consumer{
+		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			return "", processedSinceCheckpoint, errBoom
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			_ = d
+			sleepCalls++
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(context.Background(), "shard-1")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("processShardRecordsLoop() error = %v, want wraps %v", err, errBoom)
+	}
+	if sleepCalls != 0 {
+		t.Fatalf("sleep calls = %d, want 0", sleepCalls)
+	}
+	if lastSeq != "" {
+		t.Fatalf("lastSeq = %q, want empty", lastSeq)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
 	}
 }
