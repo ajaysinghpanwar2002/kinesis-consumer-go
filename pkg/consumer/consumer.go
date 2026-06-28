@@ -69,9 +69,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	workerDone := make(chan struct{})
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
-	for shardID, shardLease := range shardLeases {
-		c.startRegisteredShardWorker(runCtx, shardID, shardLease, workers, &workerWG, workerErrCh, cancel)
-	}
+	c.startRegisteredShardWorkers(runCtx, shardLeases, workers, &workerWG, workerErrCh, cancel)
 	go func() {
 		defer close(workerDone)
 		workerWG.Wait()
