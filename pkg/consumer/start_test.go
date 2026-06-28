@@ -167,6 +167,39 @@ func TestStartDoesNotAcquireChildWithIncompleteKnownParent(t *testing.T) {
 	waitStartDone(t, done, nil)
 }
 
+func TestStartOverwritesDuplicateShardMetadataBeforeReadyFiltering(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 2),
+		results: []acquireResult{
+			{acquired: false},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("child")},
+					{ShardId: aws.String("parent")},
+					{ShardId: aws.String("child"), ParentShardId: aws.String("parent")},
+				}},
+			},
+		},
+		manager,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	assertAcquireShardOrder(t, manager.calls, []string{"parent"})
+	assertNoAcquireCall(t, manager)
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
 func TestStartAcquiresChildWithCompletedParent(t *testing.T) {
 	t.Parallel()
 

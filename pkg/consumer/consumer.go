@@ -53,12 +53,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}
 
 	shardMap := make(map[string]types.Shard, len(shards))
-	for _, shard := range shards {
-		shardID := shardIDValue(shard)
-		if shardID != "" {
-			shardMap[shardID] = shard
-		}
-	}
+	mergeKnownShards(shardMap, shards)
 
 	completionState := newShardCompletionState()
 	shardIDs, err := completionState.readyShardIDs(runCtx, c, shardMap)
