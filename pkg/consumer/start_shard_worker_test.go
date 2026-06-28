@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
@@ -347,6 +348,158 @@ func TestAcquireAndStartReadyShardWorkersReturnsAcquireError(t *testing.T) {
 	}
 	if workers.has("shard-1") {
 		t.Fatal("workers.has(shard-1) = true, want false")
+	}
+}
+
+func TestRefreshAndStartReadyShardWorkersRefreshesKnownShardsAndStartsNewReadyShards(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+		},
+	}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	c.client = &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{Shards: []types.Shard{
+				testShard("running", "parent", "adjacent"),
+				testShard("new", "", ""),
+			}},
+		},
+	}
+	knownShards := map[string]types.Shard{
+		"running": testShard("running", "", ""),
+	}
+	workers := newShardWorkerSet()
+	workers.add("running", func() {})
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.refreshAndStartReadyShardWorkers(
+		ctx,
+		knownShards,
+		newShardCompletionState(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if err != nil {
+		t.Fatalf("refreshAndStartReadyShardWorkers() error = %v, want nil", err)
+	}
+
+	assertAcquireShardOrder(t, manager.calls, []string{"new"})
+	if got := aws.ToString(knownShards["running"].ParentShardId); got != "parent" {
+		t.Fatalf("knownShards[running].ParentShardId = %q, want parent", got)
+	}
+	if got := aws.ToString(knownShards["running"].AdjacentParentShardId); got != "adjacent" {
+		t.Fatalf("knownShards[running].AdjacentParentShardId = %q, want adjacent", got)
+	}
+	if got := aws.ToString(knownShards["new"].ShardId); got != "new" {
+		t.Fatalf("knownShards[new].ShardId = %q, want new", got)
+	}
+	if !workers.has("running") {
+		t.Fatal("workers.has(running) = false, want true")
+	}
+	if !workers.has("new") {
+		t.Fatal("workers.has(new) = false, want true")
+	}
+
+	workers.stopAll()
+	waitWorkerGroupDone(t, &workerWG)
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func TestRefreshAndStartReadyShardWorkersReturnsRefreshErrorWithoutAcquire(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingAcquireManager{}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	c.client = &fakeKinesisClient{err: errBoom}
+	knownShards := map[string]types.Shard{
+		"existing": testShard("existing", "", ""),
+	}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.refreshAndStartReadyShardWorkers(
+		ctx,
+		knownShards,
+		newShardCompletionState(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("refreshAndStartReadyShardWorkers() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "list shards: boom" {
+		t.Fatalf("refreshAndStartReadyShardWorkers() error = %v, want %q", err, "list shards: boom")
+	}
+	assertAcquireShardOrder(t, manager.calls, nil)
+	if len(knownShards) != 1 {
+		t.Fatalf("len(knownShards) = %d, want 1", len(knownShards))
+	}
+	if got := aws.ToString(knownShards["existing"].ShardId); got != "existing" {
+		t.Fatalf("knownShards[existing].ShardId = %q, want existing", got)
+	}
+}
+
+func TestRefreshAndStartReadyShardWorkersReturnsAcquireErrorAfterRefresh(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingAcquireManager{err: errBoom}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	c.tuning.retryMaxAttempts = 1
+	c.client = &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{Shards: []types.Shard{testShard("new", "", "")}},
+		},
+	}
+	knownShards := map[string]types.Shard{}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.refreshAndStartReadyShardWorkers(
+		ctx,
+		knownShards,
+		newShardCompletionState(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("refreshAndStartReadyShardWorkers() error = %v, want wraps %v", err, errBoom)
+	}
+	want := "acquire shard leases new: acquire shard lease new: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("refreshAndStartReadyShardWorkers() error = %v, want %q", err, want)
+	}
+	assertAcquireShardOrder(t, manager.calls, []string{"new"})
+	if got := aws.ToString(knownShards["new"].ShardId); got != "new" {
+		t.Fatalf("knownShards[new].ShardId = %q, want new", got)
+	}
+	if workers.has("new") {
+		t.Fatal("workers.has(new) = true, want false")
 	}
 }
 

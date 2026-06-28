@@ -79,3 +79,26 @@ func (c *Consumer) acquireAndStartReadyShardWorkers(
 	c.startRegisteredShardWorkers(ctx, shardLeases, workers, workerWG, workerErrCh, stopRun)
 	return nil
 }
+
+func (c *Consumer) refreshAndStartReadyShardWorkers(
+	ctx context.Context,
+	knownShards map[string]types.Shard,
+	completionState *shardCompletionState,
+	workers *shardWorkerSet,
+	workerWG *sync.WaitGroup,
+	workerErrCh chan<- error,
+	stopRun context.CancelFunc,
+) error {
+	if err := c.refreshKnownShards(ctx, knownShards); err != nil {
+		return err
+	}
+	return c.acquireAndStartReadyShardWorkers(
+		ctx,
+		knownShards,
+		completionState,
+		workers,
+		workerWG,
+		workerErrCh,
+		stopRun,
+	)
+}
