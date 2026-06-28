@@ -5,6 +5,14 @@ import (
 	"fmt"
 )
 
+func (c *Consumer) readShardCheckpoint(ctx context.Context, shardID string) (string, error) {
+	seq, err := c.store.Get(ctx, c.streamKey(), shardID)
+	if err != nil {
+		return "", fmt.Errorf("read shard checkpoint %s: %w", shardID, err)
+	}
+	return seq, nil
+}
+
 func (c *Consumer) saveShardCheckpoint(ctx context.Context, shardID, sequenceNumber string) error {
 	if sequenceNumber == "" {
 		return nil

@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+type checkpointGetCall struct {
+	ctx        context.Context
+	streamName string
+	shardID    string
+}
+
 type checkpointSaveCall struct {
 	ctx            context.Context
 	streamName     string
@@ -14,12 +20,23 @@ type checkpointSaveCall struct {
 }
 
 type fakeCheckpointSaveStore struct {
-	saveCalls []checkpointSaveCall
-	saveErr   error
+	getCalls   []checkpointGetCall
+	checkpoint string
+	getErr     error
+	saveCalls  []checkpointSaveCall
+	saveErr    error
 }
 
-func (s *fakeCheckpointSaveStore) Get(context.Context, string, string) (string, error) {
-	return "", nil
+func (s *fakeCheckpointSaveStore) Get(ctx context.Context, streamName, shardID string) (string, error) {
+	s.getCalls = append(s.getCalls, checkpointGetCall{
+		ctx:        ctx,
+		streamName: streamName,
+		shardID:    shardID,
+	})
+	if s.getErr != nil {
+		return "", s.getErr
+	}
+	return s.checkpoint, nil
 }
 
 func (s *fakeCheckpointSaveStore) Save(ctx context.Context, streamName, shardID, sequenceNumber string) error {
@@ -37,6 +54,121 @@ func (s *fakeCheckpointSaveStore) Save(ctx context.Context, streamName, shardID,
 
 func (s *fakeCheckpointSaveStore) Delete(context.Context, string, string) error {
 	return nil
+}
+
+func TestReadShardCheckpointReadsStreamShardAndSequence(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{checkpoint: "sequence-1"}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("readShardCheckpoint() error = %v, want nil", err)
+	}
+	if seq != "sequence-1" {
+		t.Fatalf("readShardCheckpoint() sequence = %q, want %q", seq, "sequence-1")
+	}
+	if len(store.getCalls) != 1 {
+		t.Fatalf("Get calls = %d, want 1", len(store.getCalls))
+	}
+	call := store.getCalls[0]
+	if call.streamName != "stream" {
+		t.Fatalf("streamName = %q, want %q", call.streamName, "stream")
+	}
+	if call.shardID != "shard-1" {
+		t.Fatalf("shardID = %q, want %q", call.shardID, "shard-1")
+	}
+}
+
+func TestReadShardCheckpointUsesStreamARN(t *testing.T) {
+	t.Parallel()
+
+	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
+	store := &fakeCheckpointSaveStore{checkpoint: "sequence-1"}
+	c := &Consumer{
+		cfg:   Config{StreamARN: streamARN},
+		store: store,
+	}
+
+	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("readShardCheckpoint() error = %v, want nil", err)
+	}
+	if seq != "sequence-1" {
+		t.Fatalf("readShardCheckpoint() sequence = %q, want %q", seq, "sequence-1")
+	}
+	if len(store.getCalls) != 1 {
+		t.Fatalf("Get calls = %d, want 1", len(store.getCalls))
+	}
+	if store.getCalls[0].streamName != streamARN {
+		t.Fatalf("streamName = %q, want %q", store.getCalls[0].streamName, streamARN)
+	}
+}
+
+func TestReadShardCheckpointReturnsEmptyCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("readShardCheckpoint() error = %v, want nil", err)
+	}
+	if seq != "" {
+		t.Fatalf("readShardCheckpoint() sequence = %q, want empty", seq)
+	}
+}
+
+func TestReadShardCheckpointForwardsContext(t *testing.T) {
+	t.Parallel()
+
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "value")
+	store := &fakeCheckpointSaveStore{checkpoint: "sequence-1"}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	if _, err := c.readShardCheckpoint(ctx, "shard-1"); err != nil {
+		t.Fatalf("readShardCheckpoint() error = %v, want nil", err)
+	}
+	if len(store.getCalls) != 1 {
+		t.Fatalf("Get calls = %d, want 1", len(store.getCalls))
+	}
+	if store.getCalls[0].ctx != ctx {
+		t.Fatalf("Get context = %v, want %v", store.getCalls[0].ctx, ctx)
+	}
+}
+
+func TestReadShardCheckpointWrapsStoreError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	store := &fakeCheckpointSaveStore{getErr: errBoom}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("readShardCheckpoint() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "read shard checkpoint shard-1: boom" {
+		t.Fatalf("readShardCheckpoint() error = %v, want %q", err, "read shard checkpoint shard-1: boom")
+	}
+	if seq != "" {
+		t.Fatalf("readShardCheckpoint() sequence = %q, want empty", seq)
+	}
 }
 
 func TestSaveShardCheckpointSavesStreamShardAndSequence(t *testing.T) {
