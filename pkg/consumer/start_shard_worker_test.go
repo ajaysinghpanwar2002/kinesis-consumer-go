@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
 
@@ -196,6 +198,158 @@ func TestStartRegisteredShardWorkersReportsWorkerErrorAndCancelsRun(t *testing.T
 	}
 }
 
+func TestAcquireAndStartReadyShardWorkersSkipsRunningWorkersBeforeAcquire(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+		},
+	}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	workers := newShardWorkerSet()
+	workers.add("shard-running", func() {})
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.acquireAndStartReadyShardWorkers(
+		ctx,
+		readyShardWorkerMap("shard-ready", "shard-running"),
+		newShardCompletionState(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if err != nil {
+		t.Fatalf("acquireAndStartReadyShardWorkers() error = %v, want nil", err)
+	}
+
+	assertAcquireShardOrder(t, manager.calls, []string{"shard-ready"})
+	if !workers.has("shard-ready") {
+		t.Fatal("workers.has(shard-ready) = false, want true")
+	}
+	if !workers.has("shard-running") {
+		t.Fatal("workers.has(shard-running) = false, want true")
+	}
+
+	workers.stopAll()
+	waitWorkerGroupDone(t, &workerWG)
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func TestAcquireAndStartReadyShardWorkersDoesNotStartUnacquiredShards(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: &recordingReleaseLease{}, acquired: false},
+		},
+	}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.acquireAndStartReadyShardWorkers(
+		ctx,
+		readyShardWorkerMap("shard-1"),
+		newShardCompletionState(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if err != nil {
+		t.Fatalf("acquireAndStartReadyShardWorkers() error = %v, want nil", err)
+	}
+
+	assertAcquireShardOrder(t, manager.calls, []string{"shard-1"})
+	if workers.has("shard-1") {
+		t.Fatal("workers.has(shard-1) = true, want false")
+	}
+	waitWorkerGroupDone(t, &workerWG)
+}
+
+func TestAcquireAndStartReadyShardWorkersReturnsReadyShardError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingAcquireManager{}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	c.store = &readinessCheckpointStore{
+		getErrs: map[string]error{"shard-1": errBoom},
+	}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.acquireAndStartReadyShardWorkers(
+		ctx,
+		readyShardWorkerMap("shard-1"),
+		newShardCompletionState(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("acquireAndStartReadyShardWorkers() error = %v, want wraps %v", err, errBoom)
+	}
+	want := "check ready shard shard-1 completion: check shard completion shard-1: read shard checkpoint shard-1: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("acquireAndStartReadyShardWorkers() error = %v, want %q", err, want)
+	}
+	assertAcquireShardOrder(t, manager.calls, nil)
+}
+
+func TestAcquireAndStartReadyShardWorkersReturnsAcquireError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingAcquireManager{err: errBoom}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	c.tuning.retryMaxAttempts = 1
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.acquireAndStartReadyShardWorkers(
+		ctx,
+		readyShardWorkerMap("shard-1"),
+		newShardCompletionState(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("acquireAndStartReadyShardWorkers() error = %v, want wraps %v", err, errBoom)
+	}
+	want := "acquire shard leases shard-1: acquire shard lease shard-1: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("acquireAndStartReadyShardWorkers() error = %v, want %q", err, want)
+	}
+	if workers.has("shard-1") {
+		t.Fatal("workers.has(shard-1) = true, want false")
+	}
+}
+
 func newTestRegisteredShardWorkerConsumer(processErr error) *Consumer {
 	tuning := defaultTuning()
 	tuning.heartbeatInterval = time.Millisecond
@@ -213,6 +367,23 @@ func newTestRegisteredShardWorkerConsumer(processErr error) *Consumer {
 			return "", 0, nil
 		},
 	}
+}
+
+func newTestReadyShardWorkerConsumer(manager *recordingAcquireManager, processErr error) *Consumer {
+	c := newTestRegisteredShardWorkerConsumer(processErr)
+	c.store = &readinessCheckpointStore{getErrs: map[string]error{}}
+	c.leaseManager = manager
+	c.leaseOwner = "owner"
+	c.tuning.heartbeatTTL = 30 * time.Millisecond
+	return c
+}
+
+func readyShardWorkerMap(shardIDs ...string) map[string]types.Shard {
+	shards := make(map[string]types.Shard, len(shardIDs))
+	for _, shardID := range shardIDs {
+		shards[shardID] = types.Shard{ShardId: aws.String(shardID)}
+	}
+	return shards
 }
 
 func waitWorkerGroupDone(t *testing.T, workerWG *sync.WaitGroup) {

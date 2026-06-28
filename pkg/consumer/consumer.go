@@ -55,21 +55,22 @@ func (c *Consumer) Start(ctx context.Context) error {
 	shardMap := make(map[string]types.Shard, len(shards))
 	mergeKnownShards(shardMap, shards)
 
-	completionState := newShardCompletionState()
-	shardIDs, err := completionState.readyShardIDs(runCtx, c, shardMap)
-	if err != nil {
-		return err
-	}
-
-	shardLeases, err := c.acquireShardLeases(runCtx, shardIDs)
-	if err != nil {
-		return err
-	}
-	workerErrCh := make(chan error, len(shardLeases))
+	workerErrCh := make(chan error, len(shardMap))
 	workerDone := make(chan struct{})
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
-	c.startRegisteredShardWorkers(runCtx, shardLeases, workers, &workerWG, workerErrCh, cancel)
+	completionState := newShardCompletionState()
+	if err := c.acquireAndStartReadyShardWorkers(
+		runCtx,
+		shardMap,
+		completionState,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	); err != nil {
+		return err
+	}
 	go func() {
 		defer close(workerDone)
 		workerWG.Wait()
