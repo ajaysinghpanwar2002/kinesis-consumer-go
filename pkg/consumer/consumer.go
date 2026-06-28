@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
@@ -51,11 +52,18 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return fmt.Errorf("no shards found for stream %s", c.streamKey())
 	}
 
-	shardIDs := make([]string, 0, len(shards))
+	shardMap := make(map[string]types.Shard, len(shards))
 	for _, shard := range shards {
-		if shard.ShardId != nil {
-			shardIDs = append(shardIDs, *shard.ShardId)
+		shardID := shardIDValue(shard)
+		if shardID != "" {
+			shardMap[shardID] = shard
 		}
+	}
+
+	completionState := newShardCompletionState()
+	shardIDs, err := completionState.readyShardIDs(runCtx, c, shardMap)
+	if err != nil {
+		return err
 	}
 
 	shardLeases, err := c.acquireShardLeases(runCtx, shardIDs)

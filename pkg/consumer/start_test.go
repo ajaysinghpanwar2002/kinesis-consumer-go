@@ -105,6 +105,155 @@ func TestStartAttemptsAcquisitionForDiscoveredShardIDs(t *testing.T) {
 	waitStartDone(t, done, nil)
 }
 
+func TestStartDoesNotAcquireCompletedShard(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 1),
+	}
+	store := &readinessCheckpointStore{
+		checkpoints: map[string]string{"shard-1": "SHARD_END:sequence-1"},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.store = store
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	assertNoAcquireCall(t, manager)
+	cancel()
+	waitStartDone(t, done, nil)
+	if got := shardGetCalls(store, "shard-1"); got != 1 {
+		t.Fatalf("shard-1 checkpoint Get calls = %d, want 1", got)
+	}
+}
+
+func TestStartDoesNotAcquireChildWithIncompleteKnownParent(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 2),
+		results: []acquireResult{
+			{acquired: false},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("parent")},
+					{ShardId: aws.String("child"), ParentShardId: aws.String("parent")},
+				}},
+			},
+		},
+		manager,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	assertAcquireShardOrder(t, manager.calls, []string{"parent"})
+	assertNoAcquireCall(t, manager)
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartAcquiresChildWithCompletedParent(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 1),
+		results: []acquireResult{
+			{acquired: false},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("parent")},
+					{ShardId: aws.String("child"), ParentShardId: aws.String("parent")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.store = &readinessCheckpointStore{
+		checkpoints: map[string]string{"parent": "SHARD_END"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	assertAcquireShardOrder(t, manager.calls, []string{"child"})
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartSkipsEmptyShardIDDuringReadyFiltering(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("")}}},
+			},
+		},
+		manager,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	assertNoAcquireCall(t, manager)
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartReturnsReadyShardCheckpointReadError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.store = &readinessCheckpointStore{
+		getErrs: map[string]error{"shard-1": errBoom},
+	}
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, errBoom)
+	}
+	want := "check ready shard shard-1 completion: check shard completion shard-1: read shard checkpoint shard-1: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Start() error = %v, want %q", err, want)
+	}
+	assertAcquireShardOrder(t, manager.calls, nil)
+}
+
 func TestStartReturnsAcquisitionError(t *testing.T) {
 	t.Parallel()
 
@@ -378,6 +527,7 @@ func TestStartReturnsContextDeadlineExceeded(t *testing.T) {
 func newTestStartConsumer(client *fakeKinesisClient, manager *recordingHeartbeatManager) *Consumer {
 	c := newTestHeartbeatConsumer(manager)
 	c.client = client
+	c.store = &fakeCheckpointSaveStore{}
 	return c
 }
 
@@ -391,6 +541,7 @@ func newTestStartConsumerWithLeaseManager(client *fakeKinesisClient, manager lea
 			StreamName: "stream",
 		},
 		client:       client,
+		store:        &fakeCheckpointSaveStore{},
 		leaseManager: manager,
 		leaseOwner:   "owner",
 		tuning:       tuning,
@@ -416,6 +567,16 @@ func assertStartStillRunning(t *testing.T, done <-chan error) {
 	select {
 	case err := <-done:
 		t.Fatalf("Start() returned before context cancellation: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func assertNoAcquireCall(t *testing.T, manager *recordingAcquireManager) {
+	t.Helper()
+
+	select {
+	case call := <-manager.callCh:
+		t.Fatalf("unexpected Acquire call for shard %q", call.shardID)
 	case <-time.After(20 * time.Millisecond):
 	}
 }
