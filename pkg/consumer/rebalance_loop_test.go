@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,6 +50,97 @@ func TestRefreshAndRebalanceShardWorkersLoopRunsRebalanceOnTick(t *testing.T) {
 	if call.kind != rebalancePlanAcquireUnowned || call.shardID != "shard-a" {
 		t.Fatalf("rebalance execution call = %#v, want acquire shard-a", call)
 	}
+
+	cancel()
+	waitRefreshAndRebalanceShardWorkersLoopDone(t, done, nil)
+	waitWorkerGroupDone(t, &workerWG)
+}
+
+func TestRefreshAndRebalanceShardWorkersLoopShedsLocalOverageOnRebalanceTick(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingRebalanceOnceManager{
+		leaseOwners: map[string]string{
+			"shard-a": "self",
+			"shard-b": "self",
+			"shard-c": "self",
+			"shard-d": "worker-a",
+		},
+		workerOwners: []string{"self", "worker-a"},
+		listCh:       make(chan string, 1),
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	knownShards := readyShardWorkerMap("shard-a", "shard-b", "shard-c", "shard-d")
+	workers := newShardWorkerSet()
+	var cancelledA int32
+	var cancelledB int32
+	var cancelledC int32
+	workers.add("shard-a", func() { atomic.AddInt32(&cancelledA, 1) })
+	workers.add("shard-b", func() { atomic.AddInt32(&cancelledB, 1) })
+	workers.add("shard-c", func() { atomic.AddInt32(&cancelledC, 1) })
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+	cooldown := map[string]time.Time{}
+	now := time.Date(2026, 6, 29, 7, 8, 9, 0, time.UTC)
+	delays := make(chan time.Duration, 2)
+	delayCalls := 0
+	nextDelay := func() time.Duration {
+		delayCalls++
+		delay := time.Hour
+		if delayCalls == 1 {
+			delay = time.Millisecond
+		}
+		delays <- delay
+		return delay
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- c.refreshAndRebalanceShardWorkersLoop(
+			ctx,
+			time.Hour,
+			nextDelay,
+			knownShards,
+			newShardCompletionState(),
+			cooldown,
+			workers,
+			&workerWG,
+			workerErrCh,
+			cancel,
+			func() time.Time { return now },
+		)
+	}()
+
+	if got := waitRebalanceDelay(t, delays); got != time.Millisecond {
+		t.Fatalf("initial rebalance delay = %v, want %v", got, time.Millisecond)
+	}
+	waitRebalanceListCall(t, manager.listCh)
+	if got := waitRebalanceDelay(t, delays); got != time.Hour {
+		t.Fatalf("next rebalance delay = %v, want %v", got, time.Hour)
+	}
+	if workers.has("shard-a") {
+		t.Fatal("workers.has(shard-a) = true after scheduled shed, want false")
+	}
+	if !workers.has("shard-b") {
+		t.Fatal("workers.has(shard-b) = false after scheduled shed, want true")
+	}
+	if !workers.has("shard-c") {
+		t.Fatal("workers.has(shard-c) = false after scheduled shed, want true")
+	}
+	if got := atomic.LoadInt32(&cancelledB); got != 0 {
+		t.Fatalf("shard-b cancel calls = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&cancelledC); got != 0 {
+		t.Fatalf("shard-c cancel calls = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&cancelledA); got != 1 {
+		t.Fatalf("shard-a cancel calls = %d, want 1", got)
+	}
+	assertRebalanceCooldown(t, cooldown, map[string]time.Time{
+		"shard-a": now.Add(c.tuning.shardCooldownPeriod),
+	})
+	assertRebalanceExecutionCalls(t, manager.executionCalls, nil)
 
 	cancel()
 	waitRefreshAndRebalanceShardWorkersLoopDone(t, done, nil)
