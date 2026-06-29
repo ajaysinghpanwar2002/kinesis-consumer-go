@@ -3,16 +3,31 @@ package consumer
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 )
 
+func newRebalanceDelayFunc(min, jitter time.Duration) func() time.Duration {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	return func() time.Duration {
+		return rebalanceDelay(min, jitter, rng)
+	}
+}
+
+func rebalanceDelay(min, jitter time.Duration, rng *rand.Rand) time.Duration {
+	if jitter <= 0 || rng == nil {
+		return min
+	}
+	return min + time.Duration(rng.Int63n(int64(jitter)))
+}
+
 func (c *Consumer) refreshAndRebalanceShardWorkersLoop(
 	ctx context.Context,
 	shardSyncInterval time.Duration,
-	rebalanceInterval time.Duration,
+	nextRebalanceDelay func() time.Duration,
 	knownShards map[string]types.Shard,
 	completionState *shardCompletionState,
 	cooldown map[string]time.Time,
@@ -25,12 +40,18 @@ func (c *Consumer) refreshAndRebalanceShardWorkersLoop(
 	if now == nil {
 		now = time.Now
 	}
+	if nextRebalanceDelay == nil {
+		nextRebalanceDelay = newRebalanceDelayFunc(
+			c.tuning.rebalanceIntervalMin,
+			c.tuning.rebalanceIntervalJitter,
+		)
+	}
 
 	shardSyncTicker := time.NewTicker(shardSyncInterval)
 	defer shardSyncTicker.Stop()
 
-	rebalanceTicker := time.NewTicker(rebalanceInterval)
-	defer rebalanceTicker.Stop()
+	rebalanceTimer := time.NewTimer(nextRebalanceDelay())
+	defer rebalanceTimer.Stop()
 
 	for {
 		select {
@@ -51,7 +72,7 @@ func (c *Consumer) refreshAndRebalanceShardWorkersLoop(
 			); err != nil {
 				return err
 			}
-		case <-rebalanceTicker.C:
+		case <-rebalanceTimer.C:
 			if _, err := c.rebalanceShardsOnce(
 				ctx,
 				knownShards,
@@ -70,6 +91,7 @@ func (c *Consumer) refreshAndRebalanceShardWorkersLoop(
 					return ctxErr
 				}
 			}
+			rebalanceTimer.Reset(nextRebalanceDelay())
 		}
 	}
 }

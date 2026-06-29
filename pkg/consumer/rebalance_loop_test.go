@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func TestRefreshAndRebalanceShardWorkersLoopRunsRebalanceOnTick(t *testing.T) {
 		ctx,
 		c,
 		time.Hour,
-		time.Millisecond,
+		fixedRebalanceDelay(time.Millisecond),
 		knownShards,
 		newShardCompletionState(),
 		nil,
@@ -79,7 +80,7 @@ func TestRefreshAndRebalanceShardWorkersLoopSkipsRebalanceErrorAndContinues(t *t
 		ctx,
 		c,
 		time.Hour,
-		time.Millisecond,
+		fixedRebalanceDelay(time.Millisecond),
 		knownShards,
 		newShardCompletionState(),
 		nil,
@@ -118,7 +119,7 @@ func TestRefreshAndRebalanceShardWorkersLoopReturnsRefreshError(t *testing.T) {
 		ctx,
 		c,
 		time.Millisecond,
-		time.Hour,
+		fixedRebalanceDelay(time.Hour),
 		knownShards,
 		newShardCompletionState(),
 		nil,
@@ -157,6 +158,7 @@ func TestStartRunsRuntimeRebalanceAfterInitialAcquisitionMiss(t *testing.T) {
 	)
 	c.tuning.shardSyncInterval = time.Hour
 	c.tuning.rebalanceIntervalMin = time.Millisecond
+	c.tuning.rebalanceIntervalJitter = 0
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runStart(ctx, c)
@@ -175,11 +177,103 @@ func TestStartRunsRuntimeRebalanceAfterInitialAcquisitionMiss(t *testing.T) {
 	waitStartDone(t, done, nil)
 }
 
+func TestRefreshAndRebalanceShardWorkersLoopReschedulesRebalanceAfterTick(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingRebalanceOnceManager{
+		leaseOwners:  map[string]string{},
+		workerOwners: []string{"self"},
+		acquireResults: []acquireResult{
+			{lease: &recordingReleaseLease{}, acquired: true},
+		},
+		executionCh: make(chan rebalanceExecutionCall, 1),
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	knownShards := readyShardWorkerMap("shard-a")
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+	delays := make(chan time.Duration, 2)
+	delayCalls := 0
+	nextDelay := func() time.Duration {
+		delayCalls++
+		delay := time.Hour
+		if delayCalls == 1 {
+			delay = time.Millisecond
+		}
+		delays <- delay
+		return delay
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRefreshAndRebalanceShardWorkersLoop(
+		ctx,
+		c,
+		time.Hour,
+		nextDelay,
+		knownShards,
+		newShardCompletionState(),
+		nil,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+
+	if got := waitRebalanceDelay(t, delays); got != time.Millisecond {
+		t.Fatalf("initial rebalance delay = %v, want %v", got, time.Millisecond)
+	}
+	waitRebalanceExecutionCall(t, manager.executionCh)
+	if got := waitRebalanceDelay(t, delays); got != time.Hour {
+		t.Fatalf("next rebalance delay = %v, want %v", got, time.Hour)
+	}
+
+	cancel()
+	waitRefreshAndRebalanceShardWorkersLoopDone(t, done, nil)
+	waitWorkerGroupDone(t, &workerWG)
+}
+
+func TestRebalanceDelayNoJitterReturnsMin(t *testing.T) {
+	t.Parallel()
+
+	min := 10 * time.Second
+	if got := rebalanceDelay(min, 0, rand.New(rand.NewSource(1))); got != min {
+		t.Fatalf("rebalanceDelay() = %v, want %v", got, min)
+	}
+	if got := rebalanceDelay(min, -time.Second, rand.New(rand.NewSource(1))); got != min {
+		t.Fatalf("rebalanceDelay() = %v, want %v", got, min)
+	}
+	if got := rebalanceDelay(min, time.Second, nil); got != min {
+		t.Fatalf("rebalanceDelay() = %v, want %v", got, min)
+	}
+}
+
+func TestRebalanceDelayAddsBoundedJitter(t *testing.T) {
+	t.Parallel()
+
+	min := 10 * time.Second
+	jitter := 5 * time.Second
+	rng := rand.New(rand.NewSource(1))
+	sawJitter := false
+	for i := 0; i < 50; i++ {
+		got := rebalanceDelay(min, jitter, rng)
+		if got < min || got >= min+jitter {
+			t.Fatalf("rebalanceDelay() = %v, want in [%v, %v)", got, min, min+jitter)
+		}
+		if got > min {
+			sawJitter = true
+		}
+	}
+	if !sawJitter {
+		t.Fatal("rebalanceDelay() never added jitter")
+	}
+}
+
 func runRefreshAndRebalanceShardWorkersLoop(
 	ctx context.Context,
 	c *Consumer,
 	shardSyncInterval time.Duration,
-	rebalanceInterval time.Duration,
+	nextRebalanceDelay func() time.Duration,
 	knownShards map[string]types.Shard,
 	completionState *shardCompletionState,
 	cooldown map[string]time.Time,
@@ -193,7 +287,7 @@ func runRefreshAndRebalanceShardWorkersLoop(
 		done <- c.refreshAndRebalanceShardWorkersLoop(
 			ctx,
 			shardSyncInterval,
-			rebalanceInterval,
+			nextRebalanceDelay,
 			knownShards,
 			completionState,
 			cooldown,
@@ -205,6 +299,12 @@ func runRefreshAndRebalanceShardWorkersLoop(
 		)
 	}()
 	return done
+}
+
+func fixedRebalanceDelay(delay time.Duration) func() time.Duration {
+	return func() time.Duration {
+		return delay
+	}
 }
 
 func waitRefreshAndRebalanceShardWorkersLoopDone(t *testing.T, done <-chan error, want error) error {
@@ -219,6 +319,18 @@ func waitRefreshAndRebalanceShardWorkersLoopDone(t *testing.T, done <-chan error
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for refreshAndRebalanceShardWorkersLoop to return")
 		return nil
+	}
+}
+
+func waitRebalanceDelay(t *testing.T, delays <-chan time.Duration) time.Duration {
+	t.Helper()
+
+	select {
+	case delay := <-delays:
+		return delay
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for rebalance delay")
+		return 0
 	}
 }
 

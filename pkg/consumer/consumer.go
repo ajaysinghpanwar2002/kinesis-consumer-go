@@ -78,7 +78,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 		if err := c.refreshAndRebalanceShardWorkersLoop(
 			runCtx,
 			c.tuning.shardSyncInterval,
-			c.tuning.rebalanceIntervalMin,
+			newRebalanceDelayFunc(c.tuning.rebalanceIntervalMin, c.tuning.rebalanceIntervalJitter),
 			shardMap,
 			completionState,
 			rebalanceCooldown,
