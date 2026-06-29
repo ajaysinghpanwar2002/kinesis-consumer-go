@@ -6,6 +6,11 @@ import (
 	"sync"
 )
 
+type rebalanceExecutionResult struct {
+	started       int
+	movedShardIDs []string
+}
+
 func (c *Consumer) executeRebalancePlan(
 	ctx context.Context,
 	plan rebalancePlan,
@@ -13,18 +18,19 @@ func (c *Consumer) executeRebalancePlan(
 	workerWG *sync.WaitGroup,
 	workerErrCh chan<- error,
 	stopRun context.CancelFunc,
-) (int, error) {
-	started := 0
+) (rebalanceExecutionResult, error) {
+	var result rebalanceExecutionResult
 	for _, action := range plan.actions {
 		actionStarted, err := c.executeRebalancePlanAction(ctx, action, workers, workerWG, workerErrCh, stopRun)
 		if err != nil {
-			return started, err
+			return result, err
 		}
 		if actionStarted {
-			started++
+			result.started++
+			result.movedShardIDs = append(result.movedShardIDs, action.shardID)
 		}
 	}
-	return started, nil
+	return result, nil
 }
 
 func (c *Consumer) executeRebalancePlanAction(

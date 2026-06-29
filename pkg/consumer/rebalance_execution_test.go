@@ -68,7 +68,7 @@ func TestExecuteRebalancePlanStartsAcquiredAndClaimedWorkersInOrder(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	started, err := c.executeRebalancePlan(
+	result, err := c.executeRebalancePlan(
 		ctx,
 		rebalancePlan{actions: []rebalancePlanAction{
 			{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
@@ -82,9 +82,10 @@ func TestExecuteRebalancePlanStartsAcquiredAndClaimedWorkersInOrder(t *testing.T
 	if err != nil {
 		t.Fatalf("executeRebalancePlan() error = %v, want nil", err)
 	}
-	if started != 2 {
-		t.Fatalf("executeRebalancePlan() started = %d, want 2", started)
+	if result.started != 2 {
+		t.Fatalf("executeRebalancePlan() started = %d, want 2", result.started)
 	}
+	assertShardList(t, result.movedShardIDs, []string{"shard-a", "shard-b"})
 	assertRebalanceExecutionCalls(t, manager.calls, []rebalanceExecutionCall{
 		{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
 		{kind: rebalancePlanClaimDonor, shardID: "shard-b", donor: "donor-a"},
@@ -132,7 +133,7 @@ func TestExecuteRebalancePlanDoesNotStartMissesOrNilLeases(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	started, err := c.executeRebalancePlan(
+	result, err := c.executeRebalancePlan(
 		ctx,
 		rebalancePlan{actions: []rebalancePlanAction{
 			{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
@@ -148,9 +149,10 @@ func TestExecuteRebalancePlanDoesNotStartMissesOrNilLeases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeRebalancePlan() error = %v, want nil", err)
 	}
-	if started != 0 {
-		t.Fatalf("executeRebalancePlan() started = %d, want 0", started)
+	if result.started != 0 {
+		t.Fatalf("executeRebalancePlan() started = %d, want 0", result.started)
 	}
+	assertShardList(t, result.movedShardIDs, nil)
 	assertRebalanceExecutionCalls(t, manager.calls, []rebalanceExecutionCall{
 		{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
 		{kind: rebalancePlanClaimDonor, shardID: "shard-b", donor: "donor-a"},
@@ -177,7 +179,7 @@ func TestExecuteRebalancePlanSkipsAlreadyRunningWorkers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	started, err := c.executeRebalancePlan(
+	result, err := c.executeRebalancePlan(
 		ctx,
 		rebalancePlan{actions: []rebalancePlanAction{
 			{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
@@ -191,9 +193,10 @@ func TestExecuteRebalancePlanSkipsAlreadyRunningWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeRebalancePlan() error = %v, want nil", err)
 	}
-	if started != 0 {
-		t.Fatalf("executeRebalancePlan() started = %d, want 0", started)
+	if result.started != 0 {
+		t.Fatalf("executeRebalancePlan() started = %d, want 0", result.started)
 	}
+	assertShardList(t, result.movedShardIDs, nil)
 	assertRebalanceExecutionCalls(t, manager.calls, nil)
 	workers.stopAll()
 	waitWorkerGroupDone(t, &workerWG)
@@ -214,7 +217,7 @@ func TestExecuteRebalancePlanReturnsAcquireError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	started, err := c.executeRebalancePlan(
+	result, err := c.executeRebalancePlan(
 		ctx,
 		rebalancePlan{actions: []rebalancePlanAction{
 			{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
@@ -231,9 +234,10 @@ func TestExecuteRebalancePlanReturnsAcquireError(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("executeRebalancePlan() error = %v, want %q", err, want)
 	}
-	if started != 0 {
-		t.Fatalf("executeRebalancePlan() started = %d, want 0", started)
+	if result.started != 0 {
+		t.Fatalf("executeRebalancePlan() started = %d, want 0", result.started)
 	}
+	assertShardList(t, result.movedShardIDs, nil)
 }
 
 func TestExecuteRebalancePlanReturnsStartedCountBeforeClaimError(t *testing.T) {
@@ -253,7 +257,7 @@ func TestExecuteRebalancePlanReturnsStartedCountBeforeClaimError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	started, err := c.executeRebalancePlan(
+	result, err := c.executeRebalancePlan(
 		ctx,
 		rebalancePlan{actions: []rebalancePlanAction{
 			{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
@@ -271,9 +275,10 @@ func TestExecuteRebalancePlanReturnsStartedCountBeforeClaimError(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("executeRebalancePlan() error = %v, want %q", err, want)
 	}
-	if started != 1 {
-		t.Fatalf("executeRebalancePlan() started = %d, want 1", started)
+	if result.started != 1 {
+		t.Fatalf("executeRebalancePlan() started = %d, want 1", result.started)
 	}
+	assertShardList(t, result.movedShardIDs, []string{"shard-a"})
 	if !workers.has("shard-a") {
 		t.Fatal("workers.has(shard-a) = false, want true")
 	}
@@ -323,7 +328,7 @@ func TestExecuteRebalancePlanReturnsInvalidActionErrors(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			started, err := c.executeRebalancePlan(
+			result, err := c.executeRebalancePlan(
 				ctx,
 				rebalancePlan{actions: []rebalancePlanAction{tt.action}},
 				workers,
@@ -334,9 +339,10 @@ func TestExecuteRebalancePlanReturnsInvalidActionErrors(t *testing.T) {
 			if err == nil || err.Error() != tt.want {
 				t.Fatalf("executeRebalancePlan() error = %v, want %q", err, tt.want)
 			}
-			if started != 0 {
-				t.Fatalf("executeRebalancePlan() started = %d, want 0", started)
+			if result.started != 0 {
+				t.Fatalf("executeRebalancePlan() started = %d, want 0", result.started)
 			}
+			assertShardList(t, result.movedShardIDs, nil)
 		})
 	}
 }

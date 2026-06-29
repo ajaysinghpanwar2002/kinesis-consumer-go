@@ -13,6 +13,7 @@ type rebalanceRunResult struct {
 	readyShardIDs []string
 	plan          rebalancePlan
 	started       int
+	movedShardIDs []string
 }
 
 func (c *Consumer) rebalanceShardsOnce(
@@ -56,11 +57,32 @@ func (c *Consumer) rebalanceShardsOnce(
 		now,
 		c.tuning.maxMovesPerRebalance,
 	)
-	result.started, err = c.executeRebalancePlan(ctx, result.plan, workers, workerWG, workerErrCh, stopRun)
+	executionResult, err := c.executeRebalancePlan(ctx, result.plan, workers, workerWG, workerErrCh, stopRun)
+	result.started = executionResult.started
+	result.movedShardIDs = executionResult.movedShardIDs
+	recordRebalanceCooldown(cooldown, result.movedShardIDs, now, c.tuning.shardCooldownPeriod)
 	if err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+func recordRebalanceCooldown(
+	cooldown map[string]time.Time,
+	shardIDs []string,
+	now time.Time,
+	period time.Duration,
+) {
+	if cooldown == nil || period <= 0 {
+		return
+	}
+	until := now.Add(period)
+	for _, shardID := range shardIDs {
+		if shardID == "" {
+			continue
+		}
+		cooldown[shardID] = until
+	}
 }
 
 func (c *Consumer) listRebalanceLeaseOwners(ctx context.Context) (map[string]string, error) {

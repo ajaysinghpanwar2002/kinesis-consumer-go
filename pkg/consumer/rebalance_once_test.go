@@ -138,6 +138,7 @@ func TestRebalanceShardsOnceNoReadyShardsSkipsSnapshotsAndExecution(t *testing.T
 	if result.started != 0 {
 		t.Fatalf("started = %d, want 0", result.started)
 	}
+	assertShardList(t, result.movedShardIDs, nil)
 	if len(manager.listCalls) != 0 {
 		t.Fatalf("List calls = %d, want 0", len(manager.listCalls))
 	}
@@ -172,6 +173,7 @@ func TestRebalanceShardsOnceBuildsPlanFromSnapshotsAndExecutesIt(t *testing.T) {
 	var workerWG sync.WaitGroup
 	workerErrCh := make(chan error, 2)
 	now := time.Date(2026, 6, 29, 1, 2, 3, 0, time.UTC)
+	cooldown := map[string]time.Time{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -185,7 +187,7 @@ func TestRebalanceShardsOnceBuildsPlanFromSnapshotsAndExecutesIt(t *testing.T) {
 			testShard("shard-b", "", ""),
 		),
 		newShardCompletionState(),
-		nil,
+		cooldown,
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -206,6 +208,11 @@ func TestRebalanceShardsOnceBuildsPlanFromSnapshotsAndExecutesIt(t *testing.T) {
 	if result.started != 2 {
 		t.Fatalf("started = %d, want 2", result.started)
 	}
+	assertShardList(t, result.movedShardIDs, []string{"shard-a", "shard-b"})
+	assertRebalanceCooldown(t, cooldown, map[string]time.Time{
+		"shard-a": now.Add(c.tuning.shardCooldownPeriod),
+		"shard-b": now.Add(c.tuning.shardCooldownPeriod),
+	})
 	if !slices.Equal(manager.listCalls, []string{"stream"}) {
 		t.Fatalf("List calls = %v, want [stream]", manager.listCalls)
 	}
@@ -246,6 +253,7 @@ func TestRebalanceShardsOnceRetriesSnapshotReadsBeforePlanning(t *testing.T) {
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
 	workerErrCh := make(chan error, 1)
+	cooldown := map[string]time.Time{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -254,7 +262,7 @@ func TestRebalanceShardsOnceRetriesSnapshotReadsBeforePlanning(t *testing.T) {
 		ctx,
 		shardMapForReadiness(testShard("shard-a", "", "")),
 		newShardCompletionState(),
-		nil,
+		cooldown,
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -270,6 +278,8 @@ func TestRebalanceShardsOnceRetriesSnapshotReadsBeforePlanning(t *testing.T) {
 	if result.started != 0 {
 		t.Fatalf("started = %d, want 0", result.started)
 	}
+	assertShardList(t, result.movedShardIDs, nil)
+	assertRebalanceCooldown(t, cooldown, nil)
 	if len(manager.listCalls) != 2 {
 		t.Fatalf("List calls = %d, want 2", len(manager.listCalls))
 	}
@@ -280,6 +290,77 @@ func TestRebalanceShardsOnceRetriesSnapshotReadsBeforePlanning(t *testing.T) {
 		{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
 	})
 	waitWorkerGroupDone(t, &workerWG)
+}
+
+func TestRebalanceShardsOnceCooldownSkipsRepeatedTarget(t *testing.T) {
+	t.Parallel()
+
+	acquiredLease := &recordingReleaseLease{}
+	manager := &recordingRebalanceOnceManager{
+		leaseOwners:  map[string]string{},
+		workerOwners: []string{"self"},
+		acquireResults: []acquireResult{
+			{lease: acquiredLease, acquired: true},
+		},
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+	now := time.Date(2026, 6, 29, 3, 4, 5, 0, time.UTC)
+	cooldown := map[string]time.Time{}
+	shards := shardMapForReadiness(testShard("shard-a", "", ""))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	first, err := c.rebalanceShardsOnce(
+		ctx,
+		shards,
+		newShardCompletionState(),
+		cooldown,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("first rebalanceShardsOnce() error = %v, want nil", err)
+	}
+	assertRebalancePlanActions(t, first.plan.actions, []rebalancePlanAction{
+		{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
+	})
+	assertShardList(t, first.movedShardIDs, []string{"shard-a"})
+	assertRebalanceCooldown(t, cooldown, map[string]time.Time{
+		"shard-a": now.Add(c.tuning.shardCooldownPeriod),
+	})
+
+	workers.stopAll()
+	waitWorkerGroupDone(t, &workerWG)
+	if acquiredLease.calls != 1 {
+		t.Fatalf("acquired lease Release calls = %d, want 1", acquiredLease.calls)
+	}
+
+	second, err := c.rebalanceShardsOnce(
+		ctx,
+		shards,
+		newShardCompletionState(),
+		cooldown,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("second rebalanceShardsOnce() error = %v, want nil", err)
+	}
+	assertRebalancePlanActions(t, second.plan.actions, nil)
+	assertShardList(t, second.movedShardIDs, nil)
+	assertRebalanceExecutionCalls(t, manager.executionCalls, []rebalanceExecutionCall{
+		{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
+	})
 }
 
 func TestRebalanceShardsOnceReturnsReadyShardErrorWithoutSnapshots(t *testing.T) {
@@ -446,6 +527,69 @@ func TestRebalanceShardsOnceReturnsExecutionErrorWithPlan(t *testing.T) {
 	})
 }
 
+func TestRebalanceShardsOnceRecordsCooldownForSuccessfulMovesBeforeExecutionError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	acquiredLease := &recordingReleaseLease{}
+	manager := &recordingRebalanceOnceManager{
+		leaseOwners: map[string]string{
+			"shard-b": "donor-a",
+			"shard-c": "donor-a",
+			"shard-d": "donor-a",
+		},
+		workerOwners: []string{"self", "donor-a"},
+		acquireResults: []acquireResult{
+			{lease: acquiredLease, acquired: true},
+		},
+		claimResults: []claimResult{
+			{err: errBoom},
+		},
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+	now := time.Date(2026, 6, 29, 2, 3, 4, 0, time.UTC)
+	cooldown := map[string]time.Time{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result, err := c.rebalanceShardsOnce(
+		ctx,
+		shardMapForReadiness(
+			testShard("shard-a", "", ""),
+			testShard("shard-b", "", ""),
+			testShard("shard-c", "", ""),
+			testShard("shard-d", "", ""),
+		),
+		newShardCompletionState(),
+		cooldown,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+		now,
+	)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("rebalanceShardsOnce() error = %v, want wraps %v", err, errBoom)
+	}
+	if result.started != 1 {
+		t.Fatalf("started = %d, want 1", result.started)
+	}
+	assertShardList(t, result.movedShardIDs, []string{"shard-a"})
+	assertRebalanceCooldown(t, cooldown, map[string]time.Time{
+		"shard-a": now.Add(c.tuning.shardCooldownPeriod),
+	})
+
+	workers.stopAll()
+	waitWorkerGroupDone(t, &workerWG)
+	if acquiredLease.calls != 1 {
+		t.Fatalf("acquired lease Release calls = %d, want 1", acquiredLease.calls)
+	}
+}
+
 func newTestRebalanceOnceConsumer(manager lease.Manager) *Consumer {
 	c := newTestRegisteredShardWorkerConsumer(nil)
 	c.store = &readinessCheckpointStore{
@@ -459,4 +603,21 @@ func newTestRebalanceOnceConsumer(manager lease.Manager) *Consumer {
 	c.tuning.heartbeatTTL = 30 * time.Millisecond
 	c.tuning.maxMovesPerRebalance = 2
 	return c
+}
+
+func assertRebalanceCooldown(t *testing.T, got, want map[string]time.Time) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("cooldown = %v, want %v", got, want)
+	}
+	for shardID, wantUntil := range want {
+		gotUntil, ok := got[shardID]
+		if !ok {
+			t.Fatalf("cooldown missing shard %q; got %v", shardID, got)
+		}
+		if !gotUntil.Equal(wantUntil) {
+			t.Fatalf("cooldown[%s] = %v, want %v", shardID, gotUntil, wantUntil)
+		}
+	}
 }
