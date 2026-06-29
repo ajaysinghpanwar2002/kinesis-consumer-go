@@ -151,3 +151,138 @@ func TestRemoveRebalanceShardMissingReturnsOriginalList(t *testing.T) {
 		t.Fatalf("removeRebalanceShard missing = %v, want %v", got, shards)
 	}
 }
+
+func TestSelectLocalRebalanceShedShardsSelectsRunningOverage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 29, 1, 2, 3, 0, time.UTC)
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-e", "shard-a", "shard-d", "shard-b", "shard-c", "shard-x", "shard-y"},
+		map[string]string{
+			"shard-a": "self",
+			"shard-b": "self",
+			"shard-c": "self",
+			"shard-d": "self",
+			"shard-e": "self",
+			"shard-x": "worker-a",
+			"shard-y": "worker-b",
+		},
+		[]string{"self", "worker-a", "worker-b"},
+		"self",
+	)
+	workers := newShardWorkerSet()
+	for _, shardID := range []string{"shard-a", "shard-b", "shard-c", "shard-d", "shard-e"} {
+		workers.add(shardID, func() {})
+	}
+
+	got := selectLocalRebalanceShedShards(snapshot, "self", nil, workers, now, 10)
+	assertShardList(t, got, []string{"shard-a", "shard-b"})
+}
+
+func TestSelectLocalRebalanceShedShardsHonorsMaxMoves(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 29, 1, 2, 3, 0, time.UTC)
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-a", "shard-b", "shard-c", "shard-d", "shard-e", "shard-x", "shard-y"},
+		map[string]string{
+			"shard-a": "self",
+			"shard-b": "self",
+			"shard-c": "self",
+			"shard-d": "self",
+			"shard-e": "self",
+			"shard-x": "worker-a",
+			"shard-y": "worker-b",
+		},
+		[]string{"self", "worker-a", "worker-b"},
+		"self",
+	)
+	workers := newShardWorkerSet()
+	for _, shardID := range []string{"shard-a", "shard-b", "shard-c", "shard-d", "shard-e"} {
+		workers.add(shardID, func() {})
+	}
+
+	got := selectLocalRebalanceShedShards(snapshot, "self", nil, workers, now, 1)
+	assertShardList(t, got, []string{"shard-a"})
+}
+
+func TestSelectLocalRebalanceShedShardsSkipsCooldownAndNotRunning(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 29, 1, 2, 3, 0, time.UTC)
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-a", "shard-b", "shard-c", "shard-d", "shard-e", "shard-x", "shard-y"},
+		map[string]string{
+			"shard-a": "self",
+			"shard-b": "self",
+			"shard-c": "self",
+			"shard-d": "self",
+			"shard-e": "self",
+			"shard-x": "worker-a",
+			"shard-y": "worker-b",
+		},
+		[]string{"self", "worker-a", "worker-b"},
+		"self",
+	)
+	cooldown := map[string]time.Time{
+		"shard-a": now.Add(time.Minute),
+	}
+	workers := newShardWorkerSet()
+	for _, shardID := range []string{"shard-a", "shard-b", "shard-d", "shard-e"} {
+		workers.add(shardID, func() {})
+	}
+
+	got := selectLocalRebalanceShedShards(snapshot, "self", cooldown, workers, now, 10)
+	assertShardList(t, got, []string{"shard-b", "shard-d"})
+}
+
+func TestSelectLocalRebalanceShedShardsNoopsWhenWithinCeiling(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 29, 1, 2, 3, 0, time.UTC)
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-a", "shard-b", "shard-x", "shard-y"},
+		map[string]string{
+			"shard-a": "self",
+			"shard-b": "self",
+			"shard-x": "worker-a",
+			"shard-y": "worker-a",
+		},
+		[]string{"self", "worker-a"},
+		"self",
+	)
+	workers := newShardWorkerSet()
+	workers.add("shard-a", func() {})
+	workers.add("shard-b", func() {})
+
+	got := selectLocalRebalanceShedShards(snapshot, "self", nil, workers, now, 10)
+	if len(got) != 0 {
+		t.Fatalf("shed shards = %v, want empty", got)
+	}
+}
+
+func TestSelectLocalRebalanceShedShardsRequiresWorkersAndMoveBudget(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 29, 1, 2, 3, 0, time.UTC)
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-a", "shard-b", "shard-c", "shard-x"},
+		map[string]string{
+			"shard-a": "self",
+			"shard-b": "self",
+			"shard-c": "self",
+			"shard-x": "worker-a",
+		},
+		[]string{"self", "worker-a"},
+		"self",
+	)
+	workers := newShardWorkerSet()
+	workers.add("shard-a", func() {})
+
+	if got := selectLocalRebalanceShedShards(snapshot, "self", nil, nil, now, 10); len(got) != 0 {
+		t.Fatalf("shed shards with nil workers = %v, want empty", got)
+	}
+	if got := selectLocalRebalanceShedShards(snapshot, "self", nil, workers, now, 0); len(got) != 0 {
+		t.Fatalf("shed shards with zero max moves = %v, want empty", got)
+	}
+}

@@ -63,3 +63,45 @@ func removeRebalanceShard(
 
 	return shards
 }
+
+func selectLocalRebalanceShedShards(
+	snapshot rebalanceOwnershipSnapshot,
+	self string,
+	cooldown map[string]time.Time,
+	workers *shardWorkerSet,
+	now time.Time,
+	maxMoves int,
+) []string {
+	if workers == nil || maxMoves <= 0 {
+		return nil
+	}
+
+	excess := snapshot.ownerCounts[self] - snapshot.high
+	if excess <= 0 {
+		return nil
+	}
+
+	limit := excess
+	if maxMoves < limit {
+		limit = maxMoves
+	}
+
+	shards := make([]string, 0, limit)
+	for _, shardID := range snapshot.ourShards {
+		if len(shards) >= limit {
+			break
+		}
+		if shardID == "" {
+			continue
+		}
+		if rebalanceShardInCooldown(shardID, cooldown, now) {
+			continue
+		}
+		if !workers.has(shardID) {
+			continue
+		}
+		shards = append(shards, shardID)
+	}
+
+	return shards
+}
