@@ -23,10 +23,19 @@ type recordingRebalanceOnceManager struct {
 	executionCalls []rebalanceExecutionCall
 	acquireResults []acquireResult
 	claimResults   []claimResult
+	listCh         chan string
+	workerCh       chan string
+	executionCh    chan rebalanceExecutionCall
 }
 
 func (m *recordingRebalanceOnceManager) List(_ context.Context, streamName string) (map[string]string, error) {
 	m.listCalls = append(m.listCalls, streamName)
+	if m.listCh != nil {
+		select {
+		case m.listCh <- streamName:
+		default:
+		}
+	}
 	if len(m.listErrs) > 0 {
 		err := m.listErrs[0]
 		m.listErrs = m.listErrs[1:]
@@ -39,6 +48,12 @@ func (m *recordingRebalanceOnceManager) List(_ context.Context, streamName strin
 
 func (m *recordingRebalanceOnceManager) Workers(_ context.Context, streamName string) ([]string, error) {
 	m.workerCalls = append(m.workerCalls, streamName)
+	if m.workerCh != nil {
+		select {
+		case m.workerCh <- streamName:
+		default:
+		}
+	}
 	if len(m.workerErrs) > 0 {
 		err := m.workerErrs[0]
 		m.workerErrs = m.workerErrs[1:]
@@ -59,6 +74,12 @@ func (m *recordingRebalanceOnceManager) Acquire(_ context.Context, _ string, sha
 		kind:    rebalancePlanAcquireUnowned,
 		shardID: shardID,
 	})
+	if m.executionCh != nil {
+		select {
+		case m.executionCh <- rebalanceExecutionCall{kind: rebalancePlanAcquireUnowned, shardID: shardID}:
+		default:
+		}
+	}
 	return result.lease, result.acquired, result.err
 }
 
@@ -73,6 +94,12 @@ func (m *recordingRebalanceOnceManager) Claim(_ context.Context, _ string, shard
 		shardID: shardID,
 		donor:   expectedOwner,
 	})
+	if m.executionCh != nil {
+		select {
+		case m.executionCh <- rebalanceExecutionCall{kind: rebalancePlanClaimDonor, shardID: shardID, donor: expectedOwner}:
+		default:
+		}
+	}
 	return result.lease, result.claimed, result.err
 }
 

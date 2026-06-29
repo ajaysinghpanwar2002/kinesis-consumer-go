@@ -59,6 +59,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
 	completionState := newShardCompletionState()
+	rebalanceCooldown := make(map[string]time.Time)
 	if err := c.acquireAndStartReadyShardWorkers(
 		runCtx,
 		shardMap,
@@ -71,18 +72,21 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return err
 	}
 
-	refreshDone := make(chan struct{})
+	orchestrationDone := make(chan struct{})
 	go func() {
-		defer close(refreshDone)
-		if err := c.refreshAndStartReadyShardWorkersLoop(
+		defer close(orchestrationDone)
+		if err := c.refreshAndRebalanceShardWorkersLoop(
 			runCtx,
 			c.tuning.shardSyncInterval,
+			c.tuning.rebalanceIntervalMin,
 			shardMap,
 			completionState,
+			rebalanceCooldown,
 			workers,
 			&workerWG,
 			workerErrCh,
 			cancel,
+			time.Now,
 		); err != nil {
 			if errors.Is(err, context.Canceled) {
 				if errors.Is(runCtx.Err(), context.Canceled) {
@@ -103,13 +107,13 @@ func (c *Consumer) Start(ctx context.Context) error {
 	select {
 	case err := <-workerErrCh:
 		cancel()
-		<-refreshDone
+		<-orchestrationDone
 		workers.stopAll()
 		workerWG.Wait()
 		return err
 	case <-runCtx.Done():
 		cancel()
-		<-refreshDone
+		<-orchestrationDone
 		workers.stopAll()
 	}
 	workerWG.Wait()
