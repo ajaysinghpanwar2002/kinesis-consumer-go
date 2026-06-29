@@ -13,11 +13,17 @@ type Option func(*options) error
 type options struct {
 	batchHandler BatchHandlerFunc
 	lease        leaseOptions
+	shutdown     shutdownOptions
 	tuning       tuningConfig
 }
 
 type leaseOptions struct {
 	manager lease.Manager
+}
+
+type shutdownOptions struct {
+	gracefulDrain        bool
+	gracefulDrainTimeout time.Duration
 }
 
 func defaultOptions() options {
@@ -154,6 +160,21 @@ func WithHeartbeat(interval, ttl time.Duration) Option {
 		}
 		cfg.tuning.heartbeatInterval = interval
 		cfg.tuning.heartbeatTTL = ttl
+		return nil
+	}
+}
+
+// WithGracefulDrain enables shutdown drain mode.
+//
+// On shutdown cancellation, workers will be allowed to finish in-flight work
+// once drain behavior is wired into Start. A zero timeout waits indefinitely.
+func WithGracefulDrain(timeout time.Duration) Option {
+	return func(cfg *options) error {
+		if timeout < 0 {
+			return errors.New("graceful drain timeout cannot be negative")
+		}
+		cfg.shutdown.gracefulDrain = true
+		cfg.shutdown.gracefulDrainTimeout = timeout
 		return nil
 	}
 }

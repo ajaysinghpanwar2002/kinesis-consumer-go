@@ -160,6 +160,7 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 		WithLeaseManager(leaseMgr),
 		WithRetry(2, 3*time.Second),
 		WithBatching(4, 5),
+		WithGracefulDrain(6*time.Second),
 	)
 	if err != nil {
 		t.Fatalf("New() error = %v, want nil", err)
@@ -187,6 +188,12 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 	}
 	if c.leaseOwner == "" {
 		t.Fatal("leaseOwner = empty, want generated owner")
+	}
+	if !c.gracefulDrain {
+		t.Fatal("gracefulDrain = false, want true")
+	}
+	if c.drainTimeout != 6*time.Second {
+		t.Fatalf("drainTimeout = %v, want %v", c.drainTimeout, 6*time.Second)
 	}
 	if c.tuning.retryMaxAttempts != 2 {
 		t.Fatalf("retryMaxAttempts = %d, want 2", c.tuning.retryMaxAttempts)

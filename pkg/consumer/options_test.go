@@ -15,6 +15,12 @@ func TestDefaultOptions(t *testing.T) {
 	if cfg.batchHandler != nil {
 		t.Fatalf("batchHandler = %v, want nil", cfg.batchHandler)
 	}
+	if cfg.shutdown.gracefulDrain {
+		t.Fatal("gracefulDrain = true, want false")
+	}
+	if cfg.shutdown.gracefulDrainTimeout != 0 {
+		t.Fatalf("gracefulDrainTimeout = %v, want 0", cfg.shutdown.gracefulDrainTimeout)
+	}
 	if cfg.tuning != wantTuning {
 		t.Fatalf("tuning = %+v, want %+v", cfg.tuning, wantTuning)
 	}
@@ -115,6 +121,11 @@ func TestOptionValidation(t *testing.T) {
 			opt:  WithHeartbeat(time.Second, 0),
 			want: "heartbeat ttl must be > 0",
 		},
+		{
+			name: "graceful drain timeout",
+			opt:  WithGracefulDrain(-1 * time.Second),
+			want: "graceful drain timeout cannot be negative",
+		},
 	}
 
 	for _, tt := range tests {
@@ -151,6 +162,7 @@ func TestOptionsApplyValues(t *testing.T) {
 		WithShardConcurrency(8),
 		WithRebalance(9*time.Second, 10*time.Second, 11*time.Second, 12),
 		WithHeartbeat(13*time.Second, 14*time.Second),
+		WithGracefulDrain(15 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("applyOptions() error = %v, want nil", err)
@@ -167,6 +179,12 @@ func TestOptionsApplyValues(t *testing.T) {
 	}
 	if cfg.lease.manager != leaseMgr {
 		t.Fatalf("lease manager was not applied")
+	}
+	if !cfg.shutdown.gracefulDrain {
+		t.Fatal("gracefulDrain = false, want true")
+	}
+	if cfg.shutdown.gracefulDrainTimeout != 15*time.Second {
+		t.Fatalf("gracefulDrainTimeout = %v, want %v", cfg.shutdown.gracefulDrainTimeout, 15*time.Second)
 	}
 
 	if cfg.tuning.retryMaxAttempts != 2 {
@@ -207,5 +225,22 @@ func TestOptionsApplyValues(t *testing.T) {
 	}
 	if cfg.tuning.heartbeatTTL != 14*time.Second {
 		t.Fatalf("heartbeatTTL = %v, want %v", cfg.tuning.heartbeatTTL, 14*time.Second)
+	}
+}
+
+func TestWithGracefulDrainZeroTimeoutEnablesIndefiniteDrain(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := applyOptions([]Option{
+		WithGracefulDrain(0),
+	})
+	if err != nil {
+		t.Fatalf("applyOptions() error = %v, want nil", err)
+	}
+	if !cfg.shutdown.gracefulDrain {
+		t.Fatal("gracefulDrain = false, want true")
+	}
+	if cfg.shutdown.gracefulDrainTimeout != 0 {
+		t.Fatalf("gracefulDrainTimeout = %v, want 0", cfg.shutdown.gracefulDrainTimeout)
 	}
 }

@@ -15,14 +15,16 @@ import (
 
 // Consumer owns Kinesis shard consumption for one worker process.
 type Consumer struct {
-	cfg          Config
-	client       kinesisAPI
-	store        checkpoint.Store
-	handler      HandlerFunc
-	batchHandler BatchHandlerFunc
-	leaseManager lease.Manager
-	leaseOwner   string
-	tuning       tuningConfig
+	cfg           Config
+	client        kinesisAPI
+	store         checkpoint.Store
+	handler       HandlerFunc
+	batchHandler  BatchHandlerFunc
+	leaseManager  lease.Manager
+	leaseOwner    string
+	gracefulDrain bool
+	drainTimeout  time.Duration
+	tuning        tuningConfig
 
 	processShardRecordsPassFn func(context.Context, string, int) (string, int, error)
 	processShardRecordsLoopFn func(context.Context, string) (string, int, error)
@@ -160,14 +162,16 @@ func New(cfg Config, client *Client, store checkpoint.Store, handler HandlerFunc
 	}
 
 	return &Consumer{
-		cfg:          resolvedCfg,
-		client:       client,
-		store:        store,
-		handler:      handler,
-		batchHandler: batchHandler,
-		leaseManager: leaseManager,
-		leaseOwner:   leaseOwner,
-		tuning:       opt.tuning,
+		cfg:           resolvedCfg,
+		client:        client,
+		store:         store,
+		handler:       handler,
+		batchHandler:  batchHandler,
+		leaseManager:  leaseManager,
+		leaseOwner:    leaseOwner,
+		gracefulDrain: opt.shutdown.gracefulDrain,
+		drainTimeout:  opt.shutdown.gracefulDrainTimeout,
+		tuning:        opt.tuning,
 	}, nil
 }
 
