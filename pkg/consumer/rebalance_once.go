@@ -64,6 +64,19 @@ func (c *Consumer) rebalanceShardsOnce(
 	if err != nil {
 		return result, err
 	}
+
+	remainingMoves := c.tuning.maxMovesPerRebalance - len(result.movedShardIDs)
+	shedShardIDs := selectLocalRebalanceShedShards(
+		result.plan.snapshot,
+		c.leaseOwner,
+		cooldown,
+		workers,
+		now,
+		remainingMoves,
+	)
+	stoppedShardIDs := executeLocalRebalanceShedShards(shedShardIDs, workers)
+	result.movedShardIDs = append(result.movedShardIDs, stoppedShardIDs...)
+	recordRebalanceCooldown(cooldown, stoppedShardIDs, now, c.tuning.shardCooldownPeriod)
 	return result, nil
 }
 

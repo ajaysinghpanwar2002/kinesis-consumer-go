@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,6 +201,41 @@ func TestExecuteRebalancePlanSkipsAlreadyRunningWorkers(t *testing.T) {
 	assertRebalanceExecutionCalls(t, manager.calls, nil)
 	workers.stopAll()
 	waitWorkerGroupDone(t, &workerWG)
+}
+
+func TestExecuteLocalRebalanceShedShardsStopsRunningWorkersInOrder(t *testing.T) {
+	t.Parallel()
+
+	workers := newShardWorkerSet()
+	var cancelledA int32
+	var cancelledB int32
+	workers.add("shard-a", func() { atomic.AddInt32(&cancelledA, 1) })
+	workers.add("shard-b", func() { atomic.AddInt32(&cancelledB, 1) })
+
+	got := executeLocalRebalanceShedShards(
+		[]string{"shard-a", "missing", "", "shard-b"},
+		workers,
+	)
+	assertShardList(t, got, []string{"shard-a", "shard-b"})
+	if workers.has("shard-a") {
+		t.Fatal("workers.has(shard-a) = true after shed, want false")
+	}
+	if workers.has("shard-b") {
+		t.Fatal("workers.has(shard-b) = true after shed, want false")
+	}
+	if got := atomic.LoadInt32(&cancelledA); got != 1 {
+		t.Fatalf("shard-a cancel calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&cancelledB); got != 1 {
+		t.Fatalf("shard-b cancel calls = %d, want 1", got)
+	}
+}
+
+func TestExecuteLocalRebalanceShedShardsNoopsWithoutWorkers(t *testing.T) {
+	t.Parallel()
+
+	got := executeLocalRebalanceShedShards([]string{"shard-a"}, nil)
+	assertShardList(t, got, nil)
 }
 
 func TestExecuteRebalancePlanReturnsAcquireError(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -361,6 +362,82 @@ func TestRebalanceShardsOnceCooldownSkipsRepeatedTarget(t *testing.T) {
 	assertRebalanceExecutionCalls(t, manager.executionCalls, []rebalanceExecutionCall{
 		{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
 	})
+}
+
+func TestRebalanceShardsOnceShedsLocalOverageAndRecordsCooldown(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingRebalanceOnceManager{
+		leaseOwners: map[string]string{
+			"shard-a": "self",
+			"shard-b": "self",
+			"shard-c": "self",
+			"shard-d": "worker-a",
+		},
+		workerOwners: []string{"self", "worker-a"},
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	workers := newShardWorkerSet()
+	var cancelledA int32
+	var cancelledB int32
+	var cancelledC int32
+	workers.add("shard-a", func() { atomic.AddInt32(&cancelledA, 1) })
+	workers.add("shard-b", func() { atomic.AddInt32(&cancelledB, 1) })
+	workers.add("shard-c", func() { atomic.AddInt32(&cancelledC, 1) })
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+	now := time.Date(2026, 6, 29, 4, 5, 6, 0, time.UTC)
+	cooldown := map[string]time.Time{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result, err := c.rebalanceShardsOnce(
+		ctx,
+		shardMapForReadiness(
+			testShard("shard-a", "", ""),
+			testShard("shard-b", "", ""),
+			testShard("shard-c", "", ""),
+			testShard("shard-d", "", ""),
+		),
+		newShardCompletionState(),
+		cooldown,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+		now,
+	)
+	if err != nil {
+		t.Fatalf("rebalanceShardsOnce() error = %v, want nil", err)
+	}
+	assertRebalancePlanActions(t, result.plan.actions, nil)
+	if result.plan.initialCount != 3 || result.plan.projectedCount != 3 {
+		t.Fatalf("plan initial/projected = %d/%d, want 3/3", result.plan.initialCount, result.plan.projectedCount)
+	}
+	assertShardList(t, result.movedShardIDs, []string{"shard-a"})
+	assertRebalanceCooldown(t, cooldown, map[string]time.Time{
+		"shard-a": now.Add(c.tuning.shardCooldownPeriod),
+	})
+	if workers.has("shard-a") {
+		t.Fatal("workers.has(shard-a) = true after shed, want false")
+	}
+	if !workers.has("shard-b") {
+		t.Fatal("workers.has(shard-b) = false after shed, want true")
+	}
+	if !workers.has("shard-c") {
+		t.Fatal("workers.has(shard-c) = false after shed, want true")
+	}
+	if got := atomic.LoadInt32(&cancelledA); got != 1 {
+		t.Fatalf("shard-a cancel calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&cancelledB); got != 0 {
+		t.Fatalf("shard-b cancel calls = %d, want 0", got)
+	}
+	if got := atomic.LoadInt32(&cancelledC); got != 0 {
+		t.Fatalf("shard-c cancel calls = %d, want 0", got)
+	}
+	assertRebalanceExecutionCalls(t, manager.executionCalls, nil)
 }
 
 func TestRebalanceShardsOnceReturnsReadyShardErrorWithoutSnapshots(t *testing.T) {

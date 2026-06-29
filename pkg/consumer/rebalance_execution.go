@@ -33,6 +33,26 @@ func (c *Consumer) executeRebalancePlan(
 	return result, nil
 }
 
+func executeLocalRebalanceShedShards(
+	shardIDs []string,
+	workers *shardWorkerSet,
+) []string {
+	if workers == nil {
+		return nil
+	}
+
+	stopped := make([]string, 0, len(shardIDs))
+	for _, shardID := range shardIDs {
+		if shardID == "" {
+			continue
+		}
+		if workers.stop(shardID) {
+			stopped = append(stopped, shardID)
+		}
+	}
+	return stopped
+}
+
 func (c *Consumer) executeRebalancePlanAction(
 	ctx context.Context,
 	action rebalancePlanAction,
