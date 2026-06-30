@@ -6,36 +6,38 @@ import (
 )
 
 type tuningConfig struct {
-	shardConcurrency        int
-	batchSize               int32
-	pollInterval            time.Duration
-	shardSyncInterval       time.Duration
-	retryMaxAttempts        int
-	retryBackoff            time.Duration
-	checkpointEvery         int
-	rebalanceIntervalMin    time.Duration
-	rebalanceIntervalJitter time.Duration
-	heartbeatInterval       time.Duration
-	heartbeatTTL            time.Duration
-	shardCooldownPeriod     time.Duration
-	maxMovesPerRebalance    int
+	shardConcurrency         int
+	batchSize                int32
+	pollInterval             time.Duration
+	shardSyncInterval        time.Duration
+	retryMaxAttempts         int
+	retryBackoff             time.Duration
+	checkpointEvery          int
+	rebalanceIntervalMin     time.Duration
+	rebalanceIntervalJitter  time.Duration
+	heartbeatInterval        time.Duration
+	heartbeatTTL             time.Duration
+	shardLeaseReleaseTimeout time.Duration
+	shardCooldownPeriod      time.Duration
+	maxMovesPerRebalance     int
 }
 
 func defaultTuning() tuningConfig {
 	return tuningConfig{
-		shardConcurrency:        1,
-		batchSize:               100,
-		pollInterval:            time.Second,
-		shardSyncInterval:       time.Minute,
-		retryMaxAttempts:        3,
-		retryBackoff:            time.Second,
-		checkpointEvery:         100,
-		rebalanceIntervalMin:    10 * time.Second,
-		rebalanceIntervalJitter: 10 * time.Second,
-		heartbeatInterval:       5 * time.Second,
-		heartbeatTTL:            20 * time.Second,
-		shardCooldownPeriod:     10 * time.Second,
-		maxMovesPerRebalance:    2,
+		shardConcurrency:         1,
+		batchSize:                100,
+		pollInterval:             time.Second,
+		shardSyncInterval:        time.Minute,
+		retryMaxAttempts:         3,
+		retryBackoff:             time.Second,
+		checkpointEvery:          100,
+		rebalanceIntervalMin:     10 * time.Second,
+		rebalanceIntervalJitter:  10 * time.Second,
+		heartbeatInterval:        5 * time.Second,
+		heartbeatTTL:             20 * time.Second,
+		shardLeaseReleaseTimeout: 5 * time.Second,
+		shardCooldownPeriod:      10 * time.Second,
+		maxMovesPerRebalance:     2,
 	}
 }
 
@@ -72,6 +74,9 @@ func (t tuningConfig) validate() error {
 	}
 	if t.heartbeatTTL <= 0 {
 		return errors.New("heartbeat ttl must be > 0")
+	}
+	if t.shardLeaseReleaseTimeout <= 0 {
+		return errors.New("shard lease release timeout must be > 0")
 	}
 	if t.shardCooldownPeriod <= 0 {
 		return errors.New("shard cooldown must be > 0")

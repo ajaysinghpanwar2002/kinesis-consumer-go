@@ -37,6 +37,9 @@ func TestRunShardWorkerReleasesLeaseAfterContextCancellation(t *testing.T) {
 	if shardLease.ctx == nil {
 		t.Fatal("Release context = nil, want context")
 	}
+	if _, ok := shardLease.ctx.Deadline(); !ok {
+		t.Fatal("Release context has no deadline")
+	}
 }
 
 func TestRunShardWorkerStopsRenewalBeforeRelease(t *testing.T) {
@@ -166,11 +169,38 @@ func TestRunShardWorkerIgnoresContextCancellation(t *testing.T) {
 	}
 }
 
+func TestRunShardWorkerReturnsReleaseTimeout(t *testing.T) {
+	t.Parallel()
+
+	processReturn := make(chan struct{})
+	shardLease := &blockingReleaseLease{}
+	c := newTestShardWorkerConsumer(time.Hour, 30*time.Millisecond)
+	c.tuning.shardLeaseReleaseTimeout = time.Millisecond
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = ctx
+		_ = shardID
+		<-processReturn
+		return "", 0, nil
+	}
+
+	done := runShardWorker(context.Background(), c, "shard-1", shardLease)
+	close(processReturn)
+
+	err := waitShardWorkerDone(t, done, context.DeadlineExceeded)
+	if err == nil || err.Error() != "release shard lease shard-1 timed out: context deadline exceeded" {
+		t.Fatalf("runShardWorker() error = %v, want release timeout", err)
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
 func newTestShardWorkerConsumer(heartbeatInterval, heartbeatTTL time.Duration) *Consumer {
 	return &Consumer{
 		tuning: tuningConfig{
-			heartbeatInterval: heartbeatInterval,
-			heartbeatTTL:      heartbeatTTL,
+			heartbeatInterval:        heartbeatInterval,
+			heartbeatTTL:             heartbeatTTL,
+			shardLeaseReleaseTimeout: 30 * time.Millisecond,
 		},
 		processShardRecordsLoopFn: func(ctx context.Context, shardID string) (string, int, error) {
 			_ = shardID

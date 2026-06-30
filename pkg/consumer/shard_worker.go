@@ -79,7 +79,7 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 		}
 	}
 
-	if releaseErr := c.releaseShardLease(context.Background(), shardID, shardLease); releaseErr != nil && err == nil {
+	if releaseErr := c.releaseShardLeaseWithTimeout(shardID, shardLease); releaseErr != nil && err == nil {
 		err = releaseErr
 	}
 	return err

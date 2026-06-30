@@ -141,6 +141,22 @@ func (l *recordingReleaseLease) Release(ctx context.Context) error {
 	return l.err
 }
 
+type blockingReleaseLease struct {
+	ctx   context.Context
+	calls int
+}
+
+func (l *blockingReleaseLease) Renew(context.Context, time.Duration) error {
+	return nil
+}
+
+func (l *blockingReleaseLease) Release(ctx context.Context) error {
+	l.ctx = ctx
+	l.calls++
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 type recordingRenewLease struct {
 	ctx   context.Context
 	ttl   time.Duration
@@ -922,6 +938,49 @@ func TestReleaseShardLeaseWrapsError(t *testing.T) {
 	}
 	if err == nil || err.Error() != "release shard lease shard-1: boom" {
 		t.Fatalf("releaseShardLease() error = %v, want %q", err, "release shard lease shard-1: boom")
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func TestReleaseShardLeaseWithTimeoutSuccessUsesDeadlineContext(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	c := &Consumer{
+		tuning: tuningConfig{shardLeaseReleaseTimeout: 25 * time.Millisecond},
+	}
+
+	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
+	if err != nil {
+		t.Fatalf("releaseShardLeaseWithTimeout() error = %v, want nil", err)
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+	if shardLease.ctx == nil {
+		t.Fatal("Release context = nil, want context")
+	}
+	if _, ok := shardLease.ctx.Deadline(); !ok {
+		t.Fatal("Release context has no deadline")
+	}
+}
+
+func TestReleaseShardLeaseWithTimeoutReturnsDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &blockingReleaseLease{}
+	c := &Consumer{
+		tuning: tuningConfig{shardLeaseReleaseTimeout: time.Millisecond},
+	}
+
+	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("releaseShardLeaseWithTimeout() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if err == nil || err.Error() != "release shard lease shard-1 timed out: context deadline exceeded" {
+		t.Fatalf("releaseShardLeaseWithTimeout() error = %v, want timeout message", err)
 	}
 	if shardLease.calls != 1 {
 		t.Fatalf("Release calls = %d, want 1", shardLease.calls)

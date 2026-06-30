@@ -43,6 +43,9 @@ func TestDefaultTuning(t *testing.T) {
 	if cfg.heartbeatTTL != 20*time.Second {
 		t.Fatalf("heartbeatTTL = %v, want %v", cfg.heartbeatTTL, 20*time.Second)
 	}
+	if cfg.shardLeaseReleaseTimeout != 5*time.Second {
+		t.Fatalf("shardLeaseReleaseTimeout = %v, want %v", cfg.shardLeaseReleaseTimeout, 5*time.Second)
+	}
 	if cfg.shardCooldownPeriod != 10*time.Second {
 		t.Fatalf("shardCooldownPeriod = %v, want %v", cfg.shardCooldownPeriod, 10*time.Second)
 	}
@@ -116,6 +119,11 @@ func TestTuningValidate(t *testing.T) {
 			name: "heartbeat ttl",
 			edit: func(cfg *tuningConfig) { cfg.heartbeatTTL = 0 },
 			want: "heartbeat ttl must be > 0",
+		},
+		{
+			name: "shard lease release timeout",
+			edit: func(cfg *tuningConfig) { cfg.shardLeaseReleaseTimeout = 0 },
+			want: "shard lease release timeout must be > 0",
 		},
 		{
 			name: "shard cooldown",

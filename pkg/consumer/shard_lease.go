@@ -150,6 +150,30 @@ func (c *Consumer) releaseShardLease(ctx context.Context, shardID string, shardL
 	return nil
 }
 
+func (c *Consumer) releaseShardLeaseWithTimeout(shardID string, shardLease lease.Lease) error {
+	if shardLease == nil {
+		return nil
+	}
+
+	releaseCtx, cancel := context.WithTimeout(context.Background(), c.shardLeaseReleaseTimeout())
+	defer cancel()
+
+	if err := shardLease.Release(releaseCtx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("release shard lease %s timed out: %w", shardID, err)
+		}
+		return fmt.Errorf("release shard lease %s: %w", shardID, err)
+	}
+	return nil
+}
+
+func (c *Consumer) shardLeaseReleaseTimeout() time.Duration {
+	if c == nil || c.tuning.shardLeaseReleaseTimeout <= 0 {
+		return 5 * time.Second
+	}
+	return c.tuning.shardLeaseReleaseTimeout
+}
+
 func sleepWithContext(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return nil
