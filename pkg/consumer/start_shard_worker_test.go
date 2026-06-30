@@ -48,6 +48,49 @@ func TestStartRegisteredShardWorkerRegistersAndRemovesOnStop(t *testing.T) {
 	}
 }
 
+func TestStartRegisteredShardWorkerGracefulDrainDetachesWorkerContextFromRunContext(t *testing.T) {
+	t.Parallel()
+
+	c := newTestRegisteredShardWorkerConsumer(nil)
+	c.gracefulDrain = true
+	workerStarted := make(chan struct{})
+	workerCtxCanceled := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		close(workerStarted)
+		<-ctx.Done()
+		close(workerCtxCanceled)
+		return "", 0, nil
+	}
+
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancelRun := context.WithCancel(context.Background())
+	c.startRegisteredShardWorker(ctx, "shard-1", fakeShardLease{}, workers, &workerWG, workerErrCh, cancelRun)
+
+	<-workerStarted
+	cancelRun()
+
+	select {
+	case <-workerCtxCanceled:
+		t.Fatal("worker context canceled by run context in graceful drain mode")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	if !workers.stop("shard-1") {
+		t.Fatal("workers.stop(shard-1) = false, want true")
+	}
+	waitWorkerGroupDone(t, &workerWG)
+
+	select {
+	case <-workerCtxCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker context cancellation after explicit stop")
+	}
+}
+
 func TestStartRegisteredShardWorkerReportsErrorAndCancelsRun(t *testing.T) {
 	t.Parallel()
 

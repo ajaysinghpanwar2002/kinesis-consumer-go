@@ -116,9 +116,29 @@ func (c *Consumer) Start(ctx context.Context) error {
 	case <-runCtx.Done():
 		cancel()
 		<-orchestrationDone
-		workers.stopAll()
+		if ctx.Err() == nil {
+			workers.stopAll()
+			workerWG.Wait()
+			select {
+			case err := <-workerErrCh:
+				return err
+			default:
+			}
+			return runCtx.Err()
+		}
+		if c.gracefulDrain {
+			if err := drainShardWorkersOrError(workers, &workerWG, c.drainTimeout, workerErrCh); err != nil {
+				return err
+			}
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return nil
+			}
+			return ctx.Err()
+		} else {
+			workers.stopAll()
+			workerWG.Wait()
+		}
 	}
-	workerWG.Wait()
 
 	select {
 	case err := <-workerErrCh:

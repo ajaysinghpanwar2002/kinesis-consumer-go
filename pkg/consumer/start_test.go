@@ -567,6 +567,300 @@ func TestStartStopsAllInitialWorkersOnContextCancellation(t *testing.T) {
 	}
 }
 
+func TestStartGracefulDrainWaitsForNaturalWorkerExitOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.gracefulDrain = true
+	c.drainTimeout = time.Second
+
+	workerStarted := make(chan struct{})
+	finishWorker := make(chan struct{})
+	workerCtxCanceled := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		close(workerStarted)
+		select {
+		case <-ctx.Done():
+			close(workerCtxCanceled)
+			return "", 0, nil
+		case <-finishWorker:
+			return "", 0, nil
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	<-workerStarted
+	cancel()
+
+	assertStartStillRunning(t, done)
+	select {
+	case <-workerCtxCanceled:
+		t.Fatal("worker context canceled during graceful drain")
+	default:
+	}
+
+	close(finishWorker)
+	waitStartDone(t, done, nil)
+
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func TestStartGracefulDrainTimeoutForceStopsWorkers(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.gracefulDrain = true
+	c.drainTimeout = 10 * time.Millisecond
+
+	workerStarted := make(chan struct{})
+	workerCtxCanceled := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		close(workerStarted)
+		<-ctx.Done()
+		close(workerCtxCanceled)
+		return "", 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	<-workerStarted
+	cancel()
+
+	waitStartDone(t, done, errGracefulDrainTimeout)
+	select {
+	case <-workerCtxCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for forced worker stop")
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+func TestStartGracefulDrainStillForceStopsWorkersOnFatalError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLeaseA := &recordingReleaseLease{}
+	shardLeaseB := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 2),
+		results: []acquireResult{
+			{lease: shardLeaseA, acquired: true},
+			{lease: shardLeaseB, acquired: true},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-a")},
+					{ShardId: aws.String("shard-b")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.gracefulDrain = true
+	c.drainTimeout = time.Second
+
+	shardAStarted := make(chan struct{})
+	shardBStarted := make(chan struct{})
+	returnShardError := make(chan struct{})
+	shardBStopped := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		switch shardID {
+		case "shard-a":
+			close(shardAStarted)
+			<-returnShardError
+			return "", 0, errBoom
+		case "shard-b":
+			close(shardBStarted)
+			<-ctx.Done()
+			close(shardBStopped)
+			return "", 0, nil
+		default:
+			return "", 0, errors.New("unexpected shard")
+		}
+	}
+
+	done := runStart(context.Background(), c)
+
+	_ = waitAcquireCall(t, manager)
+	_ = waitAcquireCall(t, manager)
+	<-shardAStarted
+	<-shardBStarted
+	close(returnShardError)
+
+	waitStartDone(t, done, errBoom)
+	select {
+	case <-shardBStopped:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for non-failing worker to be force-stopped")
+	}
+	if shardLeaseA.calls != 1 {
+		t.Fatalf("shard-a Release calls = %d, want 1", shardLeaseA.calls)
+	}
+	if shardLeaseB.calls != 1 {
+		t.Fatalf("shard-b Release calls = %d, want 1", shardLeaseB.calls)
+	}
+}
+
+func TestStartGracefulDrainForceStopsWorkersOnErrorDuringDrain(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLeaseA := &recordingReleaseLease{}
+	shardLeaseB := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 2),
+		results: []acquireResult{
+			{lease: shardLeaseA, acquired: true},
+			{lease: shardLeaseB, acquired: true},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-a")},
+					{ShardId: aws.String("shard-b")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.gracefulDrain = true
+	c.drainTimeout = time.Second
+
+	shardAStarted := make(chan struct{})
+	shardBStarted := make(chan struct{})
+	returnShardError := make(chan struct{})
+	shardBStopped := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		switch shardID {
+		case "shard-a":
+			close(shardAStarted)
+			<-returnShardError
+			return "", 0, errBoom
+		case "shard-b":
+			close(shardBStarted)
+			<-ctx.Done()
+			close(shardBStopped)
+			return "", 0, nil
+		default:
+			return "", 0, errors.New("unexpected shard")
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	_ = waitAcquireCall(t, manager)
+	<-shardAStarted
+	<-shardBStarted
+	cancel()
+
+	assertStartStillRunning(t, done)
+	close(returnShardError)
+
+	waitStartDone(t, done, errBoom)
+	select {
+	case <-shardBStopped:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for remaining worker to be force-stopped")
+	}
+	if shardLeaseA.calls != 1 {
+		t.Fatalf("shard-a Release calls = %d, want 1", shardLeaseA.calls)
+	}
+	if shardLeaseB.calls != 1 {
+		t.Fatalf("shard-b Release calls = %d, want 1", shardLeaseB.calls)
+	}
+}
+
+func TestStartGracefulDrainReturnsFinalWorkerErrorDuringDrain(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.gracefulDrain = true
+	c.drainTimeout = time.Second
+
+	workerStarted := make(chan struct{})
+	returnShardError := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = ctx
+		_ = shardID
+		close(workerStarted)
+		<-returnShardError
+		return "", 0, errBoom
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	<-workerStarted
+	cancel()
+
+	assertStartStillRunning(t, done)
+	close(returnShardError)
+
+	waitStartDone(t, done, errBoom)
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
 func TestStartDoesNotReleaseNotAcquiredShards(t *testing.T) {
 	t.Parallel()
 

@@ -14,6 +14,15 @@ func drainShardWorkers(
 	workerWG *sync.WaitGroup,
 	timeout time.Duration,
 ) error {
+	return drainShardWorkersOrError(workers, workerWG, timeout, nil)
+}
+
+func drainShardWorkersOrError(
+	workers *shardWorkerSet,
+	workerWG *sync.WaitGroup,
+	timeout time.Duration,
+	workerErrCh <-chan error,
+) error {
 	if workerWG == nil {
 		return nil
 	}
@@ -25,21 +34,65 @@ func drainShardWorkers(
 	}()
 
 	if timeout <= 0 {
-		<-done
-		return nil
+		return waitForShardDrain(workers, workerWG, done, nil, 0, workerErrCh)
 	}
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	select {
-	case <-done:
-		return nil
-	case <-timer.C:
-		if workers != nil {
-			workers.stopAll()
+	return waitForShardDrain(workers, workerWG, done, timer.C, timeout, workerErrCh)
+}
+
+func waitForShardDrain(
+	workers *shardWorkerSet,
+	workerWG *sync.WaitGroup,
+	done <-chan struct{},
+	timeout <-chan time.Time,
+	timeoutAfter time.Duration,
+	workerErrCh <-chan error,
+) error {
+	for {
+		select {
+		case <-done:
+			if err := pendingShardDrainError(workerErrCh); err != nil {
+				if workers != nil {
+					workers.stopAll()
+				}
+				workerWG.Wait()
+				return err
+			}
+			return nil
+		case err, ok := <-workerErrCh:
+			if !ok {
+				workerErrCh = nil
+				continue
+			}
+			if err == nil {
+				continue
+			}
+			if workers != nil {
+				workers.stopAll()
+			}
+			workerWG.Wait()
+			return err
+		case <-timeout:
+			if workers != nil {
+				workers.stopAll()
+			}
+			workerWG.Wait()
+			return fmt.Errorf("%w after %s", errGracefulDrainTimeout, timeoutAfter)
 		}
-		workerWG.Wait()
-		return fmt.Errorf("%w after %s", errGracefulDrainTimeout, timeout)
+	}
+}
+
+func pendingShardDrainError(workerErrCh <-chan error) error {
+	select {
+	case err, ok := <-workerErrCh:
+		if !ok {
+			return nil
+		}
+		return err
+	default:
+		return nil
 	}
 }

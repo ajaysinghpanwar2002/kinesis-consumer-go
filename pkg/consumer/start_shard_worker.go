@@ -19,7 +19,11 @@ func (c *Consumer) startRegisteredShardWorker(
 	workerErrCh chan<- error,
 	stopRun context.CancelFunc,
 ) {
-	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerBaseCtx := ctx
+	if c.gracefulDrain {
+		workerBaseCtx = context.Background()
+	}
+	workerCtx, stopWorker := context.WithCancel(workerBaseCtx)
 	workers.add(shardID, stopWorker)
 
 	workerWG.Add(1)

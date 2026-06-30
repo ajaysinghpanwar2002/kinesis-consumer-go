@@ -166,8 +166,8 @@ func WithHeartbeat(interval, ttl time.Duration) Option {
 
 // WithGracefulDrain enables shutdown drain mode.
 //
-// On shutdown cancellation, workers will be allowed to finish in-flight work
-// once drain behavior is wired into Start. A zero timeout waits indefinitely.
+// On shutdown cancellation, workers are allowed to finish in-flight work before
+// Start returns. A zero timeout waits indefinitely.
 func WithGracefulDrain(timeout time.Duration) Option {
 	return func(cfg *options) error {
 		if timeout < 0 {
