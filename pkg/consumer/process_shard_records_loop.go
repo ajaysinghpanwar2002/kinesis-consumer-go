@@ -20,6 +20,12 @@ func (c *Consumer) processShardRecordsLoop(ctx context.Context, shardID string) 
 			return lastSeq, processedSinceCheckpoint, fmt.Errorf("process shard records loop %s: %w", shardID, ctx.Err())
 		default:
 		}
+		if c.isDraining() {
+			if err := c.checkpointOnDrain(ctx, shardID, lastSeq, processedSinceCheckpoint); err != nil {
+				return lastSeq, processedSinceCheckpoint, fmt.Errorf("process shard records loop %s: %w", shardID, err)
+			}
+			return lastSeq, processedSinceCheckpoint, nil
+		}
 
 		passStartCount := processedSinceCheckpoint
 		passLastSeq, count, err := c.runShardRecordsPass(ctx, shardID, processedSinceCheckpoint)
@@ -32,6 +38,12 @@ func (c *Consumer) processShardRecordsLoop(ctx context.Context, shardID string) 
 				return lastSeq, processedSinceCheckpoint, nil
 			}
 			return lastSeq, processedSinceCheckpoint, fmt.Errorf("process shard records loop %s: %w", shardID, err)
+		}
+		if c.isDraining() {
+			if err := c.checkpointOnDrain(ctx, shardID, lastSeq, processedSinceCheckpoint); err != nil {
+				return lastSeq, processedSinceCheckpoint, fmt.Errorf("process shard records loop %s: %w", shardID, err)
+			}
+			return lastSeq, processedSinceCheckpoint, nil
 		}
 		if passLastSeq == "" && count == passStartCount {
 			if err := c.sleep(ctx, c.tuning.pollInterval); err != nil {

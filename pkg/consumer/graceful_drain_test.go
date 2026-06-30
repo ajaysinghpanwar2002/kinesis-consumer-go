@@ -94,3 +94,36 @@ func TestDrainShardWorkersNoopsWithoutWorkerGroup(t *testing.T) {
 		t.Fatalf("drainShardWorkers() error = %v, want nil", err)
 	}
 }
+
+func TestConsumerDrainShardWorkersSetsDrainStateOnlyWhileWaiting(t *testing.T) {
+	t.Parallel()
+
+	c := &Consumer{drainTimeout: time.Second}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerWG.Add(1)
+	workers.add("shard-a", func() {})
+
+	observedDraining := make(chan struct{})
+	go func() {
+		defer workerWG.Done()
+		defer workers.done("shard-a")
+
+		for !c.isDraining() {
+			time.Sleep(time.Millisecond)
+		}
+		close(observedDraining)
+	}()
+
+	if err := c.drainShardWorkers(workers, &workerWG, nil); err != nil {
+		t.Fatalf("drainShardWorkers() error = %v, want nil", err)
+	}
+	select {
+	case <-observedDraining:
+	default:
+		t.Fatal("worker did not observe draining state")
+	}
+	if c.isDraining() {
+		t.Fatal("isDraining() = true after drain returned, want false")
+	}
+}

@@ -141,6 +141,143 @@ func TestProcessShardRecordsLoopCarriesLatestNonEmptySequence(t *testing.T) {
 	}
 }
 
+func TestProcessShardRecordsLoopCheckpointsPendingProgressOnDrain(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	var c *Consumer
+	c = &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		store:  store,
+		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			if processedSinceCheckpoint != 0 {
+				t.Fatalf("processedSinceCheckpoint = %d, want 0", processedSinceCheckpoint)
+			}
+			c.draining.Store(true)
+			return "sequence-1", 2, nil
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			_ = d
+			t.Fatal("sleep called after drain")
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsLoop() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	if store.saveCalls[0].sequenceNumber != "sequence-1" {
+		t.Fatalf("sequenceNumber = %q, want %q", store.saveCalls[0].sequenceNumber, "sequence-1")
+	}
+}
+
+func TestProcessShardRecordsLoopObservesDrainBetweenFetchedPages(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	var c *Consumer
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("iterator-1"),
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+				NextShardIterator: aws.String("iterator-2"),
+			},
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-2")}},
+				NextShardIterator: aws.String("iterator-3"),
+			},
+		},
+		afterGetRecords: func() {
+			c.draining.Store(true)
+		},
+	}
+	var handled []string
+	c = &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			handled = append(handled, aws.ToString(record.SequenceNumber))
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsLoop() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	if len(client.getRecordsCalls) != 1 {
+		t.Fatalf("GetRecords calls = %d, want 1", len(client.getRecordsCalls))
+	}
+	if len(handled) != 1 || handled[0] != "sequence-1" {
+		t.Fatalf("handled records = %v, want [sequence-1]", handled)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	if store.saveCalls[0].sequenceNumber != "sequence-1" {
+		t.Fatalf("sequenceNumber = %q, want %q", store.saveCalls[0].sequenceNumber, "sequence-1")
+	}
+}
+
+func TestProcessShardRecordsLoopWrapsDrainCheckpointError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	store := &fakeCheckpointSaveStore{saveErr: errBoom}
+	var c *Consumer
+	c = &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+			_ = ctx
+			_ = shardID
+			_ = processedSinceCheckpoint
+			c.draining.Store(true)
+			return "sequence-1", 1, nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(context.Background(), "shard-1")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("processShardRecordsLoop() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "process shard records loop shard-1: save drain shard checkpoint shard-1: save shard checkpoint shard-1 sequence-1: boom" {
+		t.Fatalf("processShardRecordsLoop() error = %v, want %q", err, "process shard records loop shard-1: save drain shard checkpoint shard-1: save shard checkpoint shard-1 sequence-1: boom")
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+}
+
 func TestProcessShardRecordsLoopWrapsPassError(t *testing.T) {
 	t.Parallel()
 

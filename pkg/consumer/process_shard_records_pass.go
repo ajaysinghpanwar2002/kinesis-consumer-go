@@ -15,6 +15,9 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 	if err != nil {
 		return lastSeq, count, fmt.Errorf("process shard records pass %s: %w", shardID, err)
 	}
+	if c.isDraining() {
+		return lastSeq, count, nil
+	}
 	if shardRecordsPagesEnded(pages) {
 		if err := c.saveShardCompletionCheckpoint(ctx, shardID, lastSeq); err != nil {
 			return lastSeq, count, fmt.Errorf("process shard records pass completion checkpoint %s: %w", shardID, err)

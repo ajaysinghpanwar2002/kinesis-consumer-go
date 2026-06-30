@@ -225,6 +225,49 @@ func TestProcessShardRecordsPassSavesShardEndWithoutLastSequence(t *testing.T) {
 	}
 }
 
+func TestProcessShardRecordsPassDoesNotSaveShardEndWhenDraining(t *testing.T) {
+	t.Parallel()
+
+	var c *Consumer
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("iterator-1"),
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
+		},
+		afterGetRecords: func() {
+			c.draining.Store(true)
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	c = &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	if err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
+
 func TestProcessShardRecordsPassWrapsShardEndCheckpointError(t *testing.T) {
 	t.Parallel()
 

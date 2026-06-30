@@ -502,3 +502,81 @@ func TestSaveShardCheckpointIfDueWrapsSaveError(t *testing.T) {
 		t.Fatalf("saveShardCheckpointIfDue() count = %d, want 3", count)
 	}
 }
+
+func TestCheckpointOnDrainSavesPendingSequence(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	if err := c.checkpointOnDrain(context.Background(), "shard-1", "sequence-1", 2); err != nil {
+		t.Fatalf("checkpointOnDrain() error = %v, want nil", err)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	call := store.saveCalls[0]
+	if call.streamName != "stream" {
+		t.Fatalf("streamName = %q, want %q", call.streamName, "stream")
+	}
+	if call.shardID != "shard-1" {
+		t.Fatalf("shardID = %q, want %q", call.shardID, "shard-1")
+	}
+	if call.sequenceNumber != "sequence-1" {
+		t.Fatalf("sequenceNumber = %q, want %q", call.sequenceNumber, "sequence-1")
+	}
+}
+
+func TestCheckpointOnDrainNoopsWithoutPendingSequence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                     string
+		sequenceNumber           string
+		processedSinceCheckpoint int
+	}{
+		{name: "no processed records", sequenceNumber: "sequence-1", processedSinceCheckpoint: 0},
+		{name: "empty sequence", sequenceNumber: "", processedSinceCheckpoint: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &fakeCheckpointSaveStore{}
+			c := &Consumer{
+				cfg:   Config{StreamName: "stream"},
+				store: store,
+			}
+
+			if err := c.checkpointOnDrain(context.Background(), "shard-1", tt.sequenceNumber, tt.processedSinceCheckpoint); err != nil {
+				t.Fatalf("checkpointOnDrain() error = %v, want nil", err)
+			}
+			if len(store.saveCalls) != 0 {
+				t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+			}
+		})
+	}
+}
+
+func TestCheckpointOnDrainWrapsSaveError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	store := &fakeCheckpointSaveStore{saveErr: errBoom}
+	c := &Consumer{
+		cfg:   Config{StreamName: "stream"},
+		store: store,
+	}
+
+	err := c.checkpointOnDrain(context.Background(), "shard-1", "sequence-1", 2)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("checkpointOnDrain() error = %v, want wraps %v", err, errBoom)
+	}
+	if err == nil || err.Error() != "save drain shard checkpoint shard-1: save shard checkpoint shard-1 sequence-1: boom" {
+		t.Fatalf("checkpointOnDrain() error = %v, want %q", err, "save drain shard checkpoint shard-1: save shard checkpoint shard-1 sequence-1: boom")
+	}
+}

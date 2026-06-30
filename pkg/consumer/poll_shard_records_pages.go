@@ -28,6 +28,9 @@ func (c *Consumer) pollShardRecordsPages(ctx context.Context, shardID string) ([
 			return nil, fmt.Errorf("poll shard records pages %s: %w", shardID, ctx.Err())
 		default:
 		}
+		if c.isDraining() {
+			return pages, nil
+		}
 
 		out, err := c.getRecords(ctx, iterator)
 		if err != nil {
@@ -38,6 +41,9 @@ func (c *Consumer) pollShardRecordsPages(ctx context.Context, shardID string) ([
 		}
 		pages = append(pages, out)
 		if out == nil {
+			return pages, nil
+		}
+		if c.isDraining() {
 			return pages, nil
 		}
 		iterator = aws.ToString(out.NextShardIterator)

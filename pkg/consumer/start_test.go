@@ -624,6 +624,77 @@ func TestStartGracefulDrainWaitsForNaturalWorkerExitOnContextCancellation(t *tes
 	}
 }
 
+func TestStartGracefulDrainCheckpointsPendingProgressOnContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	store := &fakeCheckpointSaveStore{}
+	c.store = store
+	c.gracefulDrain = true
+	c.drainTimeout = time.Second
+	c.processShardRecordsLoopFn = nil
+
+	firstPassDone := make(chan struct{})
+	passCalls := 0
+	c.processShardRecordsPassFn = func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		_ = shardID
+		passCalls++
+		if passCalls == 1 {
+			if processedSinceCheckpoint != 0 {
+				return "", processedSinceCheckpoint, errors.New("first pass received nonzero checkpoint count")
+			}
+			close(firstPassDone)
+			return "sequence-1", 1, nil
+		}
+		if processedSinceCheckpoint != 1 {
+			return "", processedSinceCheckpoint, errors.New("drain pass received unexpected checkpoint count")
+		}
+		for !c.isDraining() {
+			select {
+			case <-ctx.Done():
+				return "", processedSinceCheckpoint, ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
+		return "", processedSinceCheckpoint, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	<-firstPassDone
+	cancel()
+
+	waitStartDone(t, done, nil)
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
+	}
+	call := store.saveCalls[0]
+	if call.shardID != "shard-1" {
+		t.Fatalf("shardID = %q, want %q", call.shardID, "shard-1")
+	}
+	if call.sequenceNumber != "sequence-1" {
+		t.Fatalf("sequenceNumber = %q, want %q", call.sequenceNumber, "sequence-1")
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
 func TestStartGracefulDrainTimeoutForceStopsWorkers(t *testing.T) {
 	t.Parallel()
 

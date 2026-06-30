@@ -51,6 +51,9 @@ func (c *Consumer) processRecordsPagesWithCheckpoint(ctx context.Context, shardI
 		if err != nil {
 			return lastSeq, count, fmt.Errorf("process records pages with checkpoint %s: %w", shardID, err)
 		}
+		if c.isDraining() {
+			return lastSeq, count, nil
+		}
 	}
 
 	return lastSeq, count, nil

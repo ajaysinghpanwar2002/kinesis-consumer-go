@@ -43,6 +43,27 @@ func drainShardWorkersOrError(
 	return waitForShardDrain(workers, workerWG, done, timer.C, timeout, workerErrCh)
 }
 
+func (c *Consumer) drainShardWorkers(
+	workers *shardWorkerSet,
+	workerWG *sync.WaitGroup,
+	workerErrCh <-chan error,
+) error {
+	if c == nil {
+		return drainShardWorkersOrError(workers, workerWG, 0, workerErrCh)
+	}
+	c.draining.Store(true)
+	defer c.draining.Store(false)
+
+	return drainShardWorkersOrError(workers, workerWG, c.drainTimeout, workerErrCh)
+}
+
+func (c *Consumer) isDraining() bool {
+	if c == nil {
+		return false
+	}
+	return c.draining.Load()
+}
+
 func waitForShardDrain(
 	workers *shardWorkerSet,
 	workerWG *sync.WaitGroup,

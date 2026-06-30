@@ -43,3 +43,13 @@ func (c *Consumer) saveShardCheckpointIfDue(ctx context.Context, shardID, sequen
 	}
 	return processedSinceCheckpoint % c.tuning.checkpointEvery, nil
 }
+
+func (c *Consumer) checkpointOnDrain(ctx context.Context, shardID, sequenceNumber string, processedSinceCheckpoint int) error {
+	if processedSinceCheckpoint <= 0 || sequenceNumber == "" {
+		return nil
+	}
+	if err := c.saveShardCheckpoint(ctx, shardID, sequenceNumber); err != nil {
+		return fmt.Errorf("save drain shard checkpoint %s: %w", shardID, err)
+	}
+	return nil
+}

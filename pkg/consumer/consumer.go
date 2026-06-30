@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
@@ -24,6 +25,7 @@ type Consumer struct {
 	leaseOwner    string
 	gracefulDrain bool
 	drainTimeout  time.Duration
+	draining      atomic.Bool
 	tuning        tuningConfig
 
 	processShardRecordsPassFn func(context.Context, string, int) (string, int, error)
@@ -127,7 +129,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 			return runCtx.Err()
 		}
 		if c.gracefulDrain {
-			if err := drainShardWorkersOrError(workers, &workerWG, c.drainTimeout, workerErrCh); err != nil {
+			if err := c.drainShardWorkers(workers, &workerWG, workerErrCh); err != nil {
 				return err
 			}
 			if errors.Is(ctx.Err(), context.Canceled) {
