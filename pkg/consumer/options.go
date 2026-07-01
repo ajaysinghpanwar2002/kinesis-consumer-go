@@ -11,10 +11,12 @@ import (
 type Option func(*options) error
 
 type options struct {
-	batchHandler BatchHandlerFunc
-	lease        leaseOptions
-	shutdown     shutdownOptions
-	tuning       tuningConfig
+	batchHandler  BatchHandlerFunc
+	failurePolicy FailurePolicy
+	dlqPublisher  DLQPublisher
+	lease         leaseOptions
+	shutdown      shutdownOptions
+	tuning        tuningConfig
 }
 
 type leaseOptions struct {
@@ -28,7 +30,8 @@ type shutdownOptions struct {
 
 func defaultOptions() options {
 	return options{
-		tuning: defaultTuning(),
+		failurePolicy: FailurePolicySkip,
+		tuning:        defaultTuning(),
 	}
 }
 
@@ -160,6 +163,28 @@ func WithHeartbeat(interval, ttl time.Duration) Option {
 		}
 		cfg.tuning.heartbeatInterval = interval
 		cfg.tuning.heartbeatTTL = ttl
+		return nil
+	}
+}
+
+// WithFailurePolicy sets behavior when a handler keeps failing after retries.
+func WithFailurePolicy(policy FailurePolicy) Option {
+	return func(cfg *options) error {
+		if err := policy.validate(); err != nil {
+			return err
+		}
+		cfg.failurePolicy = policy
+		return nil
+	}
+}
+
+// WithDLQPublisher configures an optional poison-record DLQ publisher.
+func WithDLQPublisher(publisher DLQPublisher) Option {
+	return func(cfg *options) error {
+		if publisher == nil {
+			return errors.New("dlq publisher cannot be nil")
+		}
+		cfg.dlqPublisher = publisher
 		return nil
 	}
 }

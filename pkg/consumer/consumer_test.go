@@ -124,6 +124,15 @@ func TestNewValidation(t *testing.T) {
 			handler: handler,
 			want:    "lease manager is required; use a store that provides leasing or WithLeaseManager",
 		},
+		{
+			name:    "send to dlq without publisher",
+			cfg:     Config{StreamName: "stream"},
+			client:  client,
+			store:   store,
+			handler: handler,
+			opts:    []Option{WithLeaseManager(leaseMgr), WithFailurePolicy(FailurePolicySendToDLQ)},
+			want:    "dlq publisher is required when failure policy is send-to-dlq",
+		},
 	}
 
 	for _, tt := range tests {
@@ -160,6 +169,8 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 		WithLeaseManager(leaseMgr),
 		WithRetry(2, 3*time.Second),
 		WithBatching(4, 5),
+		WithFailurePolicy(FailurePolicySendToDLQ),
+		WithDLQPublisher(noopDLQPublisher{}),
 		WithGracefulDrain(6*time.Second),
 	)
 	if err != nil {
@@ -182,6 +193,12 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 	}
 	if c.batchHandler != nil {
 		t.Fatalf("batchHandler = %v, want nil", c.batchHandler)
+	}
+	if c.failurePolicy != FailurePolicySendToDLQ {
+		t.Fatalf("failurePolicy = %q, want %q", c.failurePolicy, FailurePolicySendToDLQ)
+	}
+	if c.dlqPublisher == nil {
+		t.Fatal("dlqPublisher = nil, want publisher")
 	}
 	if c.leaseManager != leaseMgr {
 		t.Fatalf("leaseManager was not retained")

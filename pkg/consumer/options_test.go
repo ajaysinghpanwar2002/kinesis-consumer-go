@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+type noopDLQPublisher struct{}
+
+func (noopDLQPublisher) Publish(context.Context, PoisonRecord) error {
+	return nil
+}
+
 func TestDefaultOptions(t *testing.T) {
 	t.Parallel()
 
@@ -20,6 +26,12 @@ func TestDefaultOptions(t *testing.T) {
 	}
 	if cfg.shutdown.gracefulDrainTimeout != 0 {
 		t.Fatalf("gracefulDrainTimeout = %v, want 0", cfg.shutdown.gracefulDrainTimeout)
+	}
+	if cfg.failurePolicy != FailurePolicySkip {
+		t.Fatalf("failurePolicy = %q, want %q", cfg.failurePolicy, FailurePolicySkip)
+	}
+	if cfg.dlqPublisher != nil {
+		t.Fatalf("dlqPublisher = %v, want nil", cfg.dlqPublisher)
 	}
 	if cfg.tuning != wantTuning {
 		t.Fatalf("tuning = %+v, want %+v", cfg.tuning, wantTuning)
@@ -122,6 +134,21 @@ func TestOptionValidation(t *testing.T) {
 			want: "heartbeat ttl must be > 0",
 		},
 		{
+			name: "failure policy empty",
+			opt:  WithFailurePolicy(""),
+			want: "failure policy cannot be empty",
+		},
+		{
+			name: "failure policy invalid",
+			opt:  WithFailurePolicy("invalid"),
+			want: "invalid failure policy \"invalid\"",
+		},
+		{
+			name: "dlq publisher",
+			opt:  WithDLQPublisher(nil),
+			want: "dlq publisher cannot be nil",
+		},
+		{
 			name: "graceful drain timeout",
 			opt:  WithGracefulDrain(-1 * time.Second),
 			want: "graceful drain timeout cannot be negative",
@@ -162,6 +189,8 @@ func TestOptionsApplyValues(t *testing.T) {
 		WithShardConcurrency(8),
 		WithRebalance(9*time.Second, 10*time.Second, 11*time.Second, 12),
 		WithHeartbeat(13*time.Second, 14*time.Second),
+		WithFailurePolicy(FailurePolicySendToDLQ),
+		WithDLQPublisher(noopDLQPublisher{}),
 		WithGracefulDrain(15 * time.Second),
 	})
 	if err != nil {
@@ -179,6 +208,12 @@ func TestOptionsApplyValues(t *testing.T) {
 	}
 	if cfg.lease.manager != leaseMgr {
 		t.Fatalf("lease manager was not applied")
+	}
+	if cfg.failurePolicy != FailurePolicySendToDLQ {
+		t.Fatalf("failurePolicy = %q, want %q", cfg.failurePolicy, FailurePolicySendToDLQ)
+	}
+	if cfg.dlqPublisher == nil {
+		t.Fatal("dlqPublisher = nil, want publisher")
 	}
 	if !cfg.shutdown.gracefulDrain {
 		t.Fatal("gracefulDrain = false, want true")

@@ -21,6 +21,8 @@ type Consumer struct {
 	store         checkpoint.Store
 	handler       HandlerFunc
 	batchHandler  BatchHandlerFunc
+	failurePolicy FailurePolicy
+	dlqPublisher  DLQPublisher
 	leaseManager  lease.Manager
 	leaseOwner    string
 	gracefulDrain bool
@@ -177,6 +179,9 @@ func New(cfg Config, client *Client, store checkpoint.Store, handler HandlerFunc
 	if err := opt.tuning.validate(); err != nil {
 		return nil, err
 	}
+	if opt.failurePolicy == FailurePolicySendToDLQ && opt.dlqPublisher == nil {
+		return nil, errors.New("dlq publisher is required when failure policy is send-to-dlq")
+	}
 
 	leaseManager, leaseOwner, err := leaseSettings(store, opt)
 	if err != nil {
@@ -189,6 +194,8 @@ func New(cfg Config, client *Client, store checkpoint.Store, handler HandlerFunc
 		store:         store,
 		handler:       handler,
 		batchHandler:  batchHandler,
+		failurePolicy: opt.failurePolicy,
+		dlqPublisher:  opt.dlqPublisher,
 		leaseManager:  leaseManager,
 		leaseOwner:    leaseOwner,
 		gracefulDrain: opt.shutdown.gracefulDrain,
