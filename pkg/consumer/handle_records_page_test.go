@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,6 +64,7 @@ func TestHandleRecordsPageInvokesBatchHandlerOnce(t *testing.T) {
 
 	var got [][]string
 	c := &Consumer{
+		tuning: tuningConfig{shardConcurrency: 4},
 		handler: func(ctx context.Context, record Record) error {
 			t.Fatal("record handler called with batch handler configured")
 			return nil
@@ -95,6 +97,159 @@ func TestHandleRecordsPageInvokesBatchHandlerOnce(t *testing.T) {
 	}
 	if got[0][0] != "sequence-1" || got[0][1] != "sequence-2" {
 		t.Fatalf("batch records = %v, want [sequence-1 sequence-2]", got[0])
+	}
+}
+
+func TestHandleRecordsPageLimitsRecordConcurrency(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan string, 4)
+	release := make(chan struct{})
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	c := &Consumer{
+		tuning: tuningConfig{shardConcurrency: 2},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			now := active.Add(1)
+			for {
+				max := maxActive.Load()
+				if now <= max || maxActive.CompareAndSwap(max, now) {
+					break
+				}
+			}
+			defer active.Add(-1)
+
+			started <- aws.ToString(record.SequenceNumber)
+			<-release
+			return nil
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{
+			{SequenceNumber: aws.String("sequence-1")},
+			{SequenceNumber: aws.String("sequence-2")},
+			{SequenceNumber: aws.String("sequence-3")},
+			{SequenceNumber: aws.String("sequence-4")},
+		},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.handleRecordsPage(context.Background(), "shard-1", out)
+	}()
+
+	waitForStartedRecord(t, started)
+	waitForStartedRecord(t, started)
+	select {
+	case seq := <-started:
+		t.Fatalf("record %s started while two handlers were blocked", seq)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("handleRecordsPage() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handleRecordsPage() did not return")
+	}
+	if maxActive.Load() != 2 {
+		t.Fatalf("max active handlers = %d, want 2", maxActive.Load())
+	}
+	if len(started) != 2 {
+		t.Fatalf("remaining started records = %d, want 2", len(started))
+	}
+}
+
+func TestHandleRecordsPageConcurrentRecordErrorCancelsAndStopsNewRecords(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	seq2Started := make(chan struct{})
+	var seq3Calls atomic.Int32
+	c := &Consumer{
+		failurePolicy: FailurePolicyFailFast,
+		tuning:        tuningConfig{shardConcurrency: 2, retryMaxAttempts: 1},
+		handler: func(ctx context.Context, record Record) error {
+			switch aws.ToString(record.SequenceNumber) {
+			case "sequence-1":
+				select {
+				case <-seq2Started:
+				case <-time.After(time.Second):
+					t.Fatal("sequence-2 did not start")
+				}
+				return errBoom
+			case "sequence-2":
+				close(seq2Started)
+				<-ctx.Done()
+				return ctx.Err()
+			case "sequence-3":
+				seq3Calls.Add(1)
+				return nil
+			default:
+				return nil
+			}
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{
+			{SequenceNumber: aws.String("sequence-1")},
+			{SequenceNumber: aws.String("sequence-2")},
+			{SequenceNumber: aws.String("sequence-3")},
+		},
+	}
+
+	err := c.handleRecordsPage(context.Background(), "shard-1", out)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("handleRecordsPage() error = %v, want wraps %v", err, errBoom)
+	}
+	want := "handle records page shard-1: record handler: record handler failed after 1 attempts: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("handleRecordsPage() error = %v, want %q", err, want)
+	}
+	if seq3Calls.Load() != 0 {
+		t.Fatalf("sequence-3 calls = %d, want 0", seq3Calls.Load())
+	}
+}
+
+func TestHandleRecordsPageConcurrentContextCancellationStopsWithoutFailurePolicy(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	publisher := &recordingPoisonPublisher{}
+	var calls atomic.Int32
+	c := &Consumer{
+		failurePolicy: FailurePolicySendToDLQ,
+		dlqPublisher:  publisher,
+		tuning:        tuningConfig{shardConcurrency: 2, retryMaxAttempts: 3},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			calls.Add(1)
+			return nil
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{
+			{SequenceNumber: aws.String("sequence-1")},
+			{SequenceNumber: aws.String("sequence-2")},
+		},
+	}
+
+	err := c.handleRecordsPage(ctx, "shard-1", out)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("handleRecordsPage() error = %v, want %v", err, context.Canceled)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("handler calls = %d, want 0", calls.Load())
+	}
+	if len(publisher.records) != 0 {
+		t.Fatalf("published records = %d, want 0", len(publisher.records))
 	}
 }
 
@@ -520,5 +675,17 @@ func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) 
 				t.Fatalf("published records = %d, want 0", len(publisher.records))
 			}
 		})
+	}
+}
+
+func waitForStartedRecord(t *testing.T, started <-chan string) string {
+	t.Helper()
+
+	select {
+	case seq := <-started:
+		return seq
+	case <-time.After(time.Second):
+		t.Fatal("record handler did not start")
+		return ""
 	}
 }
