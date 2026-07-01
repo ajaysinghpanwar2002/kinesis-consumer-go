@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 )
 
 // FailurePolicy controls behavior when a handler keeps failing after retries.
@@ -14,6 +17,11 @@ const (
 	FailurePolicyFailFast  FailurePolicy = "fail-fast"
 	FailurePolicySkip      FailurePolicy = "skip"
 	FailurePolicySendToDLQ FailurePolicy = "send-to-dlq"
+)
+
+const (
+	handlerKindRecord = "record"
+	handlerKindBatch  = "batch"
 )
 
 // PoisonRecord is sent to a DLQ when a record is considered poison.
@@ -47,5 +55,169 @@ func (p FailurePolicy) validate() error {
 		return errors.New("failure policy cannot be empty")
 	default:
 		return fmt.Errorf("invalid failure policy %q", p)
+	}
+}
+
+func (c *Consumer) retryMaxAttempts() int {
+	if c == nil || c.tuning.retryMaxAttempts < 1 {
+		return 1
+	}
+	return c.tuning.retryMaxAttempts
+}
+
+func (c *Consumer) retryBackoff(attempt int) time.Duration {
+	if c == nil || c.tuning.retryBackoff <= 0 || attempt < 1 {
+		return 0
+	}
+	return time.Duration(attempt) * c.tuning.retryBackoff
+}
+
+func (c *Consumer) effectiveFailurePolicy() FailurePolicy {
+	if c == nil || c.failurePolicy == "" {
+		return FailurePolicySkip
+	}
+	return c.failurePolicy
+}
+
+func (c *Consumer) handleRecordWithRetry(ctx context.Context, shardID string, record Record) error {
+	if c == nil || c.handler == nil {
+		return errors.New("record handler is nil")
+	}
+
+	attempts, err := c.retryHandler(ctx, func() error {
+		return c.handler(ctx, record)
+	})
+	if err == nil {
+		return nil
+	}
+	if terminalErr, ok := terminalContextError(ctx, err); ok {
+		return terminalErr
+	}
+
+	failFastErr := fmt.Errorf("record handler failed after %d attempts: %w", attempts, err)
+	return c.applyFailurePolicy(ctx, shardID, handlerKindRecord, []Record{record}, attempts, err, failFastErr)
+}
+
+func (c *Consumer) handleBatchWithRetry(ctx context.Context, shardID string, records []Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if c == nil || c.batchHandler == nil {
+		return errors.New("batch handler is nil")
+	}
+
+	attempts, err := c.retryHandler(ctx, func() error {
+		return c.batchHandler(ctx, records)
+	})
+	if err == nil {
+		return nil
+	}
+	if terminalErr, ok := terminalContextError(ctx, err); ok {
+		return terminalErr
+	}
+
+	failFastErr := fmt.Errorf("batch handler failed after %d attempts: %w", attempts, err)
+	return c.applyFailurePolicy(ctx, shardID, handlerKindBatch, records, attempts, err, failFastErr)
+}
+
+func terminalContextError(ctx context.Context, err error) (error, bool) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr, true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err, true
+	}
+	return nil, false
+}
+
+func (c *Consumer) retryHandler(ctx context.Context, fn func() error) (int, error) {
+	maxAttempts := c.retryMaxAttempts()
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := fn(); err != nil {
+			lastErr = err
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return attempt, lastErr
+			}
+			if attempt == maxAttempts {
+				return attempt, lastErr
+			}
+			if err := sleepWithContext(ctx, c.retryBackoff(attempt)); err != nil {
+				return attempt, err
+			}
+			continue
+		}
+		return attempt, nil
+	}
+	return maxAttempts, lastErr
+}
+
+func (c *Consumer) applyFailurePolicy(
+	ctx context.Context,
+	shardID string,
+	handlerKind string,
+	records []Record,
+	attempts int,
+	cause error,
+	failFastErr error,
+) error {
+	switch c.effectiveFailurePolicy() {
+	case FailurePolicySkip:
+		return nil
+	case FailurePolicySendToDLQ:
+		if c == nil || c.dlqPublisher == nil {
+			return failFastErr
+		}
+		for i, record := range records {
+			poison := c.newPoisonRecord(shardID, handlerKind, attempts, cause, record, len(records), i)
+			if err := c.dlqPublisher.Publish(ctx, poison); err != nil {
+				return fmt.Errorf("%w; dlq publish: %w", failFastErr, err)
+			}
+		}
+		return nil
+	default:
+		return failFastErr
+	}
+}
+
+func (c *Consumer) newPoisonRecord(
+	shardID string,
+	handlerKind string,
+	attempts int,
+	cause error,
+	record types.Record,
+	batchSize int,
+	batchIndex int,
+) PoisonRecord {
+	var approx *time.Time
+	if record.ApproximateArrivalTimestamp != nil {
+		t := *record.ApproximateArrivalTimestamp
+		approx = &t
+	}
+
+	payload := make([]byte, len(record.Data))
+	copy(payload, record.Data)
+
+	var streamName, streamARN string
+	if c != nil {
+		streamName = c.cfg.StreamName
+		streamARN = c.cfg.StreamARN
+	}
+
+	return PoisonRecord{
+		StreamName:                 streamName,
+		StreamARN:                  streamARN,
+		ShardID:                    shardID,
+		SequenceNumber:             aws.ToString(record.SequenceNumber),
+		PartitionKey:               aws.ToString(record.PartitionKey),
+		ApproximateArrival:         approx,
+		Payload:                    payload,
+		Error:                      cause.Error(),
+		Handler:                    handlerKind,
+		Attempts:                   attempts,
+		FailedAt:                   time.Now().UTC(),
+		BatchSize:                  batchSize,
+		RecordIndexInBatch:         batchIndex,
+		RecordSequenceInBatchOrder: batchIndex,
 	}
 }

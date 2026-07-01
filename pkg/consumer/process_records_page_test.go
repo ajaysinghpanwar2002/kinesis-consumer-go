@@ -77,6 +77,7 @@ func TestProcessRecordsPageReturnsNoProgressWhenHandlerFails(t *testing.T) {
 
 	errBoom := errors.New("boom")
 	c := &Consumer{
+		failurePolicy: FailurePolicyFailFast,
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			if aws.ToString(record.SequenceNumber) == "sequence-2" {
@@ -96,8 +97,9 @@ func TestProcessRecordsPageReturnsNoProgressWhenHandlerFails(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processRecordsPage() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "process records page shard-1: handle records page shard-1: record handler: boom" {
-		t.Fatalf("processRecordsPage() error = %v, want %q", err, "process records page shard-1: handle records page shard-1: record handler: boom")
+	want := "process records page shard-1: handle records page shard-1: record handler: record handler failed after 1 attempts: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("processRecordsPage() error = %v, want %q", err, want)
 	}
 	if lastSeq != "" {
 		t.Fatalf("lastSeq = %q, want empty", lastSeq)
@@ -112,6 +114,7 @@ func TestProcessRecordsPageWrapsBatchHandlerError(t *testing.T) {
 
 	errBoom := errors.New("boom")
 	c := &Consumer{
+		failurePolicy: FailurePolicyFailFast,
 		batchHandler: func(ctx context.Context, records []Record) error {
 			_ = ctx
 			_ = records
@@ -126,8 +129,9 @@ func TestProcessRecordsPageWrapsBatchHandlerError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processRecordsPage() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "process records page shard-1: handle records page shard-1: batch handler: boom" {
-		t.Fatalf("processRecordsPage() error = %v, want %q", err, "process records page shard-1: handle records page shard-1: batch handler: boom")
+	want := "process records page shard-1: handle records page shard-1: batch handler: batch handler failed after 1 attempts: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("processRecordsPage() error = %v, want %q", err, want)
 	}
 	if lastSeq != "" {
 		t.Fatalf("lastSeq = %q, want empty", lastSeq)
@@ -295,9 +299,10 @@ func TestProcessRecordsPageWithCheckpointWrapsPageProcessingError(t *testing.T) 
 	errBoom := errors.New("boom")
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 1},
+		cfg:           Config{StreamName: "stream"},
+		store:         store,
+		failurePolicy: FailurePolicyFailFast,
+		tuning:        tuningConfig{checkpointEvery: 1},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			_ = record
@@ -312,8 +317,9 @@ func TestProcessRecordsPageWithCheckpointWrapsPageProcessingError(t *testing.T) 
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processRecordsPageWithCheckpoint() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: boom" {
-		t.Fatalf("processRecordsPageWithCheckpoint() error = %v, want %q", err, "process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: boom")
+	want := "process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: record handler failed after 1 attempts: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("processRecordsPageWithCheckpoint() error = %v, want %q", err, want)
 	}
 	if lastSeq != "" {
 		t.Fatalf("lastSeq = %q, want empty", lastSeq)
@@ -564,9 +570,10 @@ func TestProcessRecordsPagesWithCheckpointStopsOnFirstPageError(t *testing.T) {
 	var handled []string
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		cfg:           Config{StreamName: "stream"},
+		store:         store,
+		failurePolicy: FailurePolicyFailFast,
+		tuning:        tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			seq := aws.ToString(record.SequenceNumber)
@@ -587,8 +594,9 @@ func TestProcessRecordsPagesWithCheckpointStopsOnFirstPageError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: boom" {
-		t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want %q", err, "process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: boom")
+	want := "process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: record handler failed after 1 attempts: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("processRecordsPagesWithCheckpoint() error = %v, want %q", err, want)
 	}
 	if lastSeq != "sequence-1" {
 		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")

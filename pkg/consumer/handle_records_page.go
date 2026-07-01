@@ -13,7 +13,7 @@ func (c *Consumer) handleRecordsPage(ctx context.Context, shardID string, out *k
 	}
 
 	if c.batchHandler != nil {
-		if err := c.batchHandler(ctx, out.Records); err != nil {
+		if err := c.handleBatchWithRetry(ctx, shardID, out.Records); err != nil {
 			return fmt.Errorf("handle records page %s: batch handler: %w", shardID, err)
 		}
 		return nil
@@ -23,7 +23,7 @@ func (c *Consumer) handleRecordsPage(ctx context.Context, shardID string, out *k
 		return fmt.Errorf("handle records page %s: record handler is nil", shardID)
 	}
 	for _, record := range out.Records {
-		if err := c.handler(ctx, record); err != nil {
+		if err := c.handleRecordWithRetry(ctx, shardID, record); err != nil {
 			return fmt.Errorf("handle records page %s: record handler: %w", shardID, err)
 		}
 	}

@@ -3,12 +3,28 @@ package consumer
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 )
+
+type recordingPoisonPublisher struct {
+	records []PoisonRecord
+	err     error
+}
+
+func (p *recordingPoisonPublisher) Publish(ctx context.Context, record PoisonRecord) error {
+	_ = ctx
+	if p.err != nil {
+		return p.err
+	}
+	p.records = append(p.records, record)
+	return nil
+}
 
 func TestHandleRecordsPageInvokesRecordHandlerInOrder(t *testing.T) {
 	t.Parallel()
@@ -114,6 +130,7 @@ func TestHandleRecordsPageWrapsRecordHandlerError(t *testing.T) {
 	errBoom := errors.New("boom")
 	calls := 0
 	c := &Consumer{
+		failurePolicy: FailurePolicyFailFast,
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			calls++
@@ -135,8 +152,9 @@ func TestHandleRecordsPageWrapsRecordHandlerError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("handleRecordsPage() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "handle records page shard-1: record handler: boom" {
-		t.Fatalf("handleRecordsPage() error = %v, want %q", err, "handle records page shard-1: record handler: boom")
+	want := "handle records page shard-1: record handler: record handler failed after 1 attempts: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("handleRecordsPage() error = %v, want %q", err, want)
 	}
 	if calls != 2 {
 		t.Fatalf("handler calls = %d, want 2", calls)
@@ -148,6 +166,7 @@ func TestHandleRecordsPageWrapsBatchHandlerError(t *testing.T) {
 
 	errBoom := errors.New("boom")
 	c := &Consumer{
+		failurePolicy: FailurePolicyFailFast,
 		batchHandler: func(ctx context.Context, records []Record) error {
 			_ = ctx
 			_ = records
@@ -162,7 +181,344 @@ func TestHandleRecordsPageWrapsBatchHandlerError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("handleRecordsPage() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "handle records page shard-1: batch handler: boom" {
-		t.Fatalf("handleRecordsPage() error = %v, want %q", err, "handle records page shard-1: batch handler: boom")
+	want := "handle records page shard-1: batch handler: batch handler failed after 1 attempts: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("handleRecordsPage() error = %v, want %q", err, want)
+	}
+}
+
+func TestHandleRecordsPageRetriesRecordHandlerUntilSuccess(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	attempts := map[string]int{}
+	c := &Consumer{
+		failurePolicy: FailurePolicyFailFast,
+		tuning:        tuningConfig{retryMaxAttempts: 3},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			seq := aws.ToString(record.SequenceNumber)
+			attempts[seq]++
+			if seq == "sequence-1" && attempts[seq] < 3 {
+				return errBoom
+			}
+			return nil
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{
+			{SequenceNumber: aws.String("sequence-1")},
+			{SequenceNumber: aws.String("sequence-2")},
+		},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); err != nil {
+		t.Fatalf("handleRecordsPage() error = %v, want nil", err)
+	}
+	if attempts["sequence-1"] != 3 {
+		t.Fatalf("sequence-1 attempts = %d, want 3", attempts["sequence-1"])
+	}
+	if attempts["sequence-2"] != 1 {
+		t.Fatalf("sequence-2 attempts = %d, want 1", attempts["sequence-2"])
+	}
+}
+
+func TestHandleRecordsPageRetriesBatchHandlerUntilSuccess(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	attempts := 0
+	c := &Consumer{
+		failurePolicy: FailurePolicyFailFast,
+		tuning:        tuningConfig{retryMaxAttempts: 2},
+		batchHandler: func(ctx context.Context, records []Record) error {
+			_ = ctx
+			_ = records
+			attempts++
+			if attempts == 1 {
+				return errBoom
+			}
+			return nil
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); err != nil {
+		t.Fatalf("handleRecordsPage() error = %v, want nil", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestHandleRecordsPageSkipPolicyTreatsPoisonRecordAsHandled(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	attempts := 0
+	c := &Consumer{
+		failurePolicy: FailurePolicySkip,
+		tuning:        tuningConfig{retryMaxAttempts: 3},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			attempts++
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); err != nil {
+		t.Fatalf("handleRecordsPage() error = %v, want nil", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestHandleRecordsPageSendToDLQPublishesPoisonRecord(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	arrival := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	publisher := &recordingPoisonPublisher{}
+	c := &Consumer{
+		cfg:           Config{StreamName: "stream", StreamARN: "arn:stream"},
+		failurePolicy: FailurePolicySendToDLQ,
+		dlqPublisher:  publisher,
+		tuning:        tuningConfig{retryMaxAttempts: 2},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{
+			SequenceNumber:              aws.String("sequence-1"),
+			PartitionKey:                aws.String("partition-1"),
+			ApproximateArrivalTimestamp: &arrival,
+			Data:                        []byte("payload"),
+		}},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); err != nil {
+		t.Fatalf("handleRecordsPage() error = %v, want nil", err)
+	}
+	if len(publisher.records) != 1 {
+		t.Fatalf("published records = %d, want 1", len(publisher.records))
+	}
+	got := publisher.records[0]
+	if got.StreamName != "stream" || got.StreamARN != "arn:stream" || got.ShardID != "shard-1" {
+		t.Fatalf("poison stream/shard = %q/%q/%q, want stream/arn:stream/shard-1", got.StreamName, got.StreamARN, got.ShardID)
+	}
+	if got.SequenceNumber != "sequence-1" || got.PartitionKey != "partition-1" {
+		t.Fatalf("poison sequence/partition = %q/%q, want sequence-1/partition-1", got.SequenceNumber, got.PartitionKey)
+	}
+	if got.ApproximateArrival == nil || !got.ApproximateArrival.Equal(arrival) {
+		t.Fatalf("poison arrival = %v, want %v", got.ApproximateArrival, arrival)
+	}
+	if !slices.Equal(got.Payload, []byte("payload")) {
+		t.Fatalf("poison payload = %q, want payload", string(got.Payload))
+	}
+	out.Records[0].Data[0] = 'P'
+	if string(got.Payload) != "payload" {
+		t.Fatalf("poison payload mutated to %q, want copied payload", string(got.Payload))
+	}
+	if got.Error != "boom" || got.Handler != handlerKindRecord || got.Attempts != 2 {
+		t.Fatalf("poison error/handler/attempts = %q/%q/%d, want boom/record/2", got.Error, got.Handler, got.Attempts)
+	}
+	if got.BatchSize != 1 || got.RecordIndexInBatch != 0 || got.RecordSequenceInBatchOrder != 0 {
+		t.Fatalf("poison batch fields = %d/%d/%d, want 1/0/0", got.BatchSize, got.RecordIndexInBatch, got.RecordSequenceInBatchOrder)
+	}
+	if got.FailedAt.IsZero() {
+		t.Fatal("poison FailedAt is zero, want timestamp")
+	}
+}
+
+func TestHandleRecordsPageSendToDLQPublishesEveryBatchRecord(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	publisher := &recordingPoisonPublisher{}
+	c := &Consumer{
+		failurePolicy: FailurePolicySendToDLQ,
+		dlqPublisher:  publisher,
+		tuning:        tuningConfig{retryMaxAttempts: 1},
+		batchHandler: func(ctx context.Context, records []Record) error {
+			_ = ctx
+			_ = records
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{
+			{SequenceNumber: aws.String("sequence-1")},
+			{SequenceNumber: aws.String("sequence-2")},
+		},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); err != nil {
+		t.Fatalf("handleRecordsPage() error = %v, want nil", err)
+	}
+	if len(publisher.records) != 2 {
+		t.Fatalf("published records = %d, want 2", len(publisher.records))
+	}
+	for i, got := range publisher.records {
+		if got.Handler != handlerKindBatch {
+			t.Fatalf("record %d handler = %q, want %q", i, got.Handler, handlerKindBatch)
+		}
+		if got.BatchSize != 2 || got.RecordIndexInBatch != i || got.RecordSequenceInBatchOrder != i {
+			t.Fatalf("record %d batch fields = %d/%d/%d, want 2/%d/%d", i, got.BatchSize, got.RecordIndexInBatch, got.RecordSequenceInBatchOrder, i, i)
+		}
+	}
+}
+
+func TestHandleRecordsPageSendToDLQPublishErrorFails(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	errDLQ := errors.New("dlq unavailable")
+	c := &Consumer{
+		failurePolicy: FailurePolicySendToDLQ,
+		dlqPublisher:  &recordingPoisonPublisher{err: errDLQ},
+		tuning:        tuningConfig{retryMaxAttempts: 1},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	err := c.handleRecordsPage(context.Background(), "shard-1", out)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("handleRecordsPage() error = %v, want wraps %v", err, errBoom)
+	}
+	if !errors.Is(err, errDLQ) {
+		t.Fatalf("handleRecordsPage() error = %v, want wraps %v", err, errDLQ)
+	}
+	want := "handle records page shard-1: record handler: record handler failed after 1 attempts: boom; dlq publish: dlq unavailable"
+	if err == nil || err.Error() != want {
+		t.Fatalf("handleRecordsPage() error = %v, want %q", err, want)
+	}
+}
+
+func TestHandleRecordsPageContextCancellationBypassesFailurePolicy(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attempts := 0
+	publisher := &recordingPoisonPublisher{}
+	c := &Consumer{
+		failurePolicy: FailurePolicySendToDLQ,
+		dlqPublisher:  publisher,
+		tuning:        tuningConfig{retryMaxAttempts: 3},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			attempts++
+			cancel()
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	err := c.handleRecordsPage(ctx, "shard-1", out)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("handleRecordsPage() error = %v, want %v", err, context.Canceled)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	if len(publisher.records) != 0 {
+		t.Fatalf("published records = %d, want 0", len(publisher.records))
+	}
+}
+
+func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "canceled", err: context.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded},
+	}
+	for _, tt := range tests {
+		t.Run("record "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			attempts := 0
+			publisher := &recordingPoisonPublisher{}
+			c := &Consumer{
+				failurePolicy: FailurePolicySendToDLQ,
+				dlqPublisher:  publisher,
+				tuning:        tuningConfig{retryMaxAttempts: 3},
+				handler: func(ctx context.Context, record Record) error {
+					_ = ctx
+					_ = record
+					attempts++
+					return tt.err
+				},
+			}
+			out := &kinesis.GetRecordsOutput{
+				Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+			}
+
+			err := c.handleRecordsPage(context.Background(), "shard-1", out)
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("handleRecordsPage() error = %v, want %v", err, tt.err)
+			}
+			if attempts != 1 {
+				t.Fatalf("attempts = %d, want 1", attempts)
+			}
+			if len(publisher.records) != 0 {
+				t.Fatalf("published records = %d, want 0", len(publisher.records))
+			}
+		})
+
+		t.Run("batch "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			attempts := 0
+			publisher := &recordingPoisonPublisher{}
+			c := &Consumer{
+				failurePolicy: FailurePolicySendToDLQ,
+				dlqPublisher:  publisher,
+				tuning:        tuningConfig{retryMaxAttempts: 3},
+				batchHandler: func(ctx context.Context, records []Record) error {
+					_ = ctx
+					_ = records
+					attempts++
+					return tt.err
+				},
+			}
+			out := &kinesis.GetRecordsOutput{
+				Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+			}
+
+			err := c.handleRecordsPage(context.Background(), "shard-1", out)
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("handleRecordsPage() error = %v, want %v", err, tt.err)
+			}
+			if attempts != 1 {
+				t.Fatalf("attempts = %d, want 1", attempts)
+			}
+			if len(publisher.records) != 0 {
+				t.Fatalf("published records = %d, want 0", len(publisher.records))
+			}
+		})
 	}
 }

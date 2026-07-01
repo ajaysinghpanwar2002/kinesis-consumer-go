@@ -354,10 +354,11 @@ func TestProcessShardRecordsPassWrapsProcessingError(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
+		cfg:           Config{StreamName: "stream"},
+		client:        client,
+		store:         store,
+		failurePolicy: FailurePolicyFailFast,
+		tuning:        tuningConfig{checkpointEvery: 3},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			_ = record
@@ -369,8 +370,9 @@ func TestProcessShardRecordsPassWrapsProcessingError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "process shard records pass shard-1: process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: boom" {
-		t.Fatalf("processShardRecordsPass() error = %v, want %q", err, "process shard records pass shard-1: process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: boom")
+	want := "process shard records pass shard-1: process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: record handler failed after 1 attempts: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("processShardRecordsPass() error = %v, want %q", err, want)
 	}
 	if lastSeq != "" {
 		t.Fatalf("lastSeq = %q, want empty", lastSeq)
