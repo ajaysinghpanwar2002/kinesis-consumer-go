@@ -18,7 +18,7 @@ No Java, no MultiLangDaemon.
 - Shard leasing with heartbeats and fair-share rebalancing.
 - Shard-aware checkpointing and reshard gating.
 - Record or batch handlers with configurable batching and retry.
-- First-class DLQ adapters for SQS and Kinesis.
+- Pluggable DLQ publisher interface for poison records.
 - Optional graceful drain mode on shutdown (finish in-flight work, checkpoint, release lease).
 - Pluggable checkpoint stores and lease managers.
 - LocalStack + Valkey/Redis workflow for local testing.
@@ -28,6 +28,10 @@ No Java, no MultiLangDaemon.
 ```bash
 go get github.com/pratilipi/kinesis-consumer-go
 ```
+
+## Documentation
+
+- [Handler failure policy, DLQ, and shard concurrency](docs/handler-behavior.md)
 
 ## Comparison: AWS KCL vs MultiLangDaemon vs this library
 
