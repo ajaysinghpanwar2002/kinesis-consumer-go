@@ -1,0 +1,6 @@
+.git
+.cache
+tmp
+*.test
+coverage.out
+dist

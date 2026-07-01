@@ -33,6 +33,26 @@ go get github.com/pratilipi/kinesis-consumer-go
 
 - [Handler failure policy, DLQ, and shard concurrency](docs/handler-behavior.md)
 
+## Development
+
+Run the local test suite:
+
+```bash
+make test
+```
+
+Compile the current packages:
+
+```bash
+make build
+```
+
+Run the same test suite in Docker:
+
+```bash
+make docker-test
+```
+
 ## Comparison: AWS KCL vs MultiLangDaemon vs this library
 
 | Aspect | AWS KCL (Java) | KCL MultiLangDaemon | Kinesis Consumer Go |
