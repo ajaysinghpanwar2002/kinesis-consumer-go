@@ -61,6 +61,25 @@ hooks:
 	git config core.hooksPath $(HOOKS_DIR)
 	@echo "git hooks installed (core.hooksPath=$(HOOKS_DIR))"
 
+INTEGRATION_DIR ?= test/integration
+INTEGRATION_COMPOSE ?= $(INTEGRATION_DIR)/docker-compose.yml
+
+# Compile-check the integration tests without bringing up any infrastructure.
+# (go vet compiles test files; go build would skip them.) Not part of `test`.
+.PHONY: integration-build
+integration-build:
+	( cd $(INTEGRATION_DIR) && $(GO) vet -tags integration ./... )
+
+# Bring up LocalStack (Kinesis) + Valkey, run the integration suite behind the
+# `integration` build tag, then tear the infrastructure down. Requires Docker.
+.PHONY: integration
+integration:
+	$(DOCKER) compose -f $(INTEGRATION_COMPOSE) up -d --wait
+	@status=0; \
+	( cd $(INTEGRATION_DIR) && $(GO) test -tags integration -count=1 -timeout 600s ./... ) || status=$$?; \
+	$(DOCKER) compose -f $(INTEGRATION_COMPOSE) down -v; \
+	exit $$status
+
 .PHONY: docker-build
 docker-build:
 	$(DOCKER) build --build-arg GO_VERSION=$(DOCKER_GO_VERSION) -t $(DOCKER_IMAGE) .

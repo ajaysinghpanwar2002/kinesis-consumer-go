@@ -1,0 +1,27 @@
+# Infrastructure for the integration suite: LocalStack (Kinesis) + Valkey.
+# Brought up by `make integration`. Ports match the test defaults
+# (KINESIS_ENDPOINT=http://localhost:4566, VALKEY_ADDR=localhost:6379).
+services:
+  localstack:
+    image: localstack/localstack:3.8
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: kinesis
+      EAGER_SERVICE_LOADING: "1"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -sf http://localhost:4566/_localstack/health | grep -q kinesis"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
