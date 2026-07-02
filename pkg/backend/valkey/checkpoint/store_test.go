@@ -2,12 +2,14 @@ package checkpoint
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 
 	"github.com/pratilipi/kinesis-consumer-go/internal/backend"
+	consumerlease "github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
 
 func newTestStore(t *testing.T, opts ...Option) (*Store, *miniredis.Miniredis) {
@@ -101,6 +103,101 @@ func TestStoreWithDBIsolation(t *testing.T) {
 	}
 	if got, err := server.DB(1).Get(key); err != nil || got != "seq-1" {
 		t.Fatalf("DB(1).Get(%q) = (%q, %v), want (\"seq-1\", nil)", key, got, err)
+	}
+}
+
+// leaseManagerFromProvider gets a lease manager through the lease.Provider
+// interface so the test exercises the same path consumer.New uses, and closes
+// the manager's separate client on cleanup.
+func leaseManagerFromProvider(t *testing.T, store *Store) consumerlease.Manager {
+	t.Helper()
+
+	var provider consumerlease.Provider = store
+	mgr, err := provider.LeaseManager()
+	if err != nil {
+		t.Fatalf("LeaseManager: %v", err)
+	}
+	t.Cleanup(func() {
+		if closer, ok := mgr.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				t.Errorf("lease manager Close: %v", err)
+			}
+		}
+	})
+	return mgr
+}
+
+func TestStoreLeaseManagerDefaultPrefix(t *testing.T) {
+	t.Parallel()
+
+	store, server := newTestStore(t)
+	mgr := leaseManagerFromProvider(t, store)
+
+	ctx := context.Background()
+	lease, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-1", time.Minute)
+	if err != nil || !ok || lease == nil {
+		t.Fatalf("Acquire = (%v, %v, %v), want (lease, true, nil)", lease, ok, err)
+	}
+
+	// The lease prefix is derived from the default checkpoint prefix, so leases
+	// are written under "kinesis-checkpoint-lease". Assert the raw key to prove
+	// the store wired its lease prefix into the manager.
+	key := backend.LeaseKey("kinesis-checkpoint-lease", "stream", "shard-1")
+	if got, err := server.Get(key); err != nil || got != "owner-1" {
+		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", key, got, err)
+	}
+
+	if err := lease.Release(ctx); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if _, err := server.Get(key); err == nil {
+		t.Fatalf("lease key %q still present after Release", key)
+	}
+}
+
+func TestStoreLeaseManagerWithLeasePrefix(t *testing.T) {
+	t.Parallel()
+
+	store, server := newTestStore(t, WithLeasePrefix("custom-lease"))
+	mgr := leaseManagerFromProvider(t, store)
+
+	if _, ok, err := mgr.Acquire(context.Background(), "stream", "shard-1", "owner-1", time.Minute); err != nil || !ok {
+		t.Fatalf("Acquire = (ok=%v, err=%v), want (true, nil)", ok, err)
+	}
+
+	key := backend.LeaseKey("custom-lease", "stream", "shard-1")
+	if got, err := server.Get(key); err != nil || got != "owner-1" {
+		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", key, got, err)
+	}
+
+	// The default-derived lease key must not be used when a prefix is set.
+	derived := backend.LeaseKey("kinesis-checkpoint-lease", "stream", "shard-1")
+	if _, err := server.Get(derived); err == nil {
+		t.Fatalf("unexpected lease at default-derived key %q", derived)
+	}
+}
+
+func TestStoreLeaseManagerNamespaceIndependentFromCheckpoints(t *testing.T) {
+	t.Parallel()
+
+	store, server := newTestStore(t)
+	mgr := leaseManagerFromProvider(t, store)
+
+	ctx := context.Background()
+	if err := store.Save(ctx, "stream", "shard-1", "seq-1"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-1", time.Minute); err != nil || !ok {
+		t.Fatalf("Acquire = (ok=%v, err=%v), want (true, nil)", ok, err)
+	}
+
+	checkpointKey := backend.CheckpointKey("kinesis-checkpoint", "stream", "shard-1")
+	if got, err := server.Get(checkpointKey); err != nil || got != "seq-1" {
+		t.Fatalf("server.Get(%q) = (%q, %v), want (\"seq-1\", nil)", checkpointKey, got, err)
+	}
+	leaseKey := backend.LeaseKey("kinesis-checkpoint-lease", "stream", "shard-1")
+	if got, err := server.Get(leaseKey); err != nil || got != "owner-1" {
+		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", leaseKey, got, err)
 	}
 }
 

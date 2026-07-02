@@ -13,11 +13,17 @@ import (
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/pratilipi/kinesis-consumer-go/internal/backend"
+	valkeylease "github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey/lease"
 	corecheckpoint "github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
+	consumerlease "github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
 
-// Store satisfies the core checkpoint.Store contract.
-var _ corecheckpoint.Store = (*Store)(nil)
+// Store satisfies the core checkpoint.Store contract and can provide a matching
+// Valkey-backed lease manager through lease.Provider.
+var (
+	_ corecheckpoint.Store   = (*Store)(nil)
+	_ consumerlease.Provider = (*Store)(nil)
+)
 
 // Config controls how the checkpoint store connects and where it writes keys.
 type Config = backend.CheckpointConfig
@@ -29,6 +35,7 @@ type Option func(*Config) error
 type Store struct {
 	client    valkey.Client
 	keyPrefix string
+	cfg       Config
 }
 
 // New creates a Store connected to addr. Keys are written as:
@@ -68,6 +75,7 @@ func New(addr string, opts ...Option) (*Store, error) {
 	return &Store{
 		client:    client,
 		keyPrefix: cfg.KeyPrefix,
+		cfg:       cfg,
 	}, nil
 }
 
@@ -121,6 +129,27 @@ func (s *Store) Delete(ctx context.Context, streamName, shardID string) error {
 	return nil
 }
 
+// LeaseManager constructs a Valkey-backed lease manager from the store's
+// connection config, writing lease keys under the store's lease prefix. It
+// satisfies lease.Provider, so a consumer configured with only this store
+// acquires shard leasing automatically. The returned manager owns a separate
+// Valkey client and pings on construction; callers must Close it.
+func (s *Store) LeaseManager() (consumerlease.Manager, error) {
+	opts := []valkeylease.Option{
+		valkeylease.WithKeyPrefix(s.cfg.LeasePrefix),
+		valkeylease.WithPingTimeout(s.cfg.PingTimeout),
+	}
+	if s.cfg.UseTLS {
+		opts = append(opts, valkeylease.WithTLS())
+	}
+	if s.cfg.UseCluster {
+		opts = append(opts, valkeylease.WithCluster())
+	} else {
+		opts = append(opts, valkeylease.WithDB(s.cfg.DB))
+	}
+	return valkeylease.NewManager(s.cfg.Addr, opts...)
+}
+
 func (s *Store) key(streamName, shardID string) string {
 	return backend.CheckpointKey(s.keyPrefix, streamName, shardID)
 }
@@ -157,6 +186,15 @@ func WithCluster() Option {
 func WithKeyPrefix(prefix string) Option {
 	return func(cfg *Config) error {
 		return backend.SetCheckpointKeyPrefix(cfg, prefix)
+	}
+}
+
+// WithLeasePrefix overrides the prefix used for lease keys created by
+// LeaseManager. When unset, the lease prefix is derived from the checkpoint key
+// prefix (for example "kinesis-checkpoint-lease").
+func WithLeasePrefix(prefix string) Option {
+	return func(cfg *Config) error {
+		return backend.SetCheckpointLeasePrefix(cfg, prefix)
 	}
 }
 
