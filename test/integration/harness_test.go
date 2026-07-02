@@ -222,6 +222,101 @@ func (c *collector) waitFor(payloads []string, timeout time.Duration) []string {
 	}
 }
 
+// attributingCollector records which consumer processed each payload, so tests
+// can prove that a specific consumer did real work rather than only that "some
+// consumer" delivered each payload. The handler signature exposes no shard ID
+// (Record = types.Record) and there is no shard ID in context, so attribution is
+// per-consumer only; per-shard attribution is a separate concern.
+type attributingCollector struct {
+	mu   sync.Mutex
+	seen map[string]map[string]int // consumerID -> payload -> observation count
+}
+
+func newAttributingCollector() *attributingCollector {
+	return &attributingCollector{seen: make(map[string]map[string]int)}
+}
+
+// handlerFor returns a HandlerFunc that attributes every processed record to the
+// given consumerID.
+func (c *attributingCollector) handlerFor(consumerID string) consumer.HandlerFunc {
+	return func(_ context.Context, rec consumer.Record) error {
+		c.mu.Lock()
+		byPayload := c.seen[consumerID]
+		if byPayload == nil {
+			byPayload = make(map[string]int)
+			c.seen[consumerID] = byPayload
+		}
+		byPayload[string(rec.Data)]++
+		c.mu.Unlock()
+		return nil
+	}
+}
+
+// processedBy returns how many distinct payloads from the set consumerID has
+// processed at least once.
+func (c *attributingCollector) processedBy(consumerID string, payloads []string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	byPayload := c.seen[consumerID]
+	n := 0
+	for _, p := range payloads {
+		if byPayload[p] > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// waitForProcessedBy blocks until consumerID has processed at least minCount
+// distinct payloads from the set, returning the count actually reached (which is
+// < minCount only on timeout).
+func (c *attributingCollector) waitForProcessedBy(consumerID string, payloads []string, minCount int, timeout time.Duration) int {
+	deadline := time.Now().Add(timeout)
+	for {
+		n := c.processedBy(consumerID, payloads)
+		if n >= minCount {
+			return n
+		}
+		if time.Now().After(deadline) {
+			return n
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// missingAcrossAll returns payloads not yet observed by any consumer.
+func (c *attributingCollector) missingAcrossAll(payloads []string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for _, p := range payloads {
+		total := 0
+		for _, byPayload := range c.seen {
+			total += byPayload[p]
+		}
+		if total == 0 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// waitForAll blocks until every payload has been observed by some consumer at
+// least once or the timeout elapses, returning the still-missing payloads.
+func (c *attributingCollector) waitForAll(payloads []string, timeout time.Duration) []string {
+	deadline := time.Now().Add(timeout)
+	for {
+		missing := c.missingAcrossAll(payloads)
+		if len(missing) == 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return missing
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // newConsumer builds a consumer for the stream using the Valkey store (leasing is
 // auto-provided). Batching/polling are tuned short for fast, deterministic tests,
 // and graceful drain lets a canceled consumer checkpoint in-flight progress.
