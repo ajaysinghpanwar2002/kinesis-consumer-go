@@ -143,6 +143,68 @@ func TestProcessShardRecordsPassCarriesCheckpointCount(t *testing.T) {
 	}
 }
 
+func TestProcessShardRecordsPassFlushesCheckpointWhenCaughtUp(t *testing.T) {
+	t.Parallel()
+
+	// Open shard: a page with records followed by an empty page whose
+	// NextShardIterator is non-nil (caught up). Even though checkpointEvery (100)
+	// is not reached, the pass must flush the last processed sequence so the next
+	// pass resumes past it instead of replaying. It must NOT be treated as a
+	// completed shard.
+	var handled []string
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("iterator-1"),
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records: []types.Record{
+					{SequenceNumber: aws.String("sequence-1")},
+					{SequenceNumber: aws.String("sequence-2")},
+				},
+				NextShardIterator: aws.String("iterator-2"),
+			},
+			{NextShardIterator: aws.String("iterator-3")}, // empty: caught up to tip
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 100},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			handled = append(handled, aws.ToString(record.SequenceNumber))
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	if err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil (open shard, not completed)", err)
+	}
+	if lastSeq != "sequence-2" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-2")
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 (flushed so the next pass resumes cleanly)", count)
+	}
+	if len(handled) != 2 {
+		t.Fatalf("handled records = %v, want [sequence-1 sequence-2]", handled)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1 (flush of the resume point)", len(store.saveCalls))
+	}
+	if store.saveCalls[0].sequenceNumber != "sequence-2" {
+		t.Fatalf("flushed sequenceNumber = %q, want %q", store.saveCalls[0].sequenceNumber, "sequence-2")
+	}
+	// Both pages must have been polled (records page, then the caught-up empty page).
+	if len(client.getRecordsCalls) != 2 {
+		t.Fatalf("GetRecords calls = %d, want 2", len(client.getRecordsCalls))
+	}
+}
+
 func TestProcessShardRecordsPassSavesShardEndWithLastSequence(t *testing.T) {
 	t.Parallel()
 

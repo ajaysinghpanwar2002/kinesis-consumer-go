@@ -46,6 +46,14 @@ func (c *Consumer) pollShardRecordsPages(ctx context.Context, shardID string) ([
 		if c.isDraining() {
 			return pages, nil
 		}
+		if len(out.Records) == 0 {
+			// An empty page means we have caught up to the shard tip for now.
+			// Return so the pass can process/checkpoint the pages gathered so far
+			// and the next pass resumes from the checkpoint. Without this, an open
+			// shard (whose NextShardIterator is always non-empty) would loop here
+			// forever and never hand any pages to the processor.
+			return pages, nil
+		}
 		iterator = aws.ToString(out.NextShardIterator)
 	}
 	return pages, nil

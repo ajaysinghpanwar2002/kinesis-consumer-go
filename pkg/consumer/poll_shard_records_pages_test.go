@@ -58,9 +58,13 @@ func TestPollShardRecordsPagesAdvancesToNextIterator(t *testing.T) {
 	}
 }
 
-func TestPollShardRecordsPagesContinuesAfterEmptyPageWithNextIterator(t *testing.T) {
+func TestPollShardRecordsPagesStopsWhenCaughtUp(t *testing.T) {
 	t.Parallel()
 
+	// An empty page with a non-nil NextShardIterator is how an OPEN shard signals
+	// "caught up to the tip". Polling must return here rather than loop forever,
+	// so the pass can process/checkpoint and the next pass resumes. Any records
+	// that arrive later are fetched by a subsequent pass, not this one.
 	client := &fakeKinesisClient{
 		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
 			ShardIterator: aws.String("iterator-1"),
@@ -84,14 +88,14 @@ func TestPollShardRecordsPagesContinuesAfterEmptyPageWithNextIterator(t *testing
 	if err != nil {
 		t.Fatalf("pollShardRecordsPages() error = %v, want nil", err)
 	}
-	if len(pages) != 2 {
-		t.Fatalf("len(pages) = %d, want 2", len(pages))
+	if len(pages) != 1 {
+		t.Fatalf("len(pages) = %d, want 1", len(pages))
 	}
 	if len(pages[0].Records) != 0 {
 		t.Fatalf("len(first page Records) = %d, want 0", len(pages[0].Records))
 	}
-	if aws.ToString(client.getRecordsCalls[1].ShardIterator) != "iterator-2" {
-		t.Fatalf("second ShardIterator = %q, want %q", aws.ToString(client.getRecordsCalls[1].ShardIterator), "iterator-2")
+	if len(client.getRecordsCalls) != 1 {
+		t.Fatalf("GetRecords calls = %d, want 1 (must stop at the empty page)", len(client.getRecordsCalls))
 	}
 }
 
