@@ -34,6 +34,47 @@ func TestGetRecordsForwardsContextAndShardIterator(t *testing.T) {
 	}
 }
 
+func TestGetRecordsSetsBatchSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("configured batch size caps the page limit", func(t *testing.T) {
+		t.Parallel()
+		client := &fakeKinesisClient{}
+		c := &Consumer{
+			client: client,
+			tuning: tuningConfig{batchSize: 25},
+		}
+
+		if _, err := c.getRecords(context.Background(), "iterator-1"); err != nil {
+			t.Fatalf("getRecords() error = %v, want nil", err)
+		}
+		if len(client.getRecordsCalls) != 1 {
+			t.Fatalf("GetRecords calls = %d, want 1", len(client.getRecordsCalls))
+		}
+		if got := client.getRecordsCalls[0].Limit; got == nil || *got != 25 {
+			t.Fatalf("Limit = %v, want 25", aws.ToInt32(got))
+		}
+	})
+
+	t.Run("zero batch size sends no limit", func(t *testing.T) {
+		t.Parallel()
+		client := &fakeKinesisClient{}
+		c := &Consumer{
+			client: client,
+		}
+
+		if _, err := c.getRecords(context.Background(), "iterator-1"); err != nil {
+			t.Fatalf("getRecords() error = %v, want nil", err)
+		}
+		if len(client.getRecordsCalls) != 1 {
+			t.Fatalf("GetRecords calls = %d, want 1", len(client.getRecordsCalls))
+		}
+		if got := client.getRecordsCalls[0].Limit; got != nil {
+			t.Fatalf("Limit = %d, want nil (guard against invalid Limit=0)", *got)
+		}
+	})
+}
+
 func TestGetRecordsReturnsRecordsAndNextIterator(t *testing.T) {
 	t.Parallel()
 

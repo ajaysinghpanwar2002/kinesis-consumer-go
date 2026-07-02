@@ -70,9 +70,18 @@ type Record struct {
 */
 
 func (c *Consumer) getRecords(ctx context.Context, shardIterator string) (*kinesis.GetRecordsOutput, error) {
-	out, err := c.client.GetRecords(ctx, &kinesis.GetRecordsInput{
+	input := &kinesis.GetRecordsInput{
 		ShardIterator: aws.String(shardIterator),
-	})
+	}
+	// Cap the page size to the configured batch size so WithBatching actually
+	// bounds how many records a single GetRecords call returns. Guard against a
+	// zero value (Kinesis rejects Limit=0); real consumers always validate
+	// batchSize >= 1, but a zero-value tuning must send no Limit at all.
+	if c.tuning.batchSize > 0 {
+		input.Limit = aws.Int32(c.tuning.batchSize)
+	}
+
+	out, err := c.client.GetRecords(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("get records %s: %w", shardIterator, err)
 	}
