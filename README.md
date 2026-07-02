@@ -50,23 +50,43 @@ go get github.com/pratilipi/kinesis-consumer-go
 
 ## Development
 
-Run the local test suite:
+The repository is a Go workspace with three modules (the core library, the
+Valkey backend under `pkg/backend/valkey`, and `examples/valkey`). Because
+`go test ./...` does not cross module boundaries, the `make` targets iterate all
+modules so nothing is silently skipped.
+
+Run the unit test suite across all modules:
 
 ```bash
 make test
 ```
 
-Compile the current packages:
+Compile all packages (including the example):
 
 ```bash
 make build
 ```
 
-Run the same test suite in Docker:
+Other targets: `make vet`, `make fmt-check`, `make tidy`.
+
+Run the same core test suite in Docker:
 
 ```bash
 make docker-test
 ```
+
+### Git hooks
+
+Shared hooks live in `.githooks/` and are installed by pointing git at them:
+
+```bash
+make hooks   # sets core.hooksPath=.githooks
+```
+
+- `pre-commit` runs the full gate: `make fmt-check`, `make vet`, `make build`, `make test`.
+- `pre-push` re-runs `make test` as a final safety net (e.g. for commits made with `--no-verify`).
+
+Unit tests are hermetic (they use an in-memory Redis and no network).
 
 ## Comparison: AWS KCL vs MultiLangDaemon vs this library
 

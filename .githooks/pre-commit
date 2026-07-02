@@ -1,0 +1,10 @@
+#!/bin/sh
+# Full local gate: formatting, vet, compilation, and the unit test suite across
+# all modules. Unit tests are hermetic (in-memory Redis, no network).
+set -e
+
+echo "pre-commit: gofmt check + vet + build + unit tests (all modules)"
+make fmt-check
+make vet
+make build
+make test

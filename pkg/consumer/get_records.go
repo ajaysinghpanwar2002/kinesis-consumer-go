@@ -20,7 +20,7 @@ GetRecords
 GetRecords
    ...
 
-Input: 
+Input:
 type GetRecordsInput struct {
     ShardIterator *string
     Limit         *int32
@@ -49,7 +49,7 @@ deserialize into GetRecordsOutput
 Limit: This is the maximum number of records to return in one call.
 Important: this is a maximum, not a guarantee. You can ask for 100 records and receive 0, 10, or 100 depending on what is available at that iterator position.
 
-Output: 
+Output:
 type GetRecordsOutput struct {
     Records            []types.Record
     NextShardIterator  *string

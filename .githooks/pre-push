@@ -1,0 +1,8 @@
+#!/bin/sh
+# Final safety net before pushing: re-run the unit test suite across all modules.
+# The full gate runs at pre-commit; this guards against commits that bypassed it
+# (e.g. `git commit --no-verify`).
+set -e
+
+echo "pre-push: unit tests (all modules)"
+make test
