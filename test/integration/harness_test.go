@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 
 	valkeycheckpoint "github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
+	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
 
 // uniqueSeq disambiguates names within a single test process run.
@@ -238,6 +240,133 @@ func newConsumer(t *testing.T, stream string, client *kinesis.Client, store *val
 		t.Fatalf("create consumer for %s: %v", stream, err)
 	}
 	return cons
+}
+
+// newRebalancingConsumer builds a consumer tuned for the multi-consumer
+// integration test. The rebalance interval is configurable so tests can keep
+// ownership movement bounded without changing production defaults.
+func newRebalancingConsumer(
+	t *testing.T,
+	stream string,
+	client *kinesis.Client,
+	store *valkeycheckpoint.Store,
+	handler consumer.HandlerFunc,
+	rebalanceInterval time.Duration,
+) *consumer.Consumer {
+	t.Helper()
+	cfg := consumer.Config{
+		StreamName:    stream,
+		StartPosition: consumer.StartTrimHorizon,
+	}
+	cons, err := consumer.New(cfg, client, store, handler,
+		consumer.WithBatching(10, 1),
+		consumer.WithPolling(200*time.Millisecond, time.Second),
+		consumer.WithRetry(3, 100*time.Millisecond),
+		consumer.WithRebalance(rebalanceInterval, 0, 500*time.Millisecond, 2),
+		consumer.WithHeartbeat(100*time.Millisecond, 2*time.Second),
+		consumer.WithGracefulDrain(10*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("create rebalancing consumer for %s: %v", stream, err)
+	}
+	return cons
+}
+
+func newLeaseManager(t *testing.T, store *valkeycheckpoint.Store) lease.Manager {
+	t.Helper()
+	manager, err := store.LeaseManager()
+	if err != nil {
+		t.Fatalf("create lease manager: %v", err)
+	}
+	if closer, ok := manager.(io.Closer); ok {
+		t.Cleanup(func() { _ = closer.Close() })
+	}
+	return manager
+}
+
+func waitForSingleLeaseOwner(t *testing.T, manager lease.Manager, stream string, shardCount int, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last map[string]string
+	var lastErr error
+	for {
+		owners, err := manager.List(context.Background(), stream)
+		if err == nil {
+			last = owners
+			counts := leaseOwnerCounts(owners)
+			if len(owners) == shardCount && len(counts) == 1 {
+				for owner := range counts {
+					return owner
+				}
+			}
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream %s did not converge to one owner for %d shards within %s; owners=%v lastErr=%v", stream, shardCount, timeout, last, lastErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func waitForDistributedLeaseOwners(t *testing.T, manager lease.Manager, stream string, shardCount, minOwners int, timeout time.Duration) map[string]string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last map[string]string
+	var lastWorkers []string
+	var lastErr error
+	for {
+		owners, err := manager.List(context.Background(), stream)
+		if err == nil {
+			last = owners
+			counts := leaseOwnerCounts(owners)
+			if len(owners) == shardCount && len(counts) >= minOwners {
+				return owners
+			}
+		} else {
+			lastErr = err
+		}
+		if workers, err := manager.Workers(context.Background(), stream); err == nil {
+			lastWorkers = workers
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream %s did not distribute %d shards across at least %d owners within %s; owners=%v workers=%v lastErr=%v", stream, shardCount, minOwners, timeout, last, lastWorkers, lastErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func waitForLeaseWorkers(t *testing.T, manager lease.Manager, stream string, minWorkers int, timeout time.Duration) []string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last []string
+	var lastErr error
+	for {
+		workers, err := manager.Workers(context.Background(), stream)
+		if err == nil {
+			last = workers
+			if len(workers) >= minWorkers {
+				return workers
+			}
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream %s did not report at least %d active workers within %s; workers=%v lastErr=%v", stream, minWorkers, timeout, last, lastErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func leaseOwnerCounts(owners map[string]string) map[string]int {
+	counts := make(map[string]int)
+	for _, owner := range owners {
+		if owner == "" {
+			continue
+		}
+		counts[owner]++
+	}
+	return counts
 }
 
 // runConsumer starts the consumer in a goroutine and returns a cancel func plus a
