@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -158,6 +159,75 @@ func putRecords(ctx context.Context, t *testing.T, client *kinesis.Client, name 
 	}
 }
 
+// shardHashKeys returns, for each shard, a hash key that lands in that shard's
+// hash-key range (the range's starting key), so a producer can pin a record to a
+// specific shard via ExplicitHashKey. This lets a test know payload->shard even
+// though the handler is not told which shard a record came from.
+func shardHashKeys(ctx context.Context, t *testing.T, client *kinesis.Client, name string) map[string]string {
+	t.Helper()
+	out, err := client.ListShards(ctx, &kinesis.ListShardsInput{StreamName: aws.String(name)})
+	if err != nil {
+		t.Fatalf("list shards for %s: %v", name, err)
+	}
+	keys := make(map[string]string, len(out.Shards))
+	for _, s := range out.Shards {
+		if s.HashKeyRange == nil {
+			continue
+		}
+		keys[aws.ToString(s.ShardId)] = aws.ToString(s.HashKeyRange.StartingHashKey)
+	}
+	return keys
+}
+
+// putRecordsToShard writes payloads pinned to one shard via ExplicitHashKey.
+func putRecordsToShard(ctx context.Context, t *testing.T, client *kinesis.Client, name, hashKey string, payloads []string) {
+	t.Helper()
+	entries := make([]types.PutRecordsRequestEntry, len(payloads))
+	for i, p := range payloads {
+		entries[i] = types.PutRecordsRequestEntry{
+			Data:            []byte(p),
+			PartitionKey:    aws.String(fmt.Sprintf("pk-%d", i)),
+			ExplicitHashKey: aws.String(hashKey),
+		}
+	}
+	out, err := client.PutRecords(ctx, &kinesis.PutRecordsInput{
+		StreamName: aws.String(name),
+		Records:    entries,
+	})
+	if err != nil {
+		t.Fatalf("put records to shard on %s: %v", name, err)
+	}
+	if out.FailedRecordCount != nil && *out.FailedRecordCount > 0 {
+		t.Fatalf("put records to shard on %s: %d of %d failed", name, *out.FailedRecordCount, len(payloads))
+	}
+}
+
+// putRecordsAcrossShards distributes payloads across all shards deterministically
+// (round-robin by shard ID) using ExplicitHashKey, so every shard is guaranteed to
+// receive records regardless of partition-key hashing.
+func putRecordsAcrossShards(ctx context.Context, t *testing.T, client *kinesis.Client, name string, hashKeys map[string]string, payloads []string) {
+	t.Helper()
+	shardIDs := make([]string, 0, len(hashKeys))
+	for id := range hashKeys {
+		shardIDs = append(shardIDs, id)
+	}
+	sort.Strings(shardIDs)
+	if len(shardIDs) == 0 {
+		t.Fatalf("no shards to distribute records across on %s", name)
+	}
+
+	perShard := make(map[string][]string, len(shardIDs))
+	for i, p := range payloads {
+		id := shardIDs[i%len(shardIDs)]
+		perShard[id] = append(perShard[id], p)
+	}
+	for _, id := range shardIDs {
+		if ps := perShard[id]; len(ps) > 0 {
+			putRecordsToShard(ctx, t, client, name, hashKeys[id], ps)
+		}
+	}
+}
+
 // makePayloads builds n distinct payloads with the given tag.
 func makePayloads(tag string, n int) []string {
 	out := make([]string, n)
@@ -282,6 +352,21 @@ func (c *attributingCollector) waitForProcessedBy(consumerID string, payloads []
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// consumersFor returns the distinct consumer IDs that processed payload at least
+// once, sorted for deterministic diagnostics.
+func (c *attributingCollector) consumersFor(payload string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for id, byPayload := range c.seen {
+		if byPayload[payload] > 0 {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // missingAcrossAll returns payloads not yet observed by any consumer.
@@ -451,6 +536,50 @@ func waitForLeaseWorkers(t *testing.T, manager lease.Manager, stream string, min
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// waitForStableLeaseOwners waits until the shard->owner map covers all shards
+// across at least minOwners owners AND has stayed identical for stableFor,
+// returning that stable map. Used before measuring steady-state behavior so a
+// concurrent rebalance move does not race the measurement.
+func waitForStableLeaseOwners(t *testing.T, manager lease.Manager, stream string, shardCount, minOwners int, stableFor, timeout time.Duration) map[string]string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var prev map[string]string
+	var stableSince time.Time
+	for {
+		owners, err := manager.List(context.Background(), stream)
+		valid := err == nil && len(owners) == shardCount && len(leaseOwnerCounts(owners)) >= minOwners
+		if valid {
+			if prev != nil && sameOwnerMap(prev, owners) {
+				if time.Since(stableSince) >= stableFor {
+					return owners
+				}
+			} else {
+				prev = owners
+				stableSince = time.Now()
+			}
+		} else {
+			prev = nil
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream %s ownership did not stabilize across >=%d owners for %s within %s; last=%v", stream, minOwners, stableFor, timeout, prev)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// sameOwnerMap reports whether two shard->owner maps are identical.
+func sameOwnerMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func leaseOwnerCounts(owners map[string]string) map[string]int {
