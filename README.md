@@ -33,6 +33,21 @@ go get github.com/pratilipi/kinesis-consumer-go
 
 - [Handler failure policy, DLQ, and shard concurrency](docs/handler-behavior.md)
 
+## Examples
+
+- [`examples/valkey`](examples/valkey) — a runnable consumer backed by Valkey for
+  both checkpoints and leasing. It passes the Valkey store to `consumer.New` and
+  does not call `WithLeaseManager`: because the store implements `lease.Provider`,
+  the consumer turns on shard leasing automatically. Run two copies against the
+  same stream and Valkey to see shards spread across workers. It needs a real (or
+  LocalStack) Kinesis endpoint and a reachable Valkey server, so it is its own
+  module and is not part of the test suite:
+
+  ```bash
+  cd examples/valkey
+  go run . -stream-name my-stream -valkey-addr localhost:6379
+  ```
+
 ## Development
 
 Run the local test suite:
