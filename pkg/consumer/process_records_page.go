@@ -37,24 +37,3 @@ func (c *Consumer) processRecordsPageWithCheckpoint(ctx context.Context, shardID
 	}
 	return lastSeq, count, nil
 }
-
-func (c *Consumer) processRecordsPagesWithCheckpoint(ctx context.Context, shardID string, pages []*kinesis.GetRecordsOutput, processedSinceCheckpoint int) (string, int, error) {
-	lastSeq := ""
-	count := processedSinceCheckpoint
-
-	for _, page := range pages {
-		pageLastSeq, pageCount, err := c.processRecordsPageWithCheckpoint(ctx, shardID, page, count)
-		if pageLastSeq != "" {
-			lastSeq = pageLastSeq
-		}
-		count = pageCount
-		if err != nil {
-			return lastSeq, count, fmt.Errorf("process records pages with checkpoint %s: %w", shardID, err)
-		}
-		if c.isDraining() {
-			return lastSeq, count, nil
-		}
-	}
-
-	return lastSeq, count, nil
-}

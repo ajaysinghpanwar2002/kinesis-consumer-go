@@ -205,6 +205,56 @@ func TestProcessShardRecordsPassFlushesCheckpointWhenCaughtUp(t *testing.T) {
 	}
 }
 
+func TestProcessShardRecordsPassProcessesEachPageBeforeFetchingNext(t *testing.T) {
+	t.Parallel()
+
+	// Streaming: a page must be handled before the next page is fetched, so memory
+	// stays bounded to one page. The buffered (old) design would fetch all pages
+	// first and handle them afterward, producing [fetch fetch handle:...].
+	var order []string
+	var client *fakeKinesisClient
+	client = &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("iterator-1"),
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+				NextShardIterator: aws.String("iterator-2"),
+			},
+			{NextShardIterator: aws.String("iterator-3")}, // empty: caught up
+		},
+		afterGetRecords: func() { order = append(order, "fetch") },
+	}
+	_ = client
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			order = append(order, "handle:"+aws.ToString(record.SequenceNumber))
+			return nil
+		},
+	}
+
+	if _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0); err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	}
+
+	want := []string{"fetch", "handle:sequence-1", "fetch"}
+	if len(order) != len(want) {
+		t.Fatalf("event order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("event order = %v, want %v (page 1 must be handled before page 2 is fetched)", order, want)
+		}
+	}
+}
+
 func TestProcessShardRecordsPassSavesShardEndWithLastSequence(t *testing.T) {
 	t.Parallel()
 
@@ -247,6 +297,61 @@ func TestProcessShardRecordsPassSavesShardEndWithLastSequence(t *testing.T) {
 	}
 	if store.saveCalls[0].sequenceNumber != "SHARD_END:sequence-1" {
 		t.Fatalf("sequenceNumber = %q, want %q", store.saveCalls[0].sequenceNumber, "SHARD_END:sequence-1")
+	}
+}
+
+func TestProcessShardRecordsPassCheckpointsThenSavesShardEndOnSamePage(t *testing.T) {
+	t.Parallel()
+
+	// A single page that both reaches the checkpointEvery threshold AND closes the
+	// shard (nil NextShardIterator) must save the ordinary due checkpoint during
+	// processing and then the SHARD_END completion checkpoint, and return
+	// errShardCompleted.
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("iterator-1"),
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records: []types.Record{
+					{SequenceNumber: aws.String("sequence-1")},
+					{SequenceNumber: aws.String("sequence-2")},
+				},
+			}, // nil NextShardIterator: closes the shard
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 2}, // reached exactly by this page
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	if !errors.Is(err, errShardCompleted) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errShardCompleted)
+	}
+	if lastSeq != "sequence-2" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-2")
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 (reset by the due checkpoint)", count)
+	}
+	// Two saves: the due checkpoint (sequence-2) then the completion marker.
+	if len(store.saveCalls) != 2 {
+		t.Fatalf("Save calls = %d, want 2", len(store.saveCalls))
+	}
+	if store.saveCalls[0].sequenceNumber != "sequence-2" {
+		t.Fatalf("first save = %q, want %q", store.saveCalls[0].sequenceNumber, "sequence-2")
+	}
+	if store.saveCalls[1].sequenceNumber != "SHARD_END:sequence-2" {
+		t.Fatalf("second save = %q, want %q", store.saveCalls[1].sequenceNumber, "SHARD_END:sequence-2")
 	}
 }
 
@@ -376,7 +481,7 @@ func TestProcessShardRecordsPassWrapsShardEndCheckpointError(t *testing.T) {
 	}
 }
 
-func TestProcessShardRecordsPassWrapsPollingError(t *testing.T) {
+func TestProcessShardRecordsPassWrapsIteratorError(t *testing.T) {
 	t.Parallel()
 
 	errBoom := errors.New("boom")
@@ -391,8 +496,8 @@ func TestProcessShardRecordsPassWrapsPollingError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "process shard records pass shard-1: poll shard records pages shard-1: get shard iterator shard-1: boom" {
-		t.Fatalf("processShardRecordsPass() error = %v, want %q", err, "process shard records pass shard-1: poll shard records pages shard-1: get shard iterator shard-1: boom")
+	if err == nil || err.Error() != "process shard records pass shard-1: get shard iterator shard-1: boom" {
+		t.Fatalf("processShardRecordsPass() error = %v, want %q", err, "process shard records pass shard-1: get shard iterator shard-1: boom")
 	}
 	if lastSeq != "" {
 		t.Fatalf("lastSeq = %q, want empty", lastSeq)
@@ -432,7 +537,7 @@ func TestProcessShardRecordsPassWrapsProcessingError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errBoom)
 	}
-	want := "process shard records pass shard-1: process records pages with checkpoint shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: record handler failed after 1 attempts: boom"
+	want := "process shard records pass shard-1: process records page with checkpoint shard-1: process records page shard-1: handle records page shard-1: record handler: record handler failed after 1 attempts: boom"
 	if err == nil || err.Error() != want {
 		t.Fatalf("processShardRecordsPass() error = %v, want %q", err, want)
 	}

@@ -7,50 +7,32 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 )
 
-func TestShardRecordsPagesEnded(t *testing.T) {
+func TestPageEndsShard(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		pages []*kinesis.GetRecordsOutput
-		want  bool
+		name string
+		page *kinesis.GetRecordsOutput
+		want bool
 	}{
 		{
-			name: "empty pages",
+			name: "nil page",
+			page: nil,
 			want: false,
 		},
 		{
-			name:  "nil final page",
-			pages: []*kinesis.GetRecordsOutput{nil},
-			want:  false,
-		},
-		{
-			name: "final page with next iterator",
-			pages: []*kinesis.GetRecordsOutput{
-				{NextShardIterator: aws.String("iterator-2")},
-			},
+			name: "page with next iterator",
+			page: &kinesis.GetRecordsOutput{NextShardIterator: aws.String("iterator-2")},
 			want: false,
 		},
 		{
-			name: "final page with nil next iterator",
-			pages: []*kinesis.GetRecordsOutput{
-				{NextShardIterator: nil},
-			},
+			name: "page with nil next iterator",
+			page: &kinesis.GetRecordsOutput{NextShardIterator: nil},
 			want: true,
 		},
 		{
-			name: "final page with empty next iterator",
-			pages: []*kinesis.GetRecordsOutput{
-				{NextShardIterator: aws.String("")},
-			},
-			want: true,
-		},
-		{
-			name: "uses final page",
-			pages: []*kinesis.GetRecordsOutput{
-				{NextShardIterator: aws.String("iterator-2")},
-				{NextShardIterator: nil},
-			},
+			name: "page with empty next iterator",
+			page: &kinesis.GetRecordsOutput{NextShardIterator: aws.String("")},
 			want: true,
 		},
 	}
@@ -59,9 +41,8 @@ func TestShardRecordsPagesEnded(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := shardRecordsPagesEnded(tt.pages)
-			if got != tt.want {
-				t.Fatalf("shardRecordsPagesEnded() = %v, want %v", got, tt.want)
+			if got := pageEndsShard(tt.page); got != tt.want {
+				t.Fatalf("pageEndsShard() = %v, want %v", got, tt.want)
 			}
 		})
 	}

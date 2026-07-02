@@ -293,8 +293,8 @@ func TestProcessShardRecordsLoopWrapsPassError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processShardRecordsLoop() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "process shard records loop shard-1: process shard records pass shard-1: poll shard records pages shard-1: get shard iterator shard-1: boom" {
-		t.Fatalf("processShardRecordsLoop() error = %v, want %q", err, "process shard records loop shard-1: process shard records pass shard-1: poll shard records pages shard-1: get shard iterator shard-1: boom")
+	if err == nil || err.Error() != "process shard records loop shard-1: process shard records pass shard-1: get shard iterator shard-1: boom" {
+		t.Fatalf("processShardRecordsLoop() error = %v, want %q", err, "process shard records loop shard-1: process shard records pass shard-1: get shard iterator shard-1: boom")
 	}
 	if lastSeq != "" {
 		t.Fatalf("lastSeq = %q, want empty", lastSeq)
@@ -321,7 +321,7 @@ func TestProcessShardRecordsLoopTreatsShardCompletedAsNormalCompletion(t *testin
 			if processedSinceCheckpoint != 2 {
 				t.Fatalf("processedSinceCheckpoint = %d, want 2", processedSinceCheckpoint)
 			}
-			return "", processedSinceCheckpoint, fmt.Errorf("poll shard records pages shard-1: %w", errShardCompleted)
+			return "", processedSinceCheckpoint, fmt.Errorf("process shard records pass shard-1: %w", errShardCompleted)
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = ctx
