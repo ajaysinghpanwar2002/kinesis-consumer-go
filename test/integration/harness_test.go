@@ -422,6 +422,37 @@ func newConsumer(t *testing.T, stream string, client *kinesis.Client, store *val
 	return cons
 }
 
+// newNoDrainConsumer builds a consumer with a configurable batch size and
+// checkpoint frequency and NO graceful drain, so that cancelling it is an
+// ungraceful ("crash") stop: the residual processed-but-not-yet-checkpointed
+// records are not flushed. The batch size caps the GetRecords page size (so a
+// checkpointEvery larger than it spans multiple pages), and a short heartbeat TTL
+// is a backstop in case the lease release on the abrupt stop is delayed.
+func newNoDrainConsumer(
+	t *testing.T,
+	stream string,
+	client *kinesis.Client,
+	store *valkeycheckpoint.Store,
+	handler consumer.HandlerFunc,
+	batchSize int32,
+	checkpointEvery int,
+) *consumer.Consumer {
+	t.Helper()
+	cfg := consumer.Config{
+		StreamName:    stream,
+		StartPosition: consumer.StartTrimHorizon,
+	}
+	cons, err := consumer.New(cfg, client, store, handler,
+		consumer.WithBatching(batchSize, checkpointEvery),
+		consumer.WithPolling(200*time.Millisecond, time.Second),
+		consumer.WithHeartbeat(200*time.Millisecond, 3*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("create no-drain consumer for %s: %v", stream, err)
+	}
+	return cons
+}
+
 // newRebalancingConsumer builds a consumer tuned for the multi-consumer
 // integration test. The rebalance interval is configurable so tests can keep
 // ownership movement bounded without changing production defaults.
