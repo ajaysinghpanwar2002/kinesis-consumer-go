@@ -453,6 +453,37 @@ func newNoDrainConsumer(
 	return cons
 }
 
+// newDrainConsumer mirrors newNoDrainConsumer but ENABLES graceful drain, so
+// cancelling it is a graceful shutdown: in-flight progress is checkpointed before
+// the worker exits. Batch size and checkpoint frequency are configurable so a test
+// can, for example, set a checkpointEvery larger than the whole stream to disable
+// the periodic due-save path and isolate the drain flush.
+func newDrainConsumer(
+	t *testing.T,
+	stream string,
+	client *kinesis.Client,
+	store *valkeycheckpoint.Store,
+	handler consumer.HandlerFunc,
+	batchSize int32,
+	checkpointEvery int,
+) *consumer.Consumer {
+	t.Helper()
+	cfg := consumer.Config{
+		StreamName:    stream,
+		StartPosition: consumer.StartTrimHorizon,
+	}
+	cons, err := consumer.New(cfg, client, store, handler,
+		consumer.WithBatching(batchSize, checkpointEvery),
+		consumer.WithPolling(200*time.Millisecond, time.Second),
+		consumer.WithHeartbeat(200*time.Millisecond, 3*time.Second),
+		consumer.WithGracefulDrain(10*time.Second),
+	)
+	if err != nil {
+		t.Fatalf("create drain consumer for %s: %v", stream, err)
+	}
+	return cons
+}
+
 // newRebalancingConsumer builds a consumer tuned for the multi-consumer
 // integration test. The rebalance interval is configurable so tests can keep
 // ownership movement bounded without changing production defaults.
