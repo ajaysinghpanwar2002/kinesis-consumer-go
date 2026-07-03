@@ -6,11 +6,12 @@ No Java, no MultiLangDaemon.
 ## Why this library
 
 - Native Go, single process. No JVM sidecar or MultiLangDaemon.
-- Modular packaging: import only core, plus optional backend or metrics modules.
-- Not tied to DynamoDB; DynamoDB, Valkey, and Redis backends are optional.
+- Modular packaging: import only the core, plus an optional backend module.
+- Not tied to DynamoDB: coordination state lives behind pluggable checkpoint-store
+  and lease-manager interfaces. A Valkey backend is built in; DynamoDB and Redis are
+  planned.
 - Reshard-aware ordering via SHARD_END markers and parent gating.
 - Tunable batching, retries, polling, and per-shard concurrency.
-- Structured logs with `slog` and optional StatsD metrics + Grafana dashboards.
 - Pluggable poison-record handling: fail-fast, skip, or send-to-DLQ.
 
 ## Key features
@@ -21,7 +22,7 @@ No Java, no MultiLangDaemon.
 - Pluggable DLQ publisher interface for poison records.
 - Optional graceful drain mode on shutdown (finish in-flight work, checkpoint, release lease).
 - Pluggable checkpoint stores and lease managers.
-- LocalStack + Valkey/Redis workflow for local testing.
+- LocalStack + Valkey workflow for local testing.
 
 ## Install
 
@@ -94,7 +95,7 @@ Unit tests are hermetic (they use an in-memory Redis and no network).
 | --- | --- | --- | --- |
 | Runtime | Java | App + Java daemon | Go only |
 | Process model | Single JVM | Multi-process | Single process |
-| Coordination store | DynamoDB (default) | DynamoDB (default) | DynamoDB/Valkey/Redis built-in, pluggable |
+| Coordination store | DynamoDB (default) | DynamoDB (default) | Valkey built-in; pluggable interface (DynamoDB/Redis planned) |
 | Packaging | Java deps | Java jars + wrapper | Core + optional modules |
 | Language support | Java | Any via daemon | Go |
 
