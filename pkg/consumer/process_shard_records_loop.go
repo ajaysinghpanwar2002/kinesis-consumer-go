@@ -10,6 +10,11 @@ import (
 func (c *Consumer) processShardRecordsLoop(ctx context.Context, shardID string) (string, int, error) {
 	lastSeq := ""
 	processedSinceCheckpoint := 0
+	// iterator is held across passes so a StartLatest position is not re-anchored
+	// to the moving shard tip on every pass (LIB-2). It is loop-local on purpose:
+	// a new worker taking over after rebalance/failover starts fresh (empty) and
+	// re-derives from the stored checkpoint.
+	iterator := ""
 
 	for {
 		select {
@@ -28,7 +33,8 @@ func (c *Consumer) processShardRecordsLoop(ctx context.Context, shardID string) 
 		}
 
 		passStartCount := processedSinceCheckpoint
-		passLastSeq, count, err := c.runShardRecordsPass(ctx, shardID, processedSinceCheckpoint)
+		passLastSeq, count, nextIterator, err := c.runShardRecordsPass(ctx, shardID, processedSinceCheckpoint, iterator)
+		iterator = nextIterator
 		if passLastSeq != "" {
 			lastSeq = passLastSeq
 		}
@@ -56,12 +62,12 @@ func (c *Consumer) processShardRecordsLoop(ctx context.Context, shardID string) 
 	}
 }
 
-func (c *Consumer) runShardRecordsPass(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+func (c *Consumer) runShardRecordsPass(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 	process := c.processShardRecordsPass
 	if c.processShardRecordsPassFn != nil {
 		process = c.processShardRecordsPassFn
 	}
-	return process(ctx, shardID, processedSinceCheckpoint)
+	return process(ctx, shardID, processedSinceCheckpoint, iterator)
 }
 
 func (c *Consumer) sleep(ctx context.Context, d time.Duration) error {

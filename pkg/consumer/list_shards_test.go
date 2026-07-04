@@ -29,6 +29,7 @@ type fakeKinesisClient struct {
 	getRecordsOut   *kinesis.GetRecordsOutput
 	getRecordsOuts  []*kinesis.GetRecordsOutput
 	getRecordsErr   error
+	getRecordsErrs  []error // per-call error queue (nil entry = no error, fall through)
 	afterGetRecords func()
 }
 
@@ -88,6 +89,13 @@ func (c *fakeKinesisClient) GetRecords(ctx context.Context, params *kinesis.GetR
 	c.getRecordsCtx = ctx
 	if params != nil {
 		c.getRecordsCalls = append(c.getRecordsCalls, *params)
+	}
+	if len(c.getRecordsErrs) > 0 {
+		err := c.getRecordsErrs[0]
+		c.getRecordsErrs = c.getRecordsErrs[1:]
+		if err != nil {
+			return nil, err
+		}
 	}
 	if c.getRecordsErr != nil {
 		return nil, c.getRecordsErr

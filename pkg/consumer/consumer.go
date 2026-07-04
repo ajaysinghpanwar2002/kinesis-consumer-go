@@ -30,7 +30,7 @@ type Consumer struct {
 	draining      atomic.Bool
 	tuning        tuningConfig
 
-	processShardRecordsPassFn func(context.Context, string, int) (string, int, error)
+	processShardRecordsPassFn func(context.Context, string, int, string) (string, int, string, error)
 	processShardRecordsLoopFn func(context.Context, string) (string, int, error)
 	sleepFn                   func(context.Context, time.Duration) error
 }

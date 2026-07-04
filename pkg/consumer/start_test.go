@@ -649,27 +649,27 @@ func TestStartGracefulDrainCheckpointsPendingProgressOnContextCancellation(t *te
 
 	firstPassDone := make(chan struct{})
 	passCalls := 0
-	c.processShardRecordsPassFn = func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+	c.processShardRecordsPassFn = func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 		_ = shardID
 		passCalls++
 		if passCalls == 1 {
 			if processedSinceCheckpoint != 0 {
-				return "", processedSinceCheckpoint, errors.New("first pass received nonzero checkpoint count")
+				return "", processedSinceCheckpoint, "", errors.New("first pass received nonzero checkpoint count")
 			}
 			close(firstPassDone)
-			return "sequence-1", 1, nil
+			return "sequence-1", 1, "", nil
 		}
 		if processedSinceCheckpoint != 1 {
-			return "", processedSinceCheckpoint, errors.New("drain pass received unexpected checkpoint count")
+			return "", processedSinceCheckpoint, "", errors.New("drain pass received unexpected checkpoint count")
 		}
 		for !c.isDraining() {
 			select {
 			case <-ctx.Done():
-				return "", processedSinceCheckpoint, ctx.Err()
+				return "", processedSinceCheckpoint, "", ctx.Err()
 			case <-time.After(time.Millisecond):
 			}
 		}
-		return "", processedSinceCheckpoint, nil
+		return "", processedSinceCheckpoint, "", nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

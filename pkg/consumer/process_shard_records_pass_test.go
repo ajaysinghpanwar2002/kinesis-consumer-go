@@ -53,7 +53,7 @@ func TestProcessShardRecordsPassPollsAndProcessesPagesInOrder(t *testing.T) {
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(ctx, "shard-1", 1)
+	lastSeq, count, _, err := c.processShardRecordsPass(ctx, "shard-1", 1, "")
 	if err != nil {
 		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
 	}
@@ -125,7 +125,7 @@ func TestProcessShardRecordsPassCarriesCheckpointCount(t *testing.T) {
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(ctx, "shard-1", 1)
+	lastSeq, count, _, err := c.processShardRecordsPass(ctx, "shard-1", 1, "")
 	if err != nil {
 		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
 	}
@@ -180,7 +180,7 @@ func TestProcessShardRecordsPassFlushesCheckpointWhenCaughtUp(t *testing.T) {
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "")
 	if err != nil {
 		t.Fatalf("processShardRecordsPass() error = %v, want nil (open shard, not completed)", err)
 	}
@@ -240,7 +240,7 @@ func TestProcessShardRecordsPassProcessesEachPageBeforeFetchingNext(t *testing.T
 		},
 	}
 
-	if _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0); err != nil {
+	if _, _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, ""); err != nil {
 		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
 	}
 
@@ -279,7 +279,7 @@ func TestProcessShardRecordsPassSavesShardEndWithLastSequence(t *testing.T) {
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "")
 	if !errors.Is(err, errShardCompleted) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errShardCompleted)
 	}
@@ -333,7 +333,7 @@ func TestProcessShardRecordsPassCheckpointsThenSavesShardEndOnSamePage(t *testin
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "")
 	if !errors.Is(err, errShardCompleted) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errShardCompleted)
 	}
@@ -374,7 +374,7 @@ func TestProcessShardRecordsPassSavesShardEndWithoutLastSequence(t *testing.T) {
 		tuning: tuningConfig{checkpointEvery: 10},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "")
 	if !errors.Is(err, errShardCompleted) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errShardCompleted)
 	}
@@ -420,7 +420,7 @@ func TestProcessShardRecordsPassDoesNotSaveShardEndWhenDraining(t *testing.T) {
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "")
 	if err != nil {
 		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
 	}
@@ -460,7 +460,7 @@ func TestProcessShardRecordsPassWrapsShardEndCheckpointError(t *testing.T) {
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 0)
+	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "")
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errBoom)
 	}
@@ -492,7 +492,7 @@ func TestProcessShardRecordsPassWrapsIteratorError(t *testing.T) {
 		store:  &fakeCheckpointSaveStore{},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 2)
+	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 2, "")
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errBoom)
 	}
@@ -533,7 +533,7 @@ func TestProcessShardRecordsPassWrapsProcessingError(t *testing.T) {
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(context.Background(), "shard-1", 2)
+	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 2, "")
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errBoom)
 	}
@@ -584,7 +584,7 @@ func TestProcessShardRecordsPassProcessesPartialPagesAfterCanceledPolling(t *tes
 		},
 	}
 
-	lastSeq, count, err := c.processShardRecordsPass(ctx, "shard-1", 1)
+	lastSeq, count, _, err := c.processShardRecordsPass(ctx, "shard-1", 1, "")
 	if err != nil {
 		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
 	}
@@ -602,5 +602,70 @@ func TestProcessShardRecordsPassProcessesPartialPagesAfterCanceledPolling(t *tes
 	}
 	if len(store.saveCalls) != 0 {
 		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
+
+func TestProcessShardRecordsPassReDerivesAfterExpiredIterator(t *testing.T) {
+	t.Parallel()
+
+	// A held iterator can outlive its ~5-minute TTL (a large pollInterval, or a slow
+	// handler stretching the gap between reads). On ExpiredIteratorException the pass
+	// must DROP the stale iterator, re-derive from the checkpoint, and continue — not
+	// fail the shard. The pass is entered with a non-empty (held, now-stale) iterator,
+	// so the single GetShardIterator call proves the re-derive happened on recovery.
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("fresh-iterator"),
+		},
+		getRecordsErrs: []error{&types.ExpiredIteratorException{}}, // first read: stale iterator expired
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			// After re-derive, a page that also closes the shard so the pass ends
+			// deterministically without relying on cancellation timing.
+			{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	var handled []string
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			handled = append(handled, aws.ToString(record.SequenceNumber))
+			return nil
+		},
+	}
+
+	lastSeq, count, nextIterator, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "stale-iterator")
+	if !errors.Is(err, errShardCompleted) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v (recovered from expiry, then hit shard end)", err, errShardCompleted)
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	if nextIterator != "" {
+		t.Fatalf("nextIterator = %q, want empty (shard completed)", nextIterator)
+	}
+	// The stale iterator was dropped and re-derived exactly once on recovery.
+	if len(client.getShardIteratorCalls) != 1 {
+		t.Fatalf("GetShardIterator calls = %d, want 1 (re-derive after expiry)", len(client.getShardIteratorCalls))
+	}
+	// Two reads: the expired one, then the successful one after re-derive.
+	if len(client.getRecordsCalls) != 2 {
+		t.Fatalf("GetRecords calls = %d, want 2 (expired, then retried)", len(client.getRecordsCalls))
+	}
+	if got := aws.ToString(client.getRecordsCalls[0].ShardIterator); got != "stale-iterator" {
+		t.Fatalf("first GetRecords used %q, want the stale held iterator %q", got, "stale-iterator")
+	}
+	if got := aws.ToString(client.getRecordsCalls[1].ShardIterator); got != "fresh-iterator" {
+		t.Fatalf("second GetRecords used %q, want the re-derived %q", got, "fresh-iterator")
+	}
+	if len(handled) != 1 || handled[0] != "sequence-1" {
+		t.Fatalf("handled records = %v, want [sequence-1] (record read after recovery)", handled)
 	}
 }

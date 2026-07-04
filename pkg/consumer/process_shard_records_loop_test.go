@@ -12,6 +12,86 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 )
 
+func TestProcessShardRecordsLoopDerivesIteratorOncePerWorker(t *testing.T) {
+	t.Parallel()
+
+	// LIB-2 regression guard: the shard iterator is derived from the store ONCE per
+	// worker, then carried across passes via NextShardIterator. Re-deriving it every
+	// pass (the old behavior) re-anchors a StartLatest position to the moving shard
+	// tip and silently drops records produced in the poll gap. Here the loop reads a
+	// page, catches up (empty page → the pass returns), then reads MORE on the next
+	// pass using the HELD iterator — all with a single GetShardIterator call. The
+	// mutation is the pre-fix code (re-derive each pass → GetShardIterator calls == 2).
+	ctx, cancel := context.WithCancel(context.Background())
+	getRecordsCalls := 0
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("iterator-1"),
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+				NextShardIterator: aws.String("iterator-2"),
+			},
+			{NextShardIterator: aws.String("iterator-3")}, // empty: caught up → pass returns, loop re-passes
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-2")}},
+				NextShardIterator: aws.String("iterator-4"),
+			},
+		},
+		afterGetRecords: func() {
+			getRecordsCalls++
+			if getRecordsCalls == 3 {
+				cancel()
+			}
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	var handled []string
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+		tuning: tuningConfig{checkpointEvery: 100},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			handled = append(handled, aws.ToString(record.SequenceNumber))
+			return nil
+		},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			_ = d
+			return nil // re-poll instantly
+		},
+	}
+
+	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsLoop() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-2" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-2")
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	// THE proof: the iterator is derived once, not once per pass.
+	if len(client.getShardIteratorCalls) != 1 {
+		t.Fatalf("GetShardIterator calls = %d, want 1 (iterator must be held across passes, not re-derived each pass — LIB-2)", len(client.getShardIteratorCalls))
+	}
+	// The second pass polled with the HELD iterator (iterator-3), not a fresh derive.
+	if len(client.getRecordsCalls) != 3 {
+		t.Fatalf("GetRecords calls = %d, want 3", len(client.getRecordsCalls))
+	}
+	if got := aws.ToString(client.getRecordsCalls[2].ShardIterator); got != "iterator-3" {
+		t.Fatalf("third GetRecords used ShardIterator %q, want %q (the held NextShardIterator from the caught-up page)", got, "iterator-3")
+	}
+	// Records from both passes were delivered — nothing dropped across the poll gap.
+	if len(handled) != 2 || handled[0] != "sequence-1" || handled[1] != "sequence-2" {
+		t.Fatalf("handled records = %v, want [sequence-1 sequence-2]", handled)
+	}
+}
+
 func TestProcessShardRecordsLoopRunsPassAndReturnsOnCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -63,7 +143,7 @@ func TestProcessShardRecordsLoopCarriesCheckpointCountBetweenPasses(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	passCalls := 0
 	c := &Consumer{
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
 			passCalls++
@@ -71,13 +151,13 @@ func TestProcessShardRecordsLoopCarriesCheckpointCountBetweenPasses(t *testing.T
 				if processedSinceCheckpoint != 0 {
 					t.Fatalf("first processedSinceCheckpoint = %d, want 0", processedSinceCheckpoint)
 				}
-				return "sequence-1", 1, nil
+				return "sequence-1", 1, "", nil
 			}
 			if processedSinceCheckpoint != 1 {
 				t.Fatalf("second processedSinceCheckpoint = %d, want 1", processedSinceCheckpoint)
 			}
 			cancel()
-			return "sequence-2", 2, nil
+			return "sequence-2", 2, "", nil
 		},
 	}
 
@@ -150,14 +230,14 @@ func TestProcessShardRecordsLoopCheckpointsPendingProgressOnDrain(t *testing.T) 
 		cfg:    Config{StreamName: "stream"},
 		store:  store,
 		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
 			if processedSinceCheckpoint != 0 {
 				t.Fatalf("processedSinceCheckpoint = %d, want 0", processedSinceCheckpoint)
 			}
 			c.draining.Store(true)
-			return "sequence-1", 2, nil
+			return "sequence-1", 2, "", nil
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = ctx
@@ -254,12 +334,12 @@ func TestProcessShardRecordsLoopWrapsDrainCheckpointError(t *testing.T) {
 	c = &Consumer{
 		cfg:   Config{StreamName: "stream"},
 		store: store,
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
 			_ = processedSinceCheckpoint
 			c.draining.Store(true)
-			return "sequence-1", 1, nil
+			return "sequence-1", 1, "", nil
 		},
 	}
 
@@ -311,17 +391,17 @@ func TestProcessShardRecordsLoopTreatsShardCompletedAsNormalCompletion(t *testin
 	sleepCalls := 0
 	c := &Consumer{
 		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
 			passCalls++
 			if passCalls == 1 {
-				return "sequence-1", processedSinceCheckpoint + 2, nil
+				return "sequence-1", processedSinceCheckpoint + 2, "", nil
 			}
 			if processedSinceCheckpoint != 2 {
 				t.Fatalf("processedSinceCheckpoint = %d, want 2", processedSinceCheckpoint)
 			}
-			return "", processedSinceCheckpoint, fmt.Errorf("process shard records pass shard-1: %w", errShardCompleted)
+			return "", processedSinceCheckpoint, "", fmt.Errorf("process shard records pass shard-1: %w", errShardCompleted)
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = ctx
@@ -387,14 +467,14 @@ func TestProcessShardRecordsLoopSleepsAfterNoProgressPass(t *testing.T) {
 	var slept time.Duration
 	c := &Consumer{
 		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
 			passCalls++
 			if passCalls == 2 {
 				cancel()
 			}
-			return "", processedSinceCheckpoint, nil
+			return "", processedSinceCheckpoint, "", nil
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = ctx
@@ -429,15 +509,15 @@ func TestProcessShardRecordsLoopDoesNotSleepAfterProgressPass(t *testing.T) {
 	sleepCalls := 0
 	c := &Consumer{
 		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
 			passCalls++
 			if passCalls == 1 {
-				return "sequence-1", processedSinceCheckpoint + 1, nil
+				return "sequence-1", processedSinceCheckpoint + 1, "", nil
 			}
 			cancel()
-			return "", processedSinceCheckpoint, nil
+			return "", processedSinceCheckpoint, "", nil
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = ctx
@@ -470,15 +550,15 @@ func TestProcessShardRecordsLoopDoesNotSleepAfterCheckpointCountProgress(t *test
 	sleepCalls := 0
 	c := &Consumer{
 		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
 			passCalls++
 			if passCalls == 1 {
-				return "", processedSinceCheckpoint + 1, nil
+				return "", processedSinceCheckpoint + 1, "", nil
 			}
 			cancel()
-			return "", processedSinceCheckpoint, nil
+			return "", processedSinceCheckpoint, "", nil
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = ctx
@@ -509,10 +589,10 @@ func TestProcessShardRecordsLoopCancellationDuringPauseReturnsNil(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Consumer{
 		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
-			return "", processedSinceCheckpoint, nil
+			return "", processedSinceCheckpoint, "", nil
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = d
@@ -540,10 +620,10 @@ func TestProcessShardRecordsLoopDeadlineDuringPauseReturnsError(t *testing.T) {
 	defer cancel()
 	c := &Consumer{
 		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
-			return "", processedSinceCheckpoint, nil
+			return "", processedSinceCheckpoint, "", nil
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = ctx
@@ -574,10 +654,10 @@ func TestProcessShardRecordsLoopSkipsSleepAfterPassError(t *testing.T) {
 	sleepCalls := 0
 	c := &Consumer{
 		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
-		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int) (string, int, error) {
+		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
-			return "", processedSinceCheckpoint, errBoom
+			return "", processedSinceCheckpoint, "", errBoom
 		},
 		sleepFn: func(ctx context.Context, d time.Duration) error {
 			_ = ctx
