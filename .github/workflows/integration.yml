@@ -1,0 +1,57 @@
+# Integration gate: brings up LocalStack (Kinesis) + Valkey and runs the tagged
+# integration suite via `make integration` (up --wait -> test -> down -v).
+#
+# Deliberately kept OFF the every-PR path — it is heavy (image pulls + real
+# infra). It runs post-merge on `main` and on manual dispatch. The infra-free
+# unit gate (ci.yml) is what guards every push and PR.
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Let each commit to main get a complete integration signal rather than being
+# cancelled by the next merge (the opposite tradeoff from the unit gate — this
+# is a heavy post-merge check, so completeness beats latency).
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: Integration gate
+    runs-on: ubuntu-latest
+    # Headroom for the cold LocalStack image pull + healthcheck wait on top of
+    # the suite's own `-timeout 600s`.
+    timeout-minutes: 20
+    env:
+      # Same rationale as the unit gate: pin GOCACHE to a workspace path the
+      # Makefile's `GOCACHE ?=` defers to and setup-go can cache.
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # The module under test here is test/integration; keep the workspace
+          # sum files in the cache key too.
+          cache-dependency-path: |
+            go.sum
+            pkg/backend/valkey/go.sum
+            examples/valkey/go.sum
+            test/integration/go.sum
+            go.work.sum
+
+      # ubuntu-latest ships Docker + Compose v2, so `make integration` runs
+      # unchanged: it composes up LocalStack + Valkey with --wait, runs the
+      # `integration`-tagged suite, and tears the infra down with `down -v`
+      # even on failure.
+      - name: Integration suite (LocalStack + Valkey)
+        run: make integration

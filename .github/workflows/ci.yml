@@ -1,0 +1,63 @@
+# Unit gate: formatting, vet, compilation, and the unit test suite across every
+# module in the workspace. Deliberately infra-free — it mirrors the pre-commit
+# hook (make fmt-check + vet + build + test) and never runs the integration
+# suite, which needs LocalStack + Valkey. The integration gate is a separate
+# workflow (CI-2).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-progress run when a newer commit is pushed to the same ref, so a
+# rapid series of pushes doesn't queue redundant runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: the unit gate only reads the checkout.
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit gate
+    runs-on: ubuntu-latest
+    env:
+      # Pin GOCACHE to a workspace path so it is stable across steps and cached
+      # by actions/setup-go. The Makefile uses `GOCACHE ?=`, which defers to this
+      # environment value (env vars count as defined in Make), so the build cache
+      # lives here rather than at the macOS-only default the Makefile falls back
+      # to.
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Single source of truth for the Go version (currently 1.26.3); stays
+          # in lockstep with the module rather than a hardcoded literal here.
+          go-version-file: go.mod
+          # This is a multi-module workspace, so cache off every module's go.sum
+          # plus the workspace sum file.
+          cache-dependency-path: |
+            go.sum
+            pkg/backend/valkey/go.sum
+            examples/valkey/go.sum
+            test/integration/go.sum
+            go.work.sum
+
+      - name: gofmt check
+        run: make fmt-check
+
+      - name: go vet
+        run: make vet
+
+      - name: build
+        run: make build
+
+      - name: unit tests
+        run: make test
