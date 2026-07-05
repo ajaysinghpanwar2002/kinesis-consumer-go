@@ -32,7 +32,11 @@ go get github.com/pratilipi/kinesis-consumer-go
 
 ## Documentation
 
+- [Getting started](docs/getting-started.md) — install, a minimal copy-paste-runnable consumer, multi-worker coordination, and graceful shutdown.
+- [Features and capabilities](docs/features.md) — a complete, source-accurate inventory of what the library does (and what it does not yet do).
+- [Configuration reference](docs/configuration.md) — every `Config` field and `With*` option with defaults, effects, and validation rules.
 - [Handler failure policy, DLQ, and shard concurrency](docs/handler-behavior.md)
+- [Integration test suite](docs/testing.md) — a verifiable ledger of every integration scenario and the behavior it proves.
 
 ## Examples
 
@@ -88,6 +92,19 @@ make hooks   # sets core.hooksPath=.githooks
 - `pre-push` re-runs `make test` as a final safety net (e.g. for commits made with `--no-verify`).
 
 Unit tests are hermetic (they use an in-memory Redis and no network).
+
+## Integration test suite
+
+Beyond the hermetic unit tests, the library is covered by an integration suite
+that runs against **real LocalStack Kinesis + real Valkey** (not mocks) via
+`make integration`. It exercises 30+ scenarios across attribution, checkpoint
+resume, uncooperative failover, failure policies and DLQ, batch and concurrent
+processing, start positions, resharding, rebalance fairness, and key isolation.
+
+Each hardening scenario carries a load-bearing assertion, was mutation-verified
+(a deliberate bug was shown to make it fail, then reverted), and was run
+repeatedly to rule out flakiness. See [docs/testing.md](docs/testing.md) for the
+full ledger — every row maps to a real test you can read and run.
 
 ## Comparison: AWS KCL vs MultiLangDaemon vs this library
 
