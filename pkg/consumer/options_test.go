@@ -2,6 +2,8 @@ package consumer
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -35,6 +37,27 @@ func TestDefaultOptions(t *testing.T) {
 	}
 	if cfg.tuning != wantTuning {
 		t.Fatalf("tuning = %+v, want %+v", cfg.tuning, wantTuning)
+	}
+	if cfg.logger == nil {
+		t.Fatal("logger = nil, want non-nil discard logger")
+	}
+	// The default logger must be silent: the discard handler reports disabled
+	// for every level, so no records are ever emitted unless WithLogger is set.
+	if cfg.logger.Enabled(context.Background(), slog.LevelError) {
+		t.Fatal("default logger is enabled at Error level, want silent discard logger")
+	}
+}
+
+func TestWithLoggerApplies(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	cfg, err := applyOptions([]Option{WithLogger(logger)})
+	if err != nil {
+		t.Fatalf("applyOptions() error = %v, want nil", err)
+	}
+	if cfg.logger != logger {
+		t.Fatal("logger was not applied")
 	}
 }
 
@@ -152,6 +175,11 @@ func TestOptionValidation(t *testing.T) {
 			name: "graceful drain timeout",
 			opt:  WithGracefulDrain(-1 * time.Second),
 			want: "graceful drain timeout cannot be negative",
+		},
+		{
+			name: "nil logger",
+			opt:  WithLogger(nil),
+			want: "logger cannot be nil",
 		},
 	}
 

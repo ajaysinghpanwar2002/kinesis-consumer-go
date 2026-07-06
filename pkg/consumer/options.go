@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
@@ -17,6 +18,7 @@ type options struct {
 	lease         leaseOptions
 	shutdown      shutdownOptions
 	tuning        tuningConfig
+	logger        *slog.Logger
 }
 
 type leaseOptions struct {
@@ -32,6 +34,10 @@ func defaultOptions() options {
 	return options{
 		failurePolicy: FailurePolicySkip,
 		tuning:        defaultTuning(),
+		// Discard by default so the library stays silent unless the caller
+		// opts in via WithLogger. A non-nil logger is always present so call
+		// sites never need a nil check.
+		logger: slog.New(slog.DiscardHandler),
 	}
 }
 
@@ -200,6 +206,20 @@ func WithGracefulDrain(timeout time.Duration) Option {
 		}
 		cfg.shutdown.gracefulDrain = true
 		cfg.shutdown.gracefulDrainTimeout = timeout
+		return nil
+	}
+}
+
+// WithLogger sets the structured logger used for consumer lifecycle events.
+//
+// The default is a discard logger, so the library is silent unless a logger is
+// provided here.
+func WithLogger(logger *slog.Logger) Option {
+	return func(cfg *options) error {
+		if logger == nil {
+			return errors.New("logger cannot be nil")
+		}
+		cfg.logger = logger
 		return nil
 	}
 }

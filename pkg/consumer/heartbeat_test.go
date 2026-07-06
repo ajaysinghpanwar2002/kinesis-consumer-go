@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -143,6 +144,7 @@ func newTestHeartbeatConsumer(manager *recordingHeartbeatManager) *Consumer {
 		leaseManager: manager,
 		leaseOwner:   "owner",
 		tuning:       tuning,
+		logger:       slog.New(slog.DiscardHandler),
 	}
 }
 

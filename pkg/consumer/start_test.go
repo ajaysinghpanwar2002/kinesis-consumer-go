@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -1164,6 +1165,7 @@ func newTestStartConsumerWithLeaseManager(client kinesisAPI, manager lease.Manag
 		leaseManager: manager,
 		leaseOwner:   "owner",
 		tuning:       tuning,
+		logger:       slog.New(slog.DiscardHandler),
 		processShardRecordsLoopFn: func(ctx context.Context, shardID string) (string, int, error) {
 			_ = shardID
 			<-ctx.Done()

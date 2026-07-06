@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,7 @@ type Consumer struct {
 	drainTimeout  time.Duration
 	draining      atomic.Bool
 	tuning        tuningConfig
+	logger        *slog.Logger
 
 	processShardRecordsPassFn func(context.Context, string, int, string) (string, int, string, error)
 	processShardRecordsLoopFn func(context.Context, string) (string, int, error)
@@ -36,7 +38,19 @@ type Consumer struct {
 }
 
 // Start begins the consumer lifecycle and blocks until the context is done.
-func (c *Consumer) Start(ctx context.Context) error {
+func (c *Consumer) Start(ctx context.Context) (err error) {
+	c.logger.Info("consumer starting", slog.String("stream", c.streamKey()))
+	// Registered first so it runs last, after the lifecycle-cleanup defers
+	// below, and observes the final returned error. Every fatal path
+	// (including no shards found) lands in the error branch.
+	defer func() {
+		if err != nil {
+			c.logger.Error("consumer stopped", slog.String("stream", c.streamKey()), slog.Any("error", err))
+			return
+		}
+		c.logger.Info("consumer stopped", slog.String("stream", c.streamKey()))
+	}()
+
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -201,6 +215,7 @@ func New(cfg Config, client *Client, store checkpoint.Store, handler HandlerFunc
 		gracefulDrain: opt.shutdown.gracefulDrain,
 		drainTimeout:  opt.shutdown.gracefulDrainTimeout,
 		tuning:        opt.tuning,
+		logger:        opt.logger,
 	}, nil
 }
 
