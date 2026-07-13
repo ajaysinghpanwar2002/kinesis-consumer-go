@@ -59,6 +59,7 @@ func TestMemoryBackendsRunConsumerSmoke(t *testing.T) {
 		drainTimeout:  opt.shutdown.gracefulDrainTimeout,
 		tuning:        opt.tuning,
 		logger:        opt.logger,
+		reporter:      opt.reporter,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

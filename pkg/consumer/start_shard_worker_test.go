@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 func TestStartRegisteredShardWorkerRegistersAndRemovesOnStop(t *testing.T) {
@@ -658,9 +660,10 @@ func newTestRegisteredShardWorkerConsumer(processErr error) *Consumer {
 	tuning.heartbeatTTL = 30 * time.Millisecond
 
 	return &Consumer{
-		cfg:    Config{StreamName: "stream"},
-		tuning: tuning,
-		logger: slog.New(slog.DiscardHandler),
+		cfg:      Config{StreamName: "stream"},
+		tuning:   tuning,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
 		processShardRecordsLoopFn: func(ctx context.Context, shardID string) (string, int, error) {
 			_ = shardID
 			if processErr != nil {

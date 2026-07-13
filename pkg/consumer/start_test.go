@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 func TestStartPropagatesShardListingError(t *testing.T) {
@@ -1166,6 +1168,7 @@ func newTestStartConsumerWithLeaseManager(client kinesisAPI, manager lease.Manag
 		leaseOwner:   "owner",
 		tuning:       tuning,
 		logger:       slog.New(slog.DiscardHandler),
+		reporter:     metrics.Nop{},
 		processShardRecordsLoopFn: func(ctx context.Context, shardID string) (string, int, error) {
 			_ = shardID
 			<-ctx.Done()

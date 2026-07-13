@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 // FailurePolicy controls behavior when a handler keeps failing after retries.
@@ -85,10 +86,12 @@ func (c *Consumer) handleRecordWithRetry(ctx context.Context, shardID string, re
 		return errors.New("record handler is nil")
 	}
 
-	attempts, err := c.retryHandler(ctx, func() error {
+	attempts, err := c.retryHandler(ctx, shardID, handlerKindRecord, func() error {
 		return c.handler(ctx, record)
 	})
 	if err == nil {
+		c.reporter.Counter(metricRecordsProcessed, 1,
+			c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKindRecord}))
 		return nil
 	}
 	if terminalErr, ok := terminalContextError(ctx, err); ok {
@@ -107,10 +110,12 @@ func (c *Consumer) handleBatchWithRetry(ctx context.Context, shardID string, rec
 		return errors.New("batch handler is nil")
 	}
 
-	attempts, err := c.retryHandler(ctx, func() error {
+	attempts, err := c.retryHandler(ctx, shardID, handlerKindBatch, func() error {
 		return c.batchHandler(ctx, records)
 	})
 	if err == nil {
+		c.reporter.Counter(metricRecordsProcessed, int64(len(records)),
+			c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKindBatch}))
 		return nil
 	}
 	if terminalErr, ok := terminalContextError(ctx, err); ok {
@@ -131,10 +136,14 @@ func terminalContextError(ctx context.Context, err error) (error, bool) {
 	return nil, false
 }
 
-func (c *Consumer) retryHandler(ctx context.Context, fn func() error) (int, error) {
+func (c *Consumer) retryHandler(ctx context.Context, shardID, handlerKind string, fn func() error) (int, error) {
 	maxAttempts := c.retryMaxAttempts()
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			c.reporter.Counter(metricHandlerRetries, 1,
+				c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKind}))
+		}
 		if err := fn(); err != nil {
 			lastErr = err
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -164,6 +173,8 @@ func (c *Consumer) applyFailurePolicy(
 ) error {
 	switch c.effectiveFailurePolicy() {
 	case FailurePolicySkip:
+		c.reporter.Counter(metricRecordsSkipped, int64(len(records)),
+			c.shardTags(shardID, metrics.Tag{Key: metricTagPolicy, Value: string(FailurePolicySkip)}))
 		c.logger.Warn("records skipped after handler failure",
 			slog.String("shard", shardID),
 			slog.String("handler", handlerKind),
@@ -181,6 +192,7 @@ func (c *Consumer) applyFailurePolicy(
 			if err := c.dlqPublisher.Publish(ctx, poison); err != nil {
 				return fmt.Errorf("%w; dlq publish: %w", failFastErr, err)
 			}
+			c.reporter.Counter(metricDLQRecordsPublished, 1, c.shardTags(shardID))
 		}
 		c.logger.Warn("poison records published to dlq",
 			slog.String("shard", shardID),

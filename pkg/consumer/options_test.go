@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 type noopDLQPublisher struct{}
@@ -45,6 +47,27 @@ func TestDefaultOptions(t *testing.T) {
 	// for every level, so no records are ever emitted unless WithLogger is set.
 	if cfg.logger.Enabled(context.Background(), slog.LevelError) {
 		t.Fatal("default logger is enabled at Error level, want silent discard logger")
+	}
+	// The default reporter must be the non-nil no-op so emission sites never
+	// nil-check and nothing is emitted unless WithMetrics is set.
+	if cfg.reporter == nil {
+		t.Fatal("reporter = nil, want non-nil no-op reporter")
+	}
+	if _, ok := cfg.reporter.(metrics.Nop); !ok {
+		t.Fatalf("reporter = %T, want metrics.Nop", cfg.reporter)
+	}
+}
+
+func TestWithMetricsApplies(t *testing.T) {
+	t.Parallel()
+
+	reporter := &recordingReporter{}
+	cfg, err := applyOptions([]Option{WithMetrics(reporter)})
+	if err != nil {
+		t.Fatalf("applyOptions() error = %v, want nil", err)
+	}
+	if cfg.reporter != metrics.Reporter(reporter) {
+		t.Fatal("metrics reporter was not applied")
 	}
 }
 
@@ -180,6 +203,11 @@ func TestOptionValidation(t *testing.T) {
 			name: "nil logger",
 			opt:  WithLogger(nil),
 			want: "logger cannot be nil",
+		},
+		{
+			name: "nil metrics reporter",
+			opt:  WithMetrics(nil),
+			want: "metrics reporter cannot be nil",
 		},
 	}
 

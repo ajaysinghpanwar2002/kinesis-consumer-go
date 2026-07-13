@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 type checkpointGetCall struct {
@@ -62,9 +64,10 @@ func TestReadShardCheckpointReadsStreamShardAndSequence(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{checkpoint: "sequence-1"}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
@@ -92,9 +95,10 @@ func TestReadShardCheckpointUsesStreamARN(t *testing.T) {
 	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
 	store := &fakeCheckpointSaveStore{checkpoint: "sequence-1"}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamARN: streamARN},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamARN: streamARN},
+		store:    store,
 	}
 
 	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
@@ -117,9 +121,10 @@ func TestReadShardCheckpointReturnsEmptyCheckpoint(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
@@ -138,9 +143,10 @@ func TestReadShardCheckpointForwardsContext(t *testing.T) {
 	ctx := context.WithValue(context.Background(), contextKey{}, "value")
 	store := &fakeCheckpointSaveStore{checkpoint: "sequence-1"}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	if _, err := c.readShardCheckpoint(ctx, "shard-1"); err != nil {
@@ -160,9 +166,10 @@ func TestReadShardCheckpointWrapsStoreError(t *testing.T) {
 	errBoom := errors.New("boom")
 	store := &fakeCheckpointSaveStore{getErr: errBoom}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
@@ -182,9 +189,10 @@ func TestSaveShardCheckpointSavesStreamShardAndSequence(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	if err := c.saveShardCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
@@ -211,9 +219,10 @@ func TestSaveShardCheckpointUsesStreamARN(t *testing.T) {
 	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamARN: streamARN},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamARN: streamARN},
+		store:    store,
 	}
 
 	if err := c.saveShardCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
@@ -232,9 +241,10 @@ func TestSaveShardCheckpointTreatsEmptySequenceAsNoop(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	if err := c.saveShardCheckpoint(context.Background(), "shard-1", ""); err != nil {
@@ -252,9 +262,10 @@ func TestSaveShardCheckpointForwardsContext(t *testing.T) {
 	ctx := context.WithValue(context.Background(), contextKey{}, "value")
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	if err := c.saveShardCheckpoint(ctx, "shard-1", "sequence-1"); err != nil {
@@ -274,9 +285,10 @@ func TestSaveShardCheckpointWrapsStoreError(t *testing.T) {
 	errBoom := errors.New("boom")
 	store := &fakeCheckpointSaveStore{saveErr: errBoom}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	err := c.saveShardCheckpoint(context.Background(), "shard-1", "sequence-1")
@@ -293,9 +305,10 @@ func TestSaveShardCompletionCheckpointSavesStreamShardAndMarker(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	if err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
@@ -321,9 +334,10 @@ func TestSaveShardCompletionCheckpointSavesEmptySequenceMarker(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	if err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", ""); err != nil {
@@ -343,9 +357,10 @@ func TestSaveShardCompletionCheckpointUsesStreamARN(t *testing.T) {
 	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamARN: streamARN},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamARN: streamARN},
+		store:    store,
 	}
 
 	if err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
@@ -366,9 +381,10 @@ func TestSaveShardCompletionCheckpointForwardsContext(t *testing.T) {
 	ctx := context.WithValue(context.Background(), contextKey{}, "value")
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	if err := c.saveShardCompletionCheckpoint(ctx, "shard-1", "sequence-1"); err != nil {
@@ -388,9 +404,10 @@ func TestSaveShardCompletionCheckpointWrapsStoreError(t *testing.T) {
 	errBoom := errors.New("boom")
 	store := &fakeCheckpointSaveStore{saveErr: errBoom}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", "sequence-1")
@@ -407,10 +424,11 @@ func TestSaveShardCheckpointIfDueSkipsBelowThreshold(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 3},
 	}
 
 	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-1", 2)
@@ -430,10 +448,11 @@ func TestSaveShardCheckpointIfDueSavesAtThreshold(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 3},
 	}
 
 	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-1", 3)
@@ -456,10 +475,11 @@ func TestSaveShardCheckpointIfDueSavesAboveThreshold(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 3},
 	}
 
 	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-5", 5)
@@ -482,10 +502,11 @@ func TestSaveShardCheckpointIfDueTreatsEmptySequenceAsNoop(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 3},
 	}
 
 	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "", 3)
@@ -506,10 +527,11 @@ func TestSaveShardCheckpointIfDueWrapsSaveError(t *testing.T) {
 	errBoom := errors.New("boom")
 	store := &fakeCheckpointSaveStore{saveErr: errBoom}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 3},
 	}
 
 	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-1", 3)
@@ -529,9 +551,10 @@ func TestCheckpointOnDrainSavesPendingSequence(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	if err := c.checkpointOnDrain(context.Background(), "shard-1", "sequence-1", 2); err != nil {
@@ -570,9 +593,10 @@ func TestCheckpointOnDrainNoopsWithoutPendingSequence(t *testing.T) {
 
 			store := &fakeCheckpointSaveStore{}
 			c := &Consumer{
-				logger: slog.New(slog.DiscardHandler),
-				cfg:    Config{StreamName: "stream"},
-				store:  store,
+				logger:   slog.New(slog.DiscardHandler),
+				reporter: metrics.Nop{},
+				cfg:      Config{StreamName: "stream"},
+				store:    store,
 			}
 
 			if err := c.checkpointOnDrain(context.Background(), "shard-1", tt.sequenceNumber, tt.processedSinceCheckpoint); err != nil {
@@ -591,9 +615,10 @@ func TestCheckpointOnDrainWrapsSaveError(t *testing.T) {
 	errBoom := errors.New("boom")
 	store := &fakeCheckpointSaveStore{saveErr: errBoom}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 	}
 
 	err := c.checkpointOnDrain(context.Background(), "shard-1", "sequence-1", 2)
@@ -610,9 +635,10 @@ func TestSaveShardCheckpointLogsSave(t *testing.T) {
 
 	handler := newCapturingHandler()
 	c := &Consumer{
-		logger: slog.New(handler),
-		cfg:    Config{StreamName: "stream"},
-		store:  &fakeCheckpointSaveStore{},
+		logger:   slog.New(handler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    &fakeCheckpointSaveStore{},
 	}
 
 	if err := c.saveShardCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
@@ -641,9 +667,10 @@ func TestSaveShardCheckpointFailureLogsNothing(t *testing.T) {
 	errSave := errors.New("save boom")
 	handler := newCapturingHandler()
 	c := &Consumer{
-		logger: slog.New(handler),
-		cfg:    Config{StreamName: "stream"},
-		store:  &fakeCheckpointSaveStore{saveErr: errSave},
+		logger:   slog.New(handler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    &fakeCheckpointSaveStore{saveErr: errSave},
 	}
 
 	if err := c.saveShardCheckpoint(context.Background(), "shard-1", "sequence-1"); !errors.Is(err, errSave) {
@@ -660,9 +687,10 @@ func TestCheckpointOnDrainLogsFlush(t *testing.T) {
 
 	handler := newCapturingHandler()
 	c := &Consumer{
-		logger: slog.New(handler),
-		cfg:    Config{StreamName: "stream"},
-		store:  &fakeCheckpointSaveStore{},
+		logger:   slog.New(handler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    &fakeCheckpointSaveStore{},
 	}
 
 	if err := c.checkpointOnDrain(context.Background(), "shard-1", "sequence-9", 4); err != nil {
@@ -693,9 +721,10 @@ func TestCheckpointOnDrainNoPendingLogsNothing(t *testing.T) {
 
 	handler := newCapturingHandler()
 	c := &Consumer{
-		logger: slog.New(handler),
-		cfg:    Config{StreamName: "stream"},
-		store:  &fakeCheckpointSaveStore{},
+		logger:   slog.New(handler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    &fakeCheckpointSaveStore{},
 	}
 
 	if err := c.checkpointOnDrain(context.Background(), "shard-1", "sequence-9", 0); err != nil {
@@ -712,9 +741,10 @@ func TestSaveShardCompletionCheckpointLogsCompletion(t *testing.T) {
 
 	handler := newCapturingHandler()
 	c := &Consumer{
-		logger: slog.New(handler),
-		cfg:    Config{StreamName: "stream"},
-		store:  &fakeCheckpointSaveStore{},
+		logger:   slog.New(handler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    &fakeCheckpointSaveStore{},
 	}
 
 	if err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {

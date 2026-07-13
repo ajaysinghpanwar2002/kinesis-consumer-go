@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 func TestProcessShardRecordsPassPollsAndProcessesPagesInOrder(t *testing.T) {
@@ -43,11 +45,12 @@ func TestProcessShardRecordsPassPollsAndProcessesPagesInOrder(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			handled = append(handled, aws.ToString(record.SequenceNumber))
@@ -116,11 +119,12 @@ func TestProcessShardRecordsPassCarriesCheckpointCount(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 3},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			_ = record
@@ -172,11 +176,12 @@ func TestProcessShardRecordsPassFlushesCheckpointWhenCaughtUp(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 100},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 100},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			handled = append(handled, aws.ToString(record.SequenceNumber))
@@ -233,11 +238,12 @@ func TestProcessShardRecordsPassProcessesEachPageBeforeFetchingNext(t *testing.T
 	_ = client
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			order = append(order, "handle:"+aws.ToString(record.SequenceNumber))
@@ -273,11 +279,12 @@ func TestProcessShardRecordsPassSavesShardEndWithLastSequence(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			_ = record
@@ -328,11 +335,12 @@ func TestProcessShardRecordsPassCheckpointsThenSavesShardEndOnSamePage(t *testin
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 2}, // reached exactly by this page
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 2}, // reached exactly by this page
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			_ = record
@@ -375,11 +383,12 @@ func TestProcessShardRecordsPassSavesShardEndWithoutLastSequence(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 	}
 
 	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "")
@@ -417,11 +426,12 @@ func TestProcessShardRecordsPassDoesNotSaveShardEndWhenDraining(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c = &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			_ = record
@@ -458,11 +468,12 @@ func TestProcessShardRecordsPassWrapsShardEndCheckpointError(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{saveErr: errBoom}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			_ = record
@@ -497,10 +508,11 @@ func TestProcessShardRecordsPassWrapsIteratorError(t *testing.T) {
 	errBoom := errors.New("boom")
 	client := &fakeKinesisClient{getShardIteratorErr: errBoom}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  &fakeCheckpointSaveStore{},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    &fakeCheckpointSaveStore{},
 	}
 
 	lastSeq, count, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 2, "")
@@ -533,6 +545,7 @@ func TestProcessShardRecordsPassWrapsProcessingError(t *testing.T) {
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		cfg:           Config{StreamName: "stream"},
 		client:        client,
 		store:         store,
@@ -586,11 +599,12 @@ func TestProcessShardRecordsPassProcessesPartialPagesAfterCanceledPolling(t *tes
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 3},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 3},
 		handler: func(ctx context.Context, record Record) error {
 			handled = append(handled, aws.ToString(record.SequenceNumber))
 			return nil
@@ -640,11 +654,12 @@ func TestProcessShardRecordsPassReDerivesAfterExpiredIterator(t *testing.T) {
 	store := &fakeCheckpointSaveStore{}
 	var handled []string
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			handled = append(handled, aws.ToString(record.SequenceNumber))

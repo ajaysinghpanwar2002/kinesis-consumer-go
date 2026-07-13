@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 type acquireCall struct {
@@ -950,8 +952,9 @@ func TestReleaseShardLeaseWithTimeoutSuccessUsesDeadlineContext(t *testing.T) {
 
 	shardLease := &recordingReleaseLease{}
 	c := &Consumer{
-		tuning: tuningConfig{shardLeaseReleaseTimeout: 25 * time.Millisecond},
-		logger: slog.New(slog.DiscardHandler),
+		tuning:   tuningConfig{shardLeaseReleaseTimeout: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
 	}
 
 	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
@@ -974,8 +977,9 @@ func TestReleaseShardLeaseWithTimeoutReturnsDeadlineExceeded(t *testing.T) {
 
 	shardLease := &blockingReleaseLease{}
 	c := &Consumer{
-		tuning: tuningConfig{shardLeaseReleaseTimeout: time.Millisecond},
-		logger: slog.New(slog.DiscardHandler),
+		tuning:   tuningConfig{shardLeaseReleaseTimeout: time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
 	}
 
 	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
@@ -1019,6 +1023,7 @@ func newTestAcquireConsumer(manager *recordingAcquireManager) *Consumer {
 		leaseOwner:   "owner",
 		tuning:       tuning,
 		logger:       slog.New(slog.DiscardHandler),
+		reporter:     metrics.Nop{},
 	}
 }
 

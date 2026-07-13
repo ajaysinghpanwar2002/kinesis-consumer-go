@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 type heartbeatCall struct {
@@ -145,6 +147,7 @@ func newTestHeartbeatConsumer(manager *recordingHeartbeatManager) *Consumer {
 		leaseOwner:   "owner",
 		tuning:       tuning,
 		logger:       slog.New(slog.DiscardHandler),
+		reporter:     metrics.Nop{},
 	}
 }
 

@@ -19,8 +19,10 @@ func (c *Consumer) saveShardCheckpoint(ctx context.Context, shardID, sequenceNum
 		return nil
 	}
 	if err := c.store.Save(ctx, c.streamKey(), shardID, sequenceNumber); err != nil {
+		c.reporter.Counter(metricCheckpointFailures, 1, c.shardTags(shardID))
 		return fmt.Errorf("save shard checkpoint %s %s: %w", shardID, sequenceNumber, err)
 	}
+	c.reporter.Counter(metricCheckpointsSaved, 1, c.shardTags(shardID))
 	c.logger.Debug("shard checkpoint saved", slog.String("shard", shardID), slog.String("sequence", sequenceNumber))
 	return nil
 }
@@ -28,8 +30,10 @@ func (c *Consumer) saveShardCheckpoint(ctx context.Context, shardID, sequenceNum
 func (c *Consumer) saveShardCompletionCheckpoint(ctx context.Context, shardID, sequenceNumber string) error {
 	checkpoint := shardCompletionValue(sequenceNumber)
 	if err := c.store.Save(ctx, c.streamKey(), shardID, checkpoint); err != nil {
+		c.reporter.Counter(metricCheckpointFailures, 1, c.shardTags(shardID))
 		return fmt.Errorf("save shard completion checkpoint %s %s: %w", shardID, checkpoint, err)
 	}
+	c.reporter.Counter(metricCheckpointsSaved, 1, c.shardTags(shardID))
 	c.logger.Info("shard completed", slog.String("shard", shardID), slog.String("checkpoint", checkpoint))
 	return nil
 }

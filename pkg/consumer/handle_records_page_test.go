@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 type recordingPoisonPublisher struct {
@@ -34,7 +36,8 @@ func TestHandleRecordsPageInvokesRecordHandlerInOrder(t *testing.T) {
 
 	var got []string
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			got = append(got, aws.ToString(record.SequenceNumber))
@@ -67,8 +70,9 @@ func TestHandleRecordsPageInvokesBatchHandlerOnce(t *testing.T) {
 
 	var got [][]string
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{shardConcurrency: 4},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{shardConcurrency: 4},
 		handler: func(ctx context.Context, record Record) error {
 			t.Fatal("record handler called with batch handler configured")
 			return nil
@@ -112,8 +116,9 @@ func TestHandleRecordsPageLimitsRecordConcurrency(t *testing.T) {
 	var active atomic.Int32
 	var maxActive atomic.Int32
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{shardConcurrency: 2},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{shardConcurrency: 2},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			now := active.Add(1)
@@ -178,6 +183,7 @@ func TestHandleRecordsPageConcurrentRecordErrorCancelsAndStopsNewRecords(t *test
 	var seq3Calls atomic.Int32
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicyFailFast,
 		tuning:        tuningConfig{shardConcurrency: 2, retryMaxAttempts: 1},
 		handler: func(ctx context.Context, record Record) error {
@@ -231,6 +237,7 @@ func TestHandleRecordsPageConcurrentContextCancellationStopsWithoutFailurePolicy
 	var calls atomic.Int32
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
 		tuning:        tuningConfig{shardConcurrency: 2, retryMaxAttempts: 3},
@@ -265,7 +272,8 @@ func TestHandleRecordsPageTreatsEmptyPageAsNoop(t *testing.T) {
 
 	calls := 0
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
 		handler: func(ctx context.Context, record Record) error {
 			calls++
 			return nil
@@ -294,6 +302,7 @@ func TestHandleRecordsPageWrapsRecordHandlerError(t *testing.T) {
 	calls := 0
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicyFailFast,
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
@@ -331,6 +340,7 @@ func TestHandleRecordsPageWrapsBatchHandlerError(t *testing.T) {
 	errBoom := errors.New("boom")
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicyFailFast,
 		batchHandler: func(ctx context.Context, records []Record) error {
 			_ = ctx
@@ -359,6 +369,7 @@ func TestHandleRecordsPageRetriesRecordHandlerUntilSuccess(t *testing.T) {
 	attempts := map[string]int{}
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicyFailFast,
 		tuning:        tuningConfig{retryMaxAttempts: 3},
 		handler: func(ctx context.Context, record Record) error {
@@ -396,6 +407,7 @@ func TestHandleRecordsPageRetriesBatchHandlerUntilSuccess(t *testing.T) {
 	attempts := 0
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicyFailFast,
 		tuning:        tuningConfig{retryMaxAttempts: 2},
 		batchHandler: func(ctx context.Context, records []Record) error {
@@ -427,6 +439,7 @@ func TestHandleRecordsPageSkipPolicyTreatsPoisonRecordAsHandled(t *testing.T) {
 	attempts := 0
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicySkip,
 		tuning:        tuningConfig{retryMaxAttempts: 3},
 		handler: func(ctx context.Context, record Record) error {
@@ -456,6 +469,7 @@ func TestHandleRecordsPageSendToDLQPublishesPoisonRecord(t *testing.T) {
 	publisher := &recordingPoisonPublisher{}
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		cfg:           Config{StreamName: "stream", StreamARN: "arn:stream"},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
@@ -516,6 +530,7 @@ func TestHandleRecordsPageSendToDLQPublishesEveryBatchRecord(t *testing.T) {
 	publisher := &recordingPoisonPublisher{}
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
 		tuning:        tuningConfig{retryMaxAttempts: 1},
@@ -555,6 +570,7 @@ func TestHandleRecordsPageSendToDLQPublishErrorFails(t *testing.T) {
 	errDLQ := errors.New("dlq unavailable")
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  &recordingPoisonPublisher{err: errDLQ},
 		tuning:        tuningConfig{retryMaxAttempts: 1},
@@ -591,6 +607,7 @@ func TestHandleRecordsPageContextCancellationBypassesFailurePolicy(t *testing.T)
 	publisher := &recordingPoisonPublisher{}
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
 		tuning:        tuningConfig{retryMaxAttempts: 3},
@@ -636,6 +653,7 @@ func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) 
 			publisher := &recordingPoisonPublisher{}
 			c := &Consumer{
 				logger:        slog.New(slog.DiscardHandler),
+				reporter:      metrics.Nop{},
 				failurePolicy: FailurePolicySendToDLQ,
 				dlqPublisher:  publisher,
 				tuning:        tuningConfig{retryMaxAttempts: 3},
@@ -669,6 +687,7 @@ func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) 
 			publisher := &recordingPoisonPublisher{}
 			c := &Consumer{
 				logger:        slog.New(slog.DiscardHandler),
+				reporter:      metrics.Nop{},
 				failurePolicy: FailurePolicySendToDLQ,
 				dlqPublisher:  publisher,
 				tuning:        tuningConfig{retryMaxAttempts: 3},
@@ -716,6 +735,7 @@ func TestHandleRecordsPageSkipPolicyLogsSkippedRecords(t *testing.T) {
 	handler := newCapturingHandler()
 	c := &Consumer{
 		logger:        slog.New(handler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicySkip,
 		tuning:        tuningConfig{retryMaxAttempts: 2},
 		batchHandler: func(ctx context.Context, records []Record) error {
@@ -766,6 +786,7 @@ func TestHandleRecordsPageSendToDLQLogsPublishedPoisonRecords(t *testing.T) {
 	handler := newCapturingHandler()
 	c := &Consumer{
 		logger:        slog.New(handler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  &recordingPoisonPublisher{},
 		tuning:        tuningConfig{retryMaxAttempts: 1},
@@ -815,6 +836,7 @@ func TestHandleRecordsPageSendToDLQPublishErrorLogsNothing(t *testing.T) {
 	handler := newCapturingHandler()
 	c := &Consumer{
 		logger:        slog.New(handler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  &recordingPoisonPublisher{err: errDLQ},
 		tuning:        tuningConfig{retryMaxAttempts: 1},
@@ -844,6 +866,7 @@ func TestHandleRecordsPageFailFastLogsNothing(t *testing.T) {
 	handler := newCapturingHandler()
 	c := &Consumer{
 		logger:        slog.New(handler),
+		reporter:      metrics.Nop{},
 		failurePolicy: FailurePolicyFailFast,
 		tuning:        tuningConfig{retryMaxAttempts: 1},
 		handler: func(ctx context.Context, record Record) error {

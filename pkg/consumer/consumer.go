@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 // Consumer owns Kinesis shard consumption for one worker process.
@@ -31,6 +32,7 @@ type Consumer struct {
 	draining      atomic.Bool
 	tuning        tuningConfig
 	logger        *slog.Logger
+	reporter      metrics.Reporter
 
 	processShardRecordsPassFn func(context.Context, string, int, string) (string, int, string, error)
 	processShardRecordsLoopFn func(context.Context, string) (string, int, error)
@@ -216,6 +218,7 @@ func New(cfg Config, client *Client, store checkpoint.Store, handler HandlerFunc
 		drainTimeout:  opt.shutdown.gracefulDrainTimeout,
 		tuning:        opt.tuning,
 		logger:        opt.logger,
+		reporter:      opt.reporter,
 	}, nil
 }
 

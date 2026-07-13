@@ -11,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 func TestProcessShardRecordsLoopDerivesIteratorOncePerWorker(t *testing.T) {
@@ -50,11 +52,12 @@ func TestProcessShardRecordsLoopDerivesIteratorOncePerWorker(t *testing.T) {
 	store := &fakeCheckpointSaveStore{}
 	var handled []string
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 100},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 100},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			handled = append(handled, aws.ToString(record.SequenceNumber))
@@ -110,11 +113,12 @@ func TestProcessShardRecordsLoopRunsPassAndReturnsOnCancellation(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			handled = append(handled, aws.ToString(record.SequenceNumber))
@@ -146,7 +150,8 @@ func TestProcessShardRecordsLoopCarriesCheckpointCountBetweenPasses(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	passCalls := 0
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -202,11 +207,12 @@ func TestProcessShardRecordsLoopCarriesLatestNonEmptySequence(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			_ = record
@@ -232,10 +238,11 @@ func TestProcessShardRecordsLoopCheckpointsPendingProgressOnDrain(t *testing.T) 
 	store := &fakeCheckpointSaveStore{}
 	var c *Consumer
 	c = &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
-		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+		tuning:   tuningConfig{pollInterval: 25 * time.Millisecond},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -296,11 +303,12 @@ func TestProcessShardRecordsLoopObservesDrainBetweenFetchedPages(t *testing.T) {
 	}
 	var handled []string
 	c = &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  store,
-		tuning: tuningConfig{checkpointEvery: 10},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			handled = append(handled, aws.ToString(record.SequenceNumber))
@@ -339,9 +347,10 @@ func TestProcessShardRecordsLoopWrapsDrainCheckpointError(t *testing.T) {
 	store := &fakeCheckpointSaveStore{saveErr: errBoom}
 	var c *Consumer
 	c = &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		store:  store,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -372,10 +381,11 @@ func TestProcessShardRecordsLoopWrapsPassError(t *testing.T) {
 	errBoom := errors.New("boom")
 	client := &fakeKinesisClient{getShardIteratorErr: errBoom}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
-		store:  &fakeCheckpointSaveStore{},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    &fakeCheckpointSaveStore{},
 	}
 
 	lastSeq, count, err := c.processShardRecordsLoop(context.Background(), "shard-1")
@@ -399,8 +409,9 @@ func TestProcessShardRecordsLoopTreatsShardCompletedAsNormalCompletion(t *testin
 	passCalls := 0
 	sleepCalls := 0
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{pollInterval: 25 * time.Millisecond},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -450,9 +461,10 @@ func TestProcessShardRecordsLoopTreatsContextCancellationAsNormalShutdown(t *tes
 		},
 	}
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		cfg:    Config{StreamName: "stream"},
-		client: client,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
 	}
 
 	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
@@ -477,8 +489,9 @@ func TestProcessShardRecordsLoopSleepsAfterNoProgressPass(t *testing.T) {
 	passCalls := 0
 	var slept time.Duration
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{pollInterval: 25 * time.Millisecond},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -520,8 +533,9 @@ func TestProcessShardRecordsLoopDoesNotSleepAfterProgressPass(t *testing.T) {
 	passCalls := 0
 	sleepCalls := 0
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{pollInterval: 25 * time.Millisecond},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -562,8 +576,9 @@ func TestProcessShardRecordsLoopDoesNotSleepAfterCheckpointCountProgress(t *test
 	passCalls := 0
 	sleepCalls := 0
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{pollInterval: 25 * time.Millisecond},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -602,8 +617,9 @@ func TestProcessShardRecordsLoopCancellationDuringPauseReturnsNil(t *testing.T) 
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{pollInterval: 25 * time.Millisecond},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -634,8 +650,9 @@ func TestProcessShardRecordsLoopDeadlineDuringPauseReturnsError(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
 	defer cancel()
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{pollInterval: 25 * time.Millisecond},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID
@@ -669,8 +686,9 @@ func TestProcessShardRecordsLoopSkipsSleepAfterPassError(t *testing.T) {
 	errBoom := errors.New("boom")
 	sleepCalls := 0
 	c := &Consumer{
-		logger: slog.New(slog.DiscardHandler),
-		tuning: tuningConfig{pollInterval: 25 * time.Millisecond},
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		tuning:   tuningConfig{pollInterval: 25 * time.Millisecond},
 		processShardRecordsPassFn: func(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 			_ = ctx
 			_ = shardID

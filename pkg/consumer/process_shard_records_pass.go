@@ -72,6 +72,7 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			}
 			return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 		}
+		c.reporter.Counter(metricPagesFetched, 1, c.shardTags(shardID))
 
 		pageLastSeq, pageCount, err := c.processRecordsPageWithCheckpoint(ctx, shardID, out, count)
 		if pageLastSeq != "" {

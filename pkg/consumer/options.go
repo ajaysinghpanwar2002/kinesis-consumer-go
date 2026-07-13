@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 // Option configures optional consumer behavior.
@@ -19,6 +20,7 @@ type options struct {
 	shutdown      shutdownOptions
 	tuning        tuningConfig
 	logger        *slog.Logger
+	reporter      metrics.Reporter
 }
 
 type leaseOptions struct {
@@ -38,6 +40,10 @@ func defaultOptions() options {
 		// opts in via WithLogger. A non-nil logger is always present so call
 		// sites never need a nil check.
 		logger: slog.New(slog.DiscardHandler),
+		// No-op by default so the library emits nothing unless the caller opts
+		// in via WithMetrics. A non-nil reporter is always present so emission
+		// sites never need a nil check.
+		reporter: metrics.Nop{},
 	}
 }
 
@@ -220,6 +226,20 @@ func WithLogger(logger *slog.Logger) Option {
 			return errors.New("logger cannot be nil")
 		}
 		cfg.logger = logger
+		return nil
+	}
+}
+
+// WithMetrics sets the reporter used for consumer metrics.
+//
+// The default is a no-op reporter, so the library emits no metrics unless a
+// reporter is provided here.
+func WithMetrics(reporter metrics.Reporter) Option {
+	return func(cfg *options) error {
+		if reporter == nil {
+			return errors.New("metrics reporter cannot be nil")
+		}
+		cfg.reporter = reporter
 		return nil
 	}
 }
