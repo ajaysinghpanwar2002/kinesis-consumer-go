@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -42,6 +43,7 @@ func TestProcessShardRecordsPassPollsAndProcessesPagesInOrder(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -114,6 +116,7 @@ func TestProcessShardRecordsPassCarriesCheckpointCount(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -169,6 +172,7 @@ func TestProcessShardRecordsPassFlushesCheckpointWhenCaughtUp(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -229,6 +233,7 @@ func TestProcessShardRecordsPassProcessesEachPageBeforeFetchingNext(t *testing.T
 	_ = client
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -268,6 +273,7 @@ func TestProcessShardRecordsPassSavesShardEndWithLastSequence(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -322,6 +328,7 @@ func TestProcessShardRecordsPassCheckpointsThenSavesShardEndOnSamePage(t *testin
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -368,6 +375,7 @@ func TestProcessShardRecordsPassSavesShardEndWithoutLastSequence(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -409,6 +417,7 @@ func TestProcessShardRecordsPassDoesNotSaveShardEndWhenDraining(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c = &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -449,6 +458,7 @@ func TestProcessShardRecordsPassWrapsShardEndCheckpointError(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{saveErr: errBoom}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -487,6 +497,7 @@ func TestProcessShardRecordsPassWrapsIteratorError(t *testing.T) {
 	errBoom := errors.New("boom")
 	client := &fakeKinesisClient{getShardIteratorErr: errBoom}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  &fakeCheckpointSaveStore{},
@@ -521,6 +532,7 @@ func TestProcessShardRecordsPassWrapsProcessingError(t *testing.T) {
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		cfg:           Config{StreamName: "stream"},
 		client:        client,
 		store:         store,
@@ -574,6 +586,7 @@ func TestProcessShardRecordsPassProcessesPartialPagesAfterCanceledPolling(t *tes
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,
@@ -627,6 +640,7 @@ func TestProcessShardRecordsPassReDerivesAfterExpiredIterator(t *testing.T) {
 	store := &fakeCheckpointSaveStore{}
 	var handled []string
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		client: client,
 		store:  store,

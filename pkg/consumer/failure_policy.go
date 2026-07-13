@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -163,6 +164,13 @@ func (c *Consumer) applyFailurePolicy(
 ) error {
 	switch c.effectiveFailurePolicy() {
 	case FailurePolicySkip:
+		c.logger.Warn("records skipped after handler failure",
+			slog.String("shard", shardID),
+			slog.String("handler", handlerKind),
+			slog.Int("records", len(records)),
+			slog.Int("attempts", attempts),
+			slog.Any("error", cause),
+		)
 		return nil
 	case FailurePolicySendToDLQ:
 		if c == nil || c.dlqPublisher == nil {
@@ -174,6 +182,13 @@ func (c *Consumer) applyFailurePolicy(
 				return fmt.Errorf("%w; dlq publish: %w", failFastErr, err)
 			}
 		}
+		c.logger.Warn("poison records published to dlq",
+			slog.String("shard", shardID),
+			slog.String("handler", handlerKind),
+			slog.Int("records", len(records)),
+			slog.Int("attempts", attempts),
+			slog.Any("error", cause),
+		)
 		return nil
 	default:
 		return failFastErr

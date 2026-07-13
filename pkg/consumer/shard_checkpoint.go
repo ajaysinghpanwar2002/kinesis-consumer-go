@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 )
 
 func (c *Consumer) readShardCheckpoint(ctx context.Context, shardID string) (string, error) {
@@ -20,6 +21,7 @@ func (c *Consumer) saveShardCheckpoint(ctx context.Context, shardID, sequenceNum
 	if err := c.store.Save(ctx, c.streamKey(), shardID, sequenceNumber); err != nil {
 		return fmt.Errorf("save shard checkpoint %s %s: %w", shardID, sequenceNumber, err)
 	}
+	c.logger.Debug("shard checkpoint saved", slog.String("shard", shardID), slog.String("sequence", sequenceNumber))
 	return nil
 }
 
@@ -28,6 +30,7 @@ func (c *Consumer) saveShardCompletionCheckpoint(ctx context.Context, shardID, s
 	if err := c.store.Save(ctx, c.streamKey(), shardID, checkpoint); err != nil {
 		return fmt.Errorf("save shard completion checkpoint %s %s: %w", shardID, checkpoint, err)
 	}
+	c.logger.Info("shard completed", slog.String("shard", shardID), slog.String("checkpoint", checkpoint))
 	return nil
 }
 
@@ -51,5 +54,10 @@ func (c *Consumer) checkpointOnDrain(ctx context.Context, shardID, sequenceNumbe
 	if err := c.saveShardCheckpoint(ctx, shardID, sequenceNumber); err != nil {
 		return fmt.Errorf("save drain shard checkpoint %s: %w", shardID, err)
 	}
+	c.logger.Debug("shard drain checkpoint flushed",
+		slog.String("shard", shardID),
+		slog.String("sequence", sequenceNumber),
+		slog.Int("records", processedSinceCheckpoint),
+	)
 	return nil
 }

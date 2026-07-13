@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,6 +16,7 @@ func TestProcessRecordsPageReturnsLastSequenceAndCount(t *testing.T) {
 
 	var handled []string
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			handled = append(handled, aws.ToString(record.SequenceNumber))
@@ -49,6 +51,7 @@ func TestProcessRecordsPageTreatsNilAndEmptyPagesAsZeroProgress(t *testing.T) {
 
 	calls := 0
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		handler: func(ctx context.Context, record Record) error {
 			calls++
 			return nil
@@ -77,6 +80,7 @@ func TestProcessRecordsPageReturnsNoProgressWhenHandlerFails(t *testing.T) {
 
 	errBoom := errors.New("boom")
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicyFailFast,
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
@@ -114,6 +118,7 @@ func TestProcessRecordsPageWrapsBatchHandlerError(t *testing.T) {
 
 	errBoom := errors.New("boom")
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicyFailFast,
 		batchHandler: func(ctx context.Context, records []Record) error {
 			_ = ctx
@@ -147,6 +152,7 @@ func TestProcessRecordsPageWithCheckpointCarriesCountBelowThreshold(t *testing.T
 	var handled []string
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		store:  store,
 		tuning: tuningConfig{checkpointEvery: 5},
@@ -186,6 +192,7 @@ func TestProcessRecordsPageWithCheckpointSavesAtThreshold(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		store:  store,
 		tuning: tuningConfig{checkpointEvery: 3},
@@ -225,6 +232,7 @@ func TestProcessRecordsPageWithCheckpointCarriesModuloRemainder(t *testing.T) {
 
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		store:  store,
 		tuning: tuningConfig{checkpointEvery: 3},
@@ -266,6 +274,7 @@ func TestProcessRecordsPageWithCheckpointTreatsEmptyPageAsNoop(t *testing.T) {
 	calls := 0
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		store:  store,
 		tuning: tuningConfig{checkpointEvery: 3},
@@ -299,6 +308,7 @@ func TestProcessRecordsPageWithCheckpointWrapsPageProcessingError(t *testing.T) 
 	errBoom := errors.New("boom")
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		cfg:           Config{StreamName: "stream"},
 		store:         store,
 		failurePolicy: FailurePolicyFailFast,
@@ -338,6 +348,7 @@ func TestProcessRecordsPageWithCheckpointWrapsCheckpointError(t *testing.T) {
 	errBoom := errors.New("boom")
 	store := &fakeCheckpointSaveStore{saveErr: errBoom}
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		cfg:    Config{StreamName: "stream"},
 		store:  store,
 		tuning: tuningConfig{checkpointEvery: 1},

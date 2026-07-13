@@ -3,7 +3,9 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +34,7 @@ func TestHandleRecordsPageInvokesRecordHandlerInOrder(t *testing.T) {
 
 	var got []string
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			got = append(got, aws.ToString(record.SequenceNumber))
@@ -64,6 +67,7 @@ func TestHandleRecordsPageInvokesBatchHandlerOnce(t *testing.T) {
 
 	var got [][]string
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		tuning: tuningConfig{shardConcurrency: 4},
 		handler: func(ctx context.Context, record Record) error {
 			t.Fatal("record handler called with batch handler configured")
@@ -108,6 +112,7 @@ func TestHandleRecordsPageLimitsRecordConcurrency(t *testing.T) {
 	var active atomic.Int32
 	var maxActive atomic.Int32
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		tuning: tuningConfig{shardConcurrency: 2},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
@@ -172,6 +177,7 @@ func TestHandleRecordsPageConcurrentRecordErrorCancelsAndStopsNewRecords(t *test
 	seq2Started := make(chan struct{})
 	var seq3Calls atomic.Int32
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicyFailFast,
 		tuning:        tuningConfig{shardConcurrency: 2, retryMaxAttempts: 1},
 		handler: func(ctx context.Context, record Record) error {
@@ -224,6 +230,7 @@ func TestHandleRecordsPageConcurrentContextCancellationStopsWithoutFailurePolicy
 	publisher := &recordingPoisonPublisher{}
 	var calls atomic.Int32
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
 		tuning:        tuningConfig{shardConcurrency: 2, retryMaxAttempts: 3},
@@ -258,6 +265,7 @@ func TestHandleRecordsPageTreatsEmptyPageAsNoop(t *testing.T) {
 
 	calls := 0
 	c := &Consumer{
+		logger: slog.New(slog.DiscardHandler),
 		handler: func(ctx context.Context, record Record) error {
 			calls++
 			return nil
@@ -285,6 +293,7 @@ func TestHandleRecordsPageWrapsRecordHandlerError(t *testing.T) {
 	errBoom := errors.New("boom")
 	calls := 0
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicyFailFast,
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
@@ -321,6 +330,7 @@ func TestHandleRecordsPageWrapsBatchHandlerError(t *testing.T) {
 
 	errBoom := errors.New("boom")
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicyFailFast,
 		batchHandler: func(ctx context.Context, records []Record) error {
 			_ = ctx
@@ -348,6 +358,7 @@ func TestHandleRecordsPageRetriesRecordHandlerUntilSuccess(t *testing.T) {
 	errBoom := errors.New("boom")
 	attempts := map[string]int{}
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicyFailFast,
 		tuning:        tuningConfig{retryMaxAttempts: 3},
 		handler: func(ctx context.Context, record Record) error {
@@ -384,6 +395,7 @@ func TestHandleRecordsPageRetriesBatchHandlerUntilSuccess(t *testing.T) {
 	errBoom := errors.New("boom")
 	attempts := 0
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicyFailFast,
 		tuning:        tuningConfig{retryMaxAttempts: 2},
 		batchHandler: func(ctx context.Context, records []Record) error {
@@ -414,6 +426,7 @@ func TestHandleRecordsPageSkipPolicyTreatsPoisonRecordAsHandled(t *testing.T) {
 	errBoom := errors.New("boom")
 	attempts := 0
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicySkip,
 		tuning:        tuningConfig{retryMaxAttempts: 3},
 		handler: func(ctx context.Context, record Record) error {
@@ -442,6 +455,7 @@ func TestHandleRecordsPageSendToDLQPublishesPoisonRecord(t *testing.T) {
 	arrival := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	publisher := &recordingPoisonPublisher{}
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		cfg:           Config{StreamName: "stream", StreamARN: "arn:stream"},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
@@ -501,6 +515,7 @@ func TestHandleRecordsPageSendToDLQPublishesEveryBatchRecord(t *testing.T) {
 	errBoom := errors.New("boom")
 	publisher := &recordingPoisonPublisher{}
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
 		tuning:        tuningConfig{retryMaxAttempts: 1},
@@ -539,6 +554,7 @@ func TestHandleRecordsPageSendToDLQPublishErrorFails(t *testing.T) {
 	errBoom := errors.New("boom")
 	errDLQ := errors.New("dlq unavailable")
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  &recordingPoisonPublisher{err: errDLQ},
 		tuning:        tuningConfig{retryMaxAttempts: 1},
@@ -574,6 +590,7 @@ func TestHandleRecordsPageContextCancellationBypassesFailurePolicy(t *testing.T)
 	attempts := 0
 	publisher := &recordingPoisonPublisher{}
 	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
 		tuning:        tuningConfig{retryMaxAttempts: 3},
@@ -618,6 +635,7 @@ func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) 
 			attempts := 0
 			publisher := &recordingPoisonPublisher{}
 			c := &Consumer{
+				logger:        slog.New(slog.DiscardHandler),
 				failurePolicy: FailurePolicySendToDLQ,
 				dlqPublisher:  publisher,
 				tuning:        tuningConfig{retryMaxAttempts: 3},
@@ -650,6 +668,7 @@ func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) 
 			attempts := 0
 			publisher := &recordingPoisonPublisher{}
 			c := &Consumer{
+				logger:        slog.New(slog.DiscardHandler),
 				failurePolicy: FailurePolicySendToDLQ,
 				dlqPublisher:  publisher,
 				tuning:        tuningConfig{retryMaxAttempts: 3},
@@ -687,5 +706,161 @@ func waitForStartedRecord(t *testing.T, started <-chan string) string {
 	case <-time.After(time.Second):
 		t.Fatal("record handler did not start")
 		return ""
+	}
+}
+
+func TestHandleRecordsPageSkipPolicyLogsSkippedRecords(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	handler := newCapturingHandler()
+	c := &Consumer{
+		logger:        slog.New(handler),
+		failurePolicy: FailurePolicySkip,
+		tuning:        tuningConfig{retryMaxAttempts: 2},
+		batchHandler: func(ctx context.Context, records []Record) error {
+			_ = ctx
+			_ = records
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{
+			{SequenceNumber: aws.String("sequence-1")},
+			{SequenceNumber: aws.String("sequence-2")},
+		},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); err != nil {
+		t.Fatalf("handleRecordsPage() error = %v, want nil", err)
+	}
+
+	records := handler.snapshot()
+	skipped, ok := findRecord(records, "records skipped after handler failure")
+	if !ok {
+		t.Fatalf("no 'records skipped after handler failure' record, got %+v", records)
+	}
+	if skipped.level != slog.LevelWarn {
+		t.Fatalf("skipped level = %v, want Warn", skipped.level)
+	}
+	wantAttrs := map[string]string{
+		"shard": "shard-1", "handler": handlerKindBatch, "records": "2", "attempts": "2",
+	}
+	for key, want := range wantAttrs {
+		if skipped.attrs[key] != want {
+			t.Fatalf("skipped attr %q = %q, want %q (attrs %+v)", key, skipped.attrs[key], want, skipped.attrs)
+		}
+	}
+	if !strings.Contains(skipped.attrs["error"], errBoom.Error()) {
+		t.Fatalf("skipped error attr = %q, want to contain %q", skipped.attrs["error"], errBoom.Error())
+	}
+	if _, ok := findRecord(records, "poison records published to dlq"); ok {
+		t.Fatalf("unexpected dlq record under skip policy, got %+v", records)
+	}
+}
+
+func TestHandleRecordsPageSendToDLQLogsPublishedPoisonRecords(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	handler := newCapturingHandler()
+	c := &Consumer{
+		logger:        slog.New(handler),
+		failurePolicy: FailurePolicySendToDLQ,
+		dlqPublisher:  &recordingPoisonPublisher{},
+		tuning:        tuningConfig{retryMaxAttempts: 1},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); err != nil {
+		t.Fatalf("handleRecordsPage() error = %v, want nil", err)
+	}
+
+	records := handler.snapshot()
+	published, ok := findRecord(records, "poison records published to dlq")
+	if !ok {
+		t.Fatalf("no 'poison records published to dlq' record, got %+v", records)
+	}
+	if published.level != slog.LevelWarn {
+		t.Fatalf("published level = %v, want Warn", published.level)
+	}
+	wantAttrs := map[string]string{
+		"shard": "shard-1", "handler": handlerKindRecord, "records": "1", "attempts": "1",
+	}
+	for key, want := range wantAttrs {
+		if published.attrs[key] != want {
+			t.Fatalf("published attr %q = %q, want %q (attrs %+v)", key, published.attrs[key], want, published.attrs)
+		}
+	}
+	if !strings.Contains(published.attrs["error"], errBoom.Error()) {
+		t.Fatalf("published error attr = %q, want to contain %q", published.attrs["error"], errBoom.Error())
+	}
+	if _, ok := findRecord(records, "records skipped after handler failure"); ok {
+		t.Fatalf("unexpected skip record under dlq policy, got %+v", records)
+	}
+}
+
+func TestHandleRecordsPageSendToDLQPublishErrorLogsNothing(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	errDLQ := errors.New("dlq unavailable")
+	handler := newCapturingHandler()
+	c := &Consumer{
+		logger:        slog.New(handler),
+		failurePolicy: FailurePolicySendToDLQ,
+		dlqPublisher:  &recordingPoisonPublisher{err: errDLQ},
+		tuning:        tuningConfig{retryMaxAttempts: 1},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); !errors.Is(err, errDLQ) {
+		t.Fatalf("handleRecordsPage() error = %v, want wraps %v", err, errDLQ)
+	}
+
+	if records := handler.snapshot(); len(records) != 0 {
+		t.Fatalf("failed dlq publish emitted records: %+v", records)
+	}
+}
+
+func TestHandleRecordsPageFailFastLogsNothing(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	handler := newCapturingHandler()
+	c := &Consumer{
+		logger:        slog.New(handler),
+		failurePolicy: FailurePolicyFailFast,
+		tuning:        tuningConfig{retryMaxAttempts: 1},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return errBoom
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); !errors.Is(err, errBoom) {
+		t.Fatalf("handleRecordsPage() error = %v, want wraps %v", err, errBoom)
+	}
+
+	if records := handler.snapshot(); len(records) != 0 {
+		t.Fatalf("fail-fast emitted records: %+v", records)
 	}
 }
