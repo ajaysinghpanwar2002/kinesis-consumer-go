@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -31,7 +32,15 @@ func (c *Consumer) startRegisteredShardWorker(
 		defer workerWG.Done()
 		defer workers.done(shardID)
 
-		if err := c.runShardWorker(workerCtx, shardID, shardLease); err != nil {
+		c.logger.Info("shard worker started", slog.String("shard", shardID))
+
+		err := c.runShardWorker(workerCtx, shardID, shardLease)
+		if err != nil {
+			// The worker's aggregated error (renew or process failure) is logged
+			// here per-shard. workerErrCh only keeps the first error (non-blocking
+			// send), so this Warn is the sole record of any subsequent concurrent
+			// worker failure during shutdown. Consumer-level Error stays in Start.
+			c.logger.Warn("shard worker stopped", slog.String("shard", shardID), slog.Any("error", err))
 			select {
 			case workerErrCh <- err:
 			default:
@@ -39,7 +48,9 @@ func (c *Consumer) startRegisteredShardWorker(
 			if stopRun != nil {
 				stopRun()
 			}
+			return
 		}
+		c.logger.Info("shard worker stopped", slog.String("shard", shardID))
 	}()
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -202,6 +203,7 @@ func newTestShardWorkerConsumer(heartbeatInterval, heartbeatTTL time.Duration) *
 			heartbeatTTL:             heartbeatTTL,
 			shardLeaseReleaseTimeout: 30 * time.Millisecond,
 		},
+		logger: slog.New(slog.DiscardHandler),
 		processShardRecordsLoopFn: func(ctx context.Context, shardID string) (string, int, error) {
 			_ = shardID
 			<-ctx.Done()

@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -950,6 +951,7 @@ func TestReleaseShardLeaseWithTimeoutSuccessUsesDeadlineContext(t *testing.T) {
 	shardLease := &recordingReleaseLease{}
 	c := &Consumer{
 		tuning: tuningConfig{shardLeaseReleaseTimeout: 25 * time.Millisecond},
+		logger: slog.New(slog.DiscardHandler),
 	}
 
 	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
@@ -973,6 +975,7 @@ func TestReleaseShardLeaseWithTimeoutReturnsDeadlineExceeded(t *testing.T) {
 	shardLease := &blockingReleaseLease{}
 	c := &Consumer{
 		tuning: tuningConfig{shardLeaseReleaseTimeout: time.Millisecond},
+		logger: slog.New(slog.DiscardHandler),
 	}
 
 	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
@@ -1015,6 +1018,7 @@ func newTestAcquireConsumer(manager *recordingAcquireManager) *Consumer {
 		leaseManager: manager,
 		leaseOwner:   "owner",
 		tuning:       tuning,
+		logger:       slog.New(slog.DiscardHandler),
 	}
 }
 

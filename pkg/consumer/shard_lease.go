@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
@@ -99,6 +100,7 @@ func (c *Consumer) acquireShardLeases(ctx context.Context, shardIDs []string) (m
 			continue
 		}
 		leases[shardID] = shardLease
+		c.logger.Debug("shard lease acquired", slog.String("shard", shardID), slog.String("owner", c.leaseOwner))
 	}
 	return leases, nil
 }
@@ -159,11 +161,16 @@ func (c *Consumer) releaseShardLeaseWithTimeout(shardID string, shardLease lease
 	defer cancel()
 
 	if err := shardLease.Release(releaseCtx); err != nil {
+		releaseErr := fmt.Errorf("release shard lease %s: %w", shardID, err)
 		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("release shard lease %s timed out: %w", shardID, err)
+			releaseErr = fmt.Errorf("release shard lease %s timed out: %w", shardID, err)
 		}
-		return fmt.Errorf("release shard lease %s: %w", shardID, err)
+		// Logged here because the caller (shard_worker.go) discards this error
+		// when the worker already failed, so it would otherwise be invisible.
+		c.logger.Warn("shard lease release failed", slog.String("shard", shardID), slog.Any("error", releaseErr))
+		return releaseErr
 	}
+	c.logger.Debug("shard lease released", slog.String("shard", shardID))
 	return nil
 }
 

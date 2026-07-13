@@ -2,7 +2,9 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -166,5 +168,144 @@ func TestStartLogsFatalError(t *testing.T) {
 	}
 	if stopped.attrs["stream"] != "stream" {
 		t.Fatalf("stopped stream attr = %q, want %q", stopped.attrs["stream"], "stream")
+	}
+}
+
+func TestStartLogsWorkerAndLeaseLifecycle(t *testing.T) {
+	t.Parallel()
+
+	handler := newCapturingHandler()
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.logger = slog.New(handler)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	cancel()
+	waitStartDone(t, done, nil)
+
+	records := handler.snapshot()
+
+	acquired, ok := findRecord(records, "shard lease acquired")
+	if !ok {
+		t.Fatalf("no 'shard lease acquired' record, got %+v", records)
+	}
+	if acquired.level != slog.LevelDebug {
+		t.Fatalf("acquired level = %v, want Debug", acquired.level)
+	}
+	if acquired.attrs["shard"] != "shard-1" {
+		t.Fatalf("acquired shard attr = %q, want %q", acquired.attrs["shard"], "shard-1")
+	}
+	if acquired.attrs["owner"] != "owner" {
+		t.Fatalf("acquired owner attr = %q, want %q", acquired.attrs["owner"], "owner")
+	}
+
+	started, ok := findRecord(records, "shard worker started")
+	if !ok {
+		t.Fatalf("no 'shard worker started' record, got %+v", records)
+	}
+	if started.level != slog.LevelInfo {
+		t.Fatalf("started level = %v, want Info", started.level)
+	}
+	if started.attrs["shard"] != "shard-1" {
+		t.Fatalf("started shard attr = %q, want %q", started.attrs["shard"], "shard-1")
+	}
+
+	stopped, ok := findRecord(records, "shard worker stopped")
+	if !ok {
+		t.Fatalf("no 'shard worker stopped' record, got %+v", records)
+	}
+	if stopped.level != slog.LevelInfo {
+		t.Fatalf("stopped level = %v, want Info (clean stop)", stopped.level)
+	}
+	if _, hasErr := stopped.attrs["error"]; hasErr {
+		t.Fatalf("clean worker stop carries an error attr: %+v", stopped.attrs)
+	}
+
+	released, ok := findRecord(records, "shard lease released")
+	if !ok {
+		t.Fatalf("no 'shard lease released' record, got %+v", records)
+	}
+	if released.level != slog.LevelDebug {
+		t.Fatalf("released level = %v, want Debug", released.level)
+	}
+	if released.attrs["shard"] != "shard-1" {
+		t.Fatalf("released shard attr = %q, want %q", released.attrs["shard"], "shard-1")
+	}
+}
+
+// TestStartLogsWorkerFailureAndSwallowedReleaseError covers the swallow path:
+// when a worker fails, the release error at shard_worker.go is discarded (the
+// worker's own error wins), so the release-failed Warn is the ONLY record of
+// the release failure, while worker-stopped reports the original worker error.
+func TestStartLogsWorkerFailureAndSwallowedReleaseError(t *testing.T) {
+	t.Parallel()
+
+	errProcess := errors.New("process boom")
+	errRelease := errors.New("release boom")
+	handler := newCapturingHandler()
+	shardLease := &recordingReleaseLease{err: errRelease}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.logger = slog.New(handler)
+	c.processShardRecordsLoopFn = func(context.Context, string) (string, int, error) {
+		return "", 0, errProcess
+	}
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, errProcess) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, errProcess)
+	}
+
+	records := handler.snapshot()
+
+	stopped, ok := findRecord(records, "shard worker stopped")
+	if !ok {
+		t.Fatalf("no 'shard worker stopped' record, got %+v", records)
+	}
+	if stopped.level != slog.LevelWarn {
+		t.Fatalf("stopped level = %v, want Warn (worker failed)", stopped.level)
+	}
+	if !strings.Contains(stopped.attrs["error"], errProcess.Error()) {
+		t.Fatalf("stopped error attr = %q, want to contain %q", stopped.attrs["error"], errProcess.Error())
+	}
+
+	releaseFailed, ok := findRecord(records, "shard lease release failed")
+	if !ok {
+		t.Fatalf("no 'shard lease release failed' record, got %+v", records)
+	}
+	if releaseFailed.level != slog.LevelWarn {
+		t.Fatalf("release failed level = %v, want Warn", releaseFailed.level)
+	}
+	if !strings.Contains(releaseFailed.attrs["error"], errRelease.Error()) {
+		t.Fatalf("release failed error attr = %q, want to contain %q", releaseFailed.attrs["error"], errRelease.Error())
+	}
+	if releaseFailed.attrs["shard"] != "shard-1" {
+		t.Fatalf("release failed shard attr = %q, want %q", releaseFailed.attrs["shard"], "shard-1")
 	}
 }

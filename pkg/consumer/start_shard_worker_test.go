@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -659,6 +660,7 @@ func newTestRegisteredShardWorkerConsumer(processErr error) *Consumer {
 	return &Consumer{
 		cfg:    Config{StreamName: "stream"},
 		tuning: tuning,
+		logger: slog.New(slog.DiscardHandler),
 		processShardRecordsLoopFn: func(ctx context.Context, shardID string) (string, int, error) {
 			_ = shardID
 			if processErr != nil {
