@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: kinesis-consumer-go
+    orgId: 1
+    folder: Kinesis Consumers
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards/kinesis-consumer
+
