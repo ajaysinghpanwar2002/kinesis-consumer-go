@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 type rebalanceExecutionResult struct {
@@ -95,9 +97,13 @@ func (c *Consumer) executeRebalanceAcquireAction(
 		return false, fmt.Errorf("execute rebalance acquire shard %s: %w", shardID, err)
 	}
 	if !acquired || shardLease == nil {
+		c.reporter.Counter(metricRebalanceSkips, 1,
+			c.shardTags(shardID, metrics.Tag{Key: metricTagKind, Value: metricKindAcquire}))
 		c.logger.Debug("rebalance acquire skipped", slog.String("shard", shardID))
 		return false, nil
 	}
+	c.reporter.Counter(metricRebalanceMoves, 1,
+		c.shardTags(shardID, metrics.Tag{Key: metricTagKind, Value: metricKindAcquire}))
 	c.logger.Info("rebalance shard acquired", slog.String("shard", shardID))
 
 	c.startRegisteredShardWorker(ctx, shardID, shardLease, workers, workerWG, workerErrCh, stopRun)
@@ -118,9 +124,13 @@ func (c *Consumer) executeRebalanceClaimAction(
 		return false, fmt.Errorf("execute rebalance claim shard %s from %s: %w", shardID, donor, err)
 	}
 	if !claimed || shardLease == nil {
+		c.reporter.Counter(metricRebalanceSkips, 1,
+			c.shardTags(shardID, metrics.Tag{Key: metricTagKind, Value: metricKindClaim}))
 		c.logger.Debug("rebalance claim skipped", slog.String("shard", shardID), slog.String("donor", donor))
 		return false, nil
 	}
+	c.reporter.Counter(metricRebalanceMoves, 1,
+		c.shardTags(shardID, metrics.Tag{Key: metricTagKind, Value: metricKindClaim}))
 	c.logger.Info("rebalance shard claimed", slog.String("shard", shardID), slog.String("donor", donor))
 
 	c.startRegisteredShardWorker(ctx, shardID, shardLease, workers, workerWG, workerErrCh, stopRun)

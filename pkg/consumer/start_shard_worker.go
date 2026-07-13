@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 func (c *Consumer) startRegisteredShardWorker(
@@ -32,10 +33,13 @@ func (c *Consumer) startRegisteredShardWorker(
 		defer workerWG.Done()
 		defer workers.done(shardID)
 
+		c.reporter.Counter(metricWorkerStarts, 1, c.shardTags(shardID))
 		c.logger.Info("shard worker started", slog.String("shard", shardID))
 
 		err := c.runShardWorker(workerCtx, shardID, shardLease)
 		if err != nil {
+			c.reporter.Counter(metricWorkerStops, 1,
+				c.shardTags(shardID, metrics.Tag{Key: metricTagOutcome, Value: metricOutcomeError}))
 			// The worker's aggregated error (renew or process failure) is logged
 			// here per-shard. workerErrCh only keeps the first error (non-blocking
 			// send), so this Warn is the sole record of any subsequent concurrent
@@ -50,6 +54,8 @@ func (c *Consumer) startRegisteredShardWorker(
 			}
 			return
 		}
+		c.reporter.Counter(metricWorkerStops, 1,
+			c.shardTags(shardID, metrics.Tag{Key: metricTagOutcome, Value: metricOutcomeClean}))
 		c.logger.Info("shard worker stopped", slog.String("shard", shardID))
 	}()
 }

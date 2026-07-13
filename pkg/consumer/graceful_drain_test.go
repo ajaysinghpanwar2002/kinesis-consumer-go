@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 func TestDrainShardWorkersWaitsForNaturalExitWithoutCancel(t *testing.T) {
@@ -98,7 +100,7 @@ func TestDrainShardWorkersNoopsWithoutWorkerGroup(t *testing.T) {
 func TestConsumerDrainShardWorkersSetsDrainStateOnlyWhileWaiting(t *testing.T) {
 	t.Parallel()
 
-	c := &Consumer{drainTimeout: time.Second}
+	c := &Consumer{drainTimeout: time.Second, reporter: metrics.Nop{}}
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
 	workerWG.Add(1)

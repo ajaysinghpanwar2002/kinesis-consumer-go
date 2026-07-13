@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
@@ -56,6 +57,7 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			iterator = derived
 		}
 
+		getRecordsStart := time.Now()
 		out, err := c.getRecords(ctx, iterator)
 		if err != nil {
 			if errors.Is(ctx.Err(), context.Canceled) {
@@ -72,7 +74,11 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			}
 			return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 		}
+		c.reporter.Timing(metricGetRecordsDuration, time.Since(getRecordsStart), c.shardTags(shardID))
 		c.reporter.Counter(metricPagesFetched, 1, c.shardTags(shardID))
+		if out.MillisBehindLatest != nil {
+			c.reporter.Gauge(metricMillisBehindLatest, float64(*out.MillisBehindLatest), c.shardTags(shardID))
+		}
 
 		pageLastSeq, pageCount, err := c.processRecordsPageWithCheckpoint(ctx, shardID, out, count)
 		if pageLastSeq != "" {

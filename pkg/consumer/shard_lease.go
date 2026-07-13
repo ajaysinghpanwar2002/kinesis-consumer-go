@@ -11,6 +11,7 @@ import (
 )
 
 func (c *Consumer) acquireShardLease(ctx context.Context, shardID string) (lease.Lease, bool, error) {
+	start := time.Now()
 	shardLease, acquired, err := c.leaseManager.Acquire(
 		ctx,
 		c.streamKey(),
@@ -21,6 +22,7 @@ func (c *Consumer) acquireShardLease(ctx context.Context, shardID string) (lease
 	if err != nil {
 		return nil, false, fmt.Errorf("acquire shard lease %s: %w", shardID, err)
 	}
+	c.reporter.Timing(metricLeaseAcquireDuration, time.Since(start), c.shardTags(shardID))
 	return shardLease, acquired, nil
 }
 
@@ -100,6 +102,7 @@ func (c *Consumer) acquireShardLeases(ctx context.Context, shardIDs []string) (m
 			continue
 		}
 		leases[shardID] = shardLease
+		c.reporter.Counter(metricLeaseAcquired, 1, c.shardTags(shardID))
 		c.logger.Debug("shard lease acquired", slog.String("shard", shardID), slog.String("owner", c.leaseOwner))
 	}
 	return leases, nil
@@ -130,13 +133,16 @@ func (c *Consumer) renewShardLeaseLoop(ctx context.Context, shardID string, shar
 		case <-ticker.C:
 			if err := c.renewShardLease(ctx, shardID, shardLease); err != nil {
 				if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+					// Shutdown cancellation, not a renewal failure: count neither.
 					if errors.Is(ctx.Err(), context.Canceled) {
 						return nil
 					}
 					return ctx.Err()
 				}
+				c.reporter.Counter(metricLeaseRenewalFailures, 1, c.shardTags(shardID))
 				return err
 			}
+			c.reporter.Counter(metricLeaseRenewals, 1, c.shardTags(shardID))
 		}
 	}
 }
@@ -167,9 +173,11 @@ func (c *Consumer) releaseShardLeaseWithTimeout(shardID string, shardLease lease
 		}
 		// Logged here because the caller (shard_worker.go) discards this error
 		// when the worker already failed, so it would otherwise be invisible.
+		c.reporter.Counter(metricLeaseReleaseFailures, 1, c.shardTags(shardID))
 		c.logger.Warn("shard lease release failed", slog.String("shard", shardID), slog.Any("error", releaseErr))
 		return releaseErr
 	}
+	c.reporter.Counter(metricLeaseReleased, 1, c.shardTags(shardID))
 	c.logger.Debug("shard lease released", slog.String("shard", shardID))
 	return nil
 }

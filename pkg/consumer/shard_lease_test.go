@@ -952,9 +952,9 @@ func TestReleaseShardLeaseWithTimeoutSuccessUsesDeadlineContext(t *testing.T) {
 
 	shardLease := &recordingReleaseLease{}
 	c := &Consumer{
+		reporter: metrics.Nop{},
 		tuning:   tuningConfig{shardLeaseReleaseTimeout: 25 * time.Millisecond},
 		logger:   slog.New(slog.DiscardHandler),
-		reporter: metrics.Nop{},
 	}
 
 	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
@@ -977,9 +977,9 @@ func TestReleaseShardLeaseWithTimeoutReturnsDeadlineExceeded(t *testing.T) {
 
 	shardLease := &blockingReleaseLease{}
 	c := &Consumer{
+		reporter: metrics.Nop{},
 		tuning:   tuningConfig{shardLeaseReleaseTimeout: time.Millisecond},
 		logger:   slog.New(slog.DiscardHandler),
-		reporter: metrics.Nop{},
 	}
 
 	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
@@ -996,6 +996,7 @@ func TestReleaseShardLeaseWithTimeoutReturnsDeadlineExceeded(t *testing.T) {
 
 func newTestLeaseConsumer(heartbeatTTL time.Duration) *Consumer {
 	return &Consumer{
+		reporter: metrics.Nop{},
 		tuning: tuningConfig{
 			heartbeatTTL: heartbeatTTL,
 		},
@@ -1004,6 +1005,7 @@ func newTestLeaseConsumer(heartbeatTTL time.Duration) *Consumer {
 
 func newTestLeaseLoopConsumer(heartbeatInterval, heartbeatTTL time.Duration) *Consumer {
 	return &Consumer{
+		reporter: metrics.Nop{},
 		tuning: tuningConfig{
 			heartbeatInterval: heartbeatInterval,
 			heartbeatTTL:      heartbeatTTL,
@@ -1032,6 +1034,7 @@ func newTestClaimConsumer(manager *recordingClaimManager) *Consumer {
 	tuning.heartbeatTTL = 30 * time.Millisecond
 
 	return &Consumer{
+		reporter: metrics.Nop{},
 		cfg: Config{
 			StreamName: "stream",
 		},

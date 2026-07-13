@@ -54,6 +54,11 @@ func (c *Consumer) drainShardWorkers(
 	c.draining.Store(true)
 	defer c.draining.Store(false)
 
+	start := time.Now()
+	defer func() {
+		c.reporter.Timing(metricDrainDuration, time.Since(start), c.streamTags())
+	}()
+
 	return drainShardWorkersOrError(workers, workerWG, c.drainTimeout, workerErrCh)
 }
 

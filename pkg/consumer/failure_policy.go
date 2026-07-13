@@ -144,7 +144,11 @@ func (c *Consumer) retryHandler(ctx context.Context, shardID, handlerKind string
 			c.reporter.Counter(metricHandlerRetries, 1,
 				c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKind}))
 		}
-		if err := fn(); err != nil {
+		attemptStart := time.Now()
+		err := fn()
+		c.reporter.Timing(metricHandlerDuration, time.Since(attemptStart),
+			c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKind}))
+		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return attempt, lastErr

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 type rebalanceRunResult struct {
@@ -29,6 +30,11 @@ func (c *Consumer) rebalanceShardsOnce(
 	now time.Time,
 ) (rebalanceRunResult, error) {
 	var result rebalanceRunResult
+
+	start := time.Now()
+	defer func() {
+		c.reporter.Timing(metricRebalancePassDuration, time.Since(start), c.streamTags())
+	}()
 
 	readyShardIDs, err := completionState.readyShardIDs(ctx, c, knownShards)
 	if err != nil {
@@ -58,6 +64,10 @@ func (c *Consumer) rebalanceShardsOnce(
 		now,
 		c.tuning.maxMovesPerRebalance,
 	)
+	c.reporter.Gauge(metricOwnedShards, float64(result.plan.initialCount), c.streamTags())
+	c.reporter.Gauge(metricActiveWorkers, float64(result.plan.snapshot.activeWorkers), c.streamTags())
+	c.reporter.Gauge(metricFairShareLow, float64(result.plan.snapshot.low), c.streamTags())
+	c.reporter.Gauge(metricFairShareHigh, float64(result.plan.snapshot.high), c.streamTags())
 	if len(result.plan.actions) > 0 {
 		c.logger.Debug("rebalance plan",
 			slog.Int("shards", result.plan.snapshot.open),
@@ -87,6 +97,8 @@ func (c *Consumer) rebalanceShardsOnce(
 	)
 	stoppedShardIDs := executeLocalRebalanceShedShards(shedShardIDs, workers)
 	for _, shardID := range stoppedShardIDs {
+		c.reporter.Counter(metricRebalanceMoves, 1,
+			c.shardTags(shardID, metrics.Tag{Key: metricTagKind, Value: metricKindShed}))
 		c.logger.Info("rebalance shard shed",
 			slog.String("shard", shardID),
 			slog.Int("owned", result.plan.snapshot.ownerCounts[c.leaseOwner]),
