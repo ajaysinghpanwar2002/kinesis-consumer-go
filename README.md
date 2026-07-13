@@ -22,6 +22,7 @@ No Java, no MultiLangDaemon.
 - Pluggable DLQ publisher interface for poison records.
 - Optional graceful drain mode on shutdown (finish in-flight work, checkpoint, release lease).
 - Pluggable checkpoint stores and lease managers.
+- Opt-in structured logging via `log/slog` (silent by default).
 - LocalStack + Valkey workflow for local testing.
 
 ## Install
@@ -36,6 +37,7 @@ go get github.com/pratilipi/kinesis-consumer-go
 - [Features and capabilities](docs/features.md) — a complete, source-accurate inventory of what the library does (and what it does not yet do).
 - [Configuration reference](docs/configuration.md) — every `Config` field and `With*` option with defaults, effects, and validation rules.
 - [Handler failure policy, DLQ, and shard concurrency](docs/handler-behavior.md)
+- [Logging](docs/logging.md) — enabling `WithLogger`, the complete structured event catalog with levels and attributes, and production guidance.
 - [Integration test suite](docs/testing.md) — a verifiable ledger of every integration scenario and the behavior it proves.
 
 ## Examples

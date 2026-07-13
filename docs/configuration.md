@@ -54,6 +54,7 @@ working default, so `New` with no options is valid.
 | `WithRebalance` | `minInterval, jitter, cooldown time.Duration, maxMoves int` | `10s, 10s, 10s, 2` | Rebalance timing (`minInterval + [0,jitter)` between ticks), per-shard cooldown after a move, and the max shard moves per tick. | `minInterval > 0`; `jitter >= 0`; `cooldown > 0`; `maxMoves >= 1` |
 | `WithGracefulDrain` | `timeout time.Duration` | off | On ctx cancel, workers finish in-flight work, checkpoint, and release leases before `Start` returns. `0` waits indefinitely. | `timeout >= 0` |
 | `WithLeaseManager` | `manager lease.Manager` | auto | Supplies an explicit lease manager. Usually unnecessary — a store implementing `lease.Provider` (the Valkey store) enables leasing automatically. | non-nil |
+| `WithLogger` | `logger *slog.Logger` | discard (silent) | Structured logger for consumer lifecycle, lease, rebalance, and record-processing events; see [logging.md](logging.md) for the event catalog. | non-nil |
 
 ### Failure policy values
 

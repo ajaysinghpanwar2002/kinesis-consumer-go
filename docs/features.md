@@ -28,6 +28,7 @@ so you can plan around the gaps.
 | Shutdown | Optional graceful drain (finish in-flight work, checkpoint, release leases) |
 | Backends | Built-in Valkey; pluggable `checkpoint.Store` + `lease.Manager` interfaces |
 | Multi-tenancy | Key-prefix isolation for checkpoint, lease, and worker keys |
+| Logging | Opt-in structured `log/slog` events for lifecycle, leases, rebalance, and record outcomes ([logging.md](logging.md)) |
 
 ## Public entry point
 
@@ -197,15 +198,17 @@ Every knob has a working default, so a consumer runs with no options at all.
 | `WithHeartbeat(interval, ttl)` | 5s, 20s | Worker liveness cadence and lease/worker TTL |
 | `WithRebalance(min, jitter, cooldown, maxMoves)` | 10s, 10s, 10s, 2 | Rebalance timing and move bounds |
 | `WithGracefulDrain(timeout)` | off | Drain in-flight work on shutdown |
+| `WithLogger(logger)` | discard (silent) | Structured `log/slog` lifecycle/lease/rebalance/record events |
 | Lease release timeout | 5s | Bound on releasing a lease during shutdown |
 
 ## Not yet built
 
 Kept honest so the docs are a reliable contract:
 
-- **Observability:** there is no built-in logging, and the `metrics.Reporter`
-  interface (with a `Nop` default) exists but is **not wired to anything** — no
-  metrics are emitted. Fatal errors still propagate out of `Start`.
+- **Metrics:** the `metrics.Reporter` interface (with a `Nop` default) exists
+  but is **not wired to anything** — no metrics are emitted. Structured
+  logging is built in and opt-in via `WithLogger` (see
+  [logging.md](logging.md)); fatal errors still propagate out of `Start`.
 - **Additional backends:** only Valkey is built in. DynamoDB and Redis are
   planned behind the same `checkpoint.Store` / `lease.Manager` interfaces but are
   not implemented.
