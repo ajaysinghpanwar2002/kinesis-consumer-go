@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -57,6 +58,16 @@ func (c *Consumer) rebalanceShardsOnce(
 		now,
 		c.tuning.maxMovesPerRebalance,
 	)
+	if len(result.plan.actions) > 0 {
+		c.logger.Debug("rebalance plan",
+			slog.Int("shards", result.plan.snapshot.open),
+			slog.Int("workers", result.plan.snapshot.activeWorkers),
+			slog.Int("low", result.plan.snapshot.low),
+			slog.Int("high", result.plan.snapshot.high),
+			slog.Int("owned", result.plan.initialCount),
+			slog.Int("actions", len(result.plan.actions)),
+		)
+	}
 	executionResult, err := c.executeRebalancePlan(ctx, result.plan, workers, workerWG, workerErrCh, stopRun)
 	result.started = executionResult.started
 	result.movedShardIDs = executionResult.movedShardIDs
@@ -75,6 +86,13 @@ func (c *Consumer) rebalanceShardsOnce(
 		remainingMoves,
 	)
 	stoppedShardIDs := executeLocalRebalanceShedShards(shedShardIDs, workers)
+	for _, shardID := range stoppedShardIDs {
+		c.logger.Info("rebalance shard shed",
+			slog.String("shard", shardID),
+			slog.Int("owned", result.plan.snapshot.ownerCounts[c.leaseOwner]),
+			slog.Int("high", result.plan.snapshot.high),
+		)
+	}
 	result.movedShardIDs = append(result.movedShardIDs, stoppedShardIDs...)
 	recordRebalanceCooldown(cooldown, stoppedShardIDs, now, c.tuning.shardCooldownPeriod)
 	return result, nil

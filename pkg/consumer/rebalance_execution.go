@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -94,8 +95,10 @@ func (c *Consumer) executeRebalanceAcquireAction(
 		return false, fmt.Errorf("execute rebalance acquire shard %s: %w", shardID, err)
 	}
 	if !acquired || shardLease == nil {
+		c.logger.Debug("rebalance acquire skipped", slog.String("shard", shardID))
 		return false, nil
 	}
+	c.logger.Info("rebalance shard acquired", slog.String("shard", shardID))
 
 	c.startRegisteredShardWorker(ctx, shardID, shardLease, workers, workerWG, workerErrCh, stopRun)
 	return true, nil
@@ -115,8 +118,10 @@ func (c *Consumer) executeRebalanceClaimAction(
 		return false, fmt.Errorf("execute rebalance claim shard %s from %s: %w", shardID, donor, err)
 	}
 	if !claimed || shardLease == nil {
+		c.logger.Debug("rebalance claim skipped", slog.String("shard", shardID), slog.String("donor", donor))
 		return false, nil
 	}
+	c.logger.Info("rebalance shard claimed", slog.String("shard", shardID), slog.String("donor", donor))
 
 	c.startRegisteredShardWorker(ctx, shardID, shardLease, workers, workerWG, workerErrCh, stopRun)
 	return true, nil
