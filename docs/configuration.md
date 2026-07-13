@@ -5,7 +5,8 @@ and the Valkey backend options — with defaults, effects, and validation rules.
 
 For a narrative overview see [features.md](features.md); to get running see
 [getting-started.md](getting-started.md); for handler/DLQ/concurrency depth see
-[handler-behavior.md](handler-behavior.md).
+[handler-behavior.md](handler-behavior.md). Observability references are in
+[logging.md](logging.md) and [metrics.md](metrics.md).
 
 ## `consumer.Config`
 
@@ -55,6 +56,7 @@ working default, so `New` with no options is valid.
 | `WithGracefulDrain` | `timeout time.Duration` | off | On ctx cancel, workers finish in-flight work, checkpoint, and release leases before `Start` returns. `0` waits indefinitely. | `timeout >= 0` |
 | `WithLeaseManager` | `manager lease.Manager` | auto | Supplies an explicit lease manager. Usually unnecessary — a store implementing `lease.Provider` (the Valkey store) enables leasing automatically. | non-nil |
 | `WithLogger` | `logger *slog.Logger` | discard (silent) | Structured logger for consumer lifecycle, lease, rebalance, and record-processing events; see [logging.md](logging.md) for the event catalog. | non-nil |
+| `WithMetrics` | `reporter metrics.Reporter` | `metrics.Nop{}` (silent) | Emits the consumer's counters, gauges, and timings through the supplied reporter; see [metrics.md](metrics.md) for the catalog and packaged statsd pipeline. | non-nil |
 
 ### Failure policy values
 

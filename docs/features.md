@@ -29,6 +29,7 @@ so you can plan around the gaps.
 | Backends | Built-in Valkey; pluggable `checkpoint.Store` + `lease.Manager` interfaces |
 | Multi-tenancy | Key-prefix isolation for checkpoint, lease, and worker keys |
 | Logging | Opt-in structured `log/slog` events for lifecycle, leases, rebalance, and record outcomes ([logging.md](logging.md)) |
+| Metrics | Opt-in counters, gauges, and timings through `metrics.Reporter`, with a statsd/Telegraf/InfluxDB/Grafana path ([metrics.md](metrics.md)) |
 
 ## Public entry point
 
@@ -183,6 +184,19 @@ streams or tenants can share one Valkey without colliding:
   `<checkpointPrefix>-lease`.
 - Worker heartbeats: `<leasePrefix>-worker:<stream>:<owner>`.
 
+## Observability
+
+- **Structured logging:** `WithLogger` enables `log/slog` lifecycle, lease,
+  rebalance, checkpoint, drain, and failure-policy events. The default discard
+  logger is silent. See [logging.md](logging.md) for the event catalog and
+  production guidance.
+- **Metrics:** `WithMetrics` enables the full counter, gauge, and timing catalog
+  through `metrics.Reporter`. The default `metrics.Nop{}` reporter is silent.
+  The core module includes a dependency-free UDP statsd implementation, plus
+  sample Telegraf, InfluxDB, and Grafana assets. See
+  [metrics.md](metrics.md) for names, tags, semantics, wiring, and cardinality
+  guidance.
+
 ## Configuration defaults
 
 Every knob has a working default, so a consumer runs with no options at all.
@@ -199,16 +213,13 @@ Every knob has a working default, so a consumer runs with no options at all.
 | `WithRebalance(min, jitter, cooldown, maxMoves)` | 10s, 10s, 10s, 2 | Rebalance timing and move bounds |
 | `WithGracefulDrain(timeout)` | off | Drain in-flight work on shutdown |
 | `WithLogger(logger)` | discard (silent) | Structured `log/slog` lifecycle/lease/rebalance/record events |
+| `WithMetrics(reporter)` | `metrics.Nop{}` (silent) | Counters, gauges, and timings through `metrics.Reporter` |
 | Lease release timeout | 5s | Bound on releasing a lease during shutdown |
 
 ## Not yet built
 
 Kept honest so the docs are a reliable contract:
 
-- **Metrics:** the `metrics.Reporter` interface (with a `Nop` default) exists
-  but is **not wired to anything** — no metrics are emitted. Structured
-  logging is built in and opt-in via `WithLogger` (see
-  [logging.md](logging.md)); fatal errors still propagate out of `Start`.
 - **Additional backends:** only Valkey is built in. DynamoDB and Redis are
   planned behind the same `checkpoint.Store` / `lease.Manager` interfaces but are
   not implemented.
