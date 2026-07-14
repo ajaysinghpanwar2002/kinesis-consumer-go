@@ -60,6 +60,7 @@ nothing per record, per poll, or per rebalance tick.
 | `shard lease released` | Debug | `shard` | The bounded release at worker exit succeeded. |
 | `shard lease release failed` | Warn | `shard`, `error` | The bounded release failed or timed out. Logged here because the caller discards the release error when the worker already failed, so this Warn can be the only record of it. |
 | `shard lease renew failed; will retry` | Warn | `shard`, `since_last_renew`, `ttl`, `error` | A transient renew failure. The loop retries on subsequent heartbeat ticks while the TTL budget since the last successful renew lasts. `ErrNotOwned` and budget exhaustion are not retried — they stop the worker and surface through the worker-stop Warn. |
+| `worker heartbeat failed` | Warn | `owner`, `error` | A worker-liveness heartbeat send failed (live context). Sustained failures make peers treat this worker as dead and steadily claim its shards away — this Warn is the victim's only diagnostic. |
 
 Terminal lease-renewal failures (`ErrNotOwned`, TTL-budget exhaustion) are not
 logged separately: `runShardWorker` returns them, and the worker-stop Warn is
@@ -76,6 +77,7 @@ they would otherwise be invisible.
 | `rebalance shard claimed` | Info | `shard`, `donor` | A claim action took the shard from an over-fair-share donor. |
 | `rebalance claim skipped` | Debug | `shard`, `donor` | The claim found the donor no longer owns the lease (not an error). |
 | `rebalance shard shed` | Info | `shard`, `owned`, `high` | This consumer stopped a worker to shed ownership above the fair-share `high` bound. |
+| `rebalance pass failed` | Warn | `error` | A rebalance pass returned an error (live context) and was skipped; the next tick retries. Shard-sync errors are not logged here — they stop the consumer, because broken shard discovery makes resharding invisible. |
 
 Quiet passes — a balanced snapshot with no actions and no shedding — log
 nothing, and per-candidate cooldown skips are not logged; cooldown influence
@@ -103,16 +105,21 @@ Operation-specific failures are not logged at the site where they occur; they
 propagate as errors and are reported at the lifecycle boundaries they cross.
 A single failure can therefore appear at more than one boundary — a failing
 worker logs `shard worker stopped` at Warn and, if it stops the consumer, the
-terminal `consumer stopped` Error repeats the cause. The exception is
-`shard lease release failed`, which is logged at its site because the caller
-can swallow the release error entirely.
+terminal `consumer stopped` Error repeats the cause. The exceptions are the
+events whose error the caller swallows or retries away, so the site-level
+Warn is the only record: `shard lease release failed`,
+`shard lease renew failed; will retry`, `get records failed; backing off`,
+`worker heartbeat failed`, and `rebalance pass failed`.
 
 - **Checkpoint save failures, DLQ publish failures, and fail-fast handler
   errors** have no dedicated event; they surface through the worker and
   consumer stop events above.
 - **Per-attempt handler retries** and **expired-iterator recovery** are
   silent.
-- **Rebalance and snapshot read errors** keep their existing return paths.
+- **Shard-sync (shard discovery) errors** are not logged at their site: they
+  stop the consumer and surface through the terminal `consumer stopped`
+  Error. Rebalance-pass failures, by contrast, are retried at the next tick
+  and warn in place (`rebalance pass failed`).
 
 ## Production guidance
 
@@ -133,5 +140,9 @@ can swallow the release error entirely.
   - `shard lease renew failed; will retry` — sustained occurrences mean the
     lease backend is flaky or overloaded; workers stop (and shards fail over)
     once the TTL budget is exhausted.
+  - `worker heartbeat failed` — sustained occurrences mean this worker will
+    lose its shards to peers despite being healthy.
+  - `rebalance pass failed` — sustained occurrences mean shard distribution
+    has stopped converging.
 - All events carry machine-parseable attributes (`shard`, `stream`, `owner`,
   `donor`, counts, `error`), so JSON handlers can index them directly.

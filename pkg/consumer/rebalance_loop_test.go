@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -162,6 +163,10 @@ func TestRefreshAndRebalanceShardWorkersLoopSkipsRebalanceErrorAndContinues(t *t
 		executionCh: make(chan rebalanceExecutionCall, 1),
 	}
 	c := newTestRebalanceOnceConsumer(manager)
+	logHandler := newCapturingHandler()
+	reporter := &recordingReporter{}
+	c.logger = slog.New(logHandler)
+	c.reporter = reporter
 	knownShards := readyShardWorkerMap("shard-a")
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
@@ -191,6 +196,29 @@ func TestRefreshAndRebalanceShardWorkersLoopSkipsRebalanceErrorAndContinues(t *t
 	cancel()
 	waitRefreshAndRebalanceShardWorkersLoopDone(t, done, nil)
 	waitWorkerGroupDone(t, &workerWG)
+
+	// The failed first pass is survivable but never silent: one failure
+	// counter and one warn, then the next tick succeeded (asserted above).
+	failures := reporter.countersNamed(metricRebalancePassFailures)
+	if len(failures) != 1 {
+		t.Fatalf("rebalance_pass_failures calls = %d, want 1", len(failures))
+	}
+	assertCounterTags(t, failures[0], map[string]string{"stream": "stream"})
+	var warns []capturedRecord
+	for _, rec := range logHandler.snapshot() {
+		if rec.message == "rebalance pass failed" {
+			warns = append(warns, rec)
+		}
+	}
+	if len(warns) != 1 {
+		t.Fatalf("rebalance pass warn logs = %d, want 1", len(warns))
+	}
+	if warns[0].level != slog.LevelWarn {
+		t.Fatalf("rebalance pass log level = %v, want %v", warns[0].level, slog.LevelWarn)
+	}
+	if warns[0].attrs["error"] == "" {
+		t.Fatal("rebalance pass log error attribute missing")
+	}
 }
 
 func TestRefreshAndRebalanceShardWorkersLoopReturnsRefreshError(t *testing.T) {

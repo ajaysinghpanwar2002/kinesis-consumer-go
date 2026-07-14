@@ -11,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/aws/smithy-go"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 // Backoff for retryable GetRecords errors (throttling, server faults, network
@@ -61,6 +63,26 @@ func retryableGetRecordsError(err error) bool {
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr)
+}
+
+// getRecordsErrorKind maps a failed GetRecords error to the fixed-enum `kind`
+// tag on the get_records_failures counter: throttle, expired, or other.
+func getRecordsErrorKind(err error) string {
+	var expired *types.ExpiredIteratorException
+	if errors.As(err, &expired) {
+		return metricKindExpired
+	}
+	var throughputExceeded *types.ProvisionedThroughputExceededException
+	var limitExceeded *types.LimitExceededException
+	var kmsThrottled *types.KMSThrottlingException
+	if errors.As(err, &throughputExceeded) || errors.As(err, &limitExceeded) || errors.As(err, &kmsThrottled) {
+		return metricKindThrottle
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "ThrottlingException" {
+		return metricKindThrottle
+	}
+	return metricKindOther
 }
 
 // processShardRecordsPass reads and processes records from a shard one page at a
@@ -131,6 +153,10 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return lastSeq, count, iterator, nil
 			}
+			// Count every failed read (per attempt) by kind; shutdown
+			// cancellation above is not a failure.
+			c.reporter.Counter(metricGetRecordsFailures, 1,
+				c.shardTags(shardID, metrics.Tag{Key: metricTagKind, Value: getRecordsErrorKind(err)}))
 			var expired *types.ExpiredIteratorException
 			if errors.As(err, &expired) {
 				// The held iterator outlived its ~5-minute TTL (e.g. a large

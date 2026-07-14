@@ -50,27 +50,52 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "panels": [],
       "title": "Ownership",
       "type": "row"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Last observed owned-shard count for each selected stream.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "thresholds"}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
       "id": 2,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto",
         "wideLayout": true
       },
@@ -87,20 +112,40 @@
       "type": "stat"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Last observed active worker count for each selected stream.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "thresholds"}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
       "id": 3,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto",
         "wideLayout": true
       },
@@ -117,20 +162,40 @@
       "type": "stat"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Lower fair-share ownership bound from the latest rebalance snapshot.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "thresholds"}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
       "id": 4,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto",
         "wideLayout": true
       },
@@ -147,20 +212,40 @@
       "type": "stat"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Upper fair-share ownership bound from the latest rebalance snapshot.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "thresholds"}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
       "id": 5,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto",
         "wideLayout": true
       },
@@ -178,22 +263,63 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "id": 6,
       "panels": [],
       "title": "Processing",
       "type": "row"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Per-interval counter deltas. The interval follows the Grafana time range and resolution.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
       "id": 7,
-      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
           "alias": "records ($tag_handler)",
@@ -214,15 +340,52 @@
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Maximum Kinesis millis-behind-latest gauge in each interval, split by shard.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 0, "unit": "ms"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "unit": "ms"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
       "id": 8,
-      "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
           "alias": "$tag_shard",
@@ -237,22 +400,63 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
       "id": 9,
       "panels": [],
       "title": "Reliability",
       "type": "row"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Failure-policy outcomes and handler retry deltas per interval.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
       "id": 10,
-      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
           "alias": "records skipped",
@@ -280,15 +484,51 @@
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Successful and failed checkpoint persistence deltas per interval.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
       "id": 11,
-      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
           "alias": "saved",
@@ -309,23 +549,123 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "description": "Failed GetRecords calls per attempt, split by kind: throttle, expired, other. Should normally stay at zero; sustained throttle means the read path is over the 5 reads/sec/shard limit.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "alias": "get records failures ($tag_kind)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_get_records_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series"
+        }
+      ],
+      "title": "GetRecords failures per interval",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
       "id": 12,
       "panels": [],
       "title": "Latency",
       "type": "row"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Telegraf timing aggregates for record and batch handlers.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 1, "unit": "ms"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 1,
+          "unit": "ms"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
       "id": 13,
-      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
           "alias": "mean ($tag_handler)",
@@ -346,15 +686,52 @@
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Mean of per-series Telegraf p95 timing aggregates. Drain and rebalance are stream-level; other operations also honor the shard selector.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 1, "unit": "ms"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 1,
+          "unit": "ms"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
       "id": 14,
-      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
           "alias": "get records p95",
@@ -397,71 +774,263 @@
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
       "id": 15,
       "panels": [],
       "title": "Coordination",
       "type": "row"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
-      "description": "Lease operation deltas per interval. Failure series should normally stay at zero.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "description": "Lease operation and worker-heartbeat deltas per interval. Failure series should normally stay at zero.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 33},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 41
+      },
       "id": 16,
-      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
-        {"alias": "acquired", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_acquired\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A", "resultFormat": "time_series"},
-        {"alias": "released", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_released\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "B", "resultFormat": "time_series"},
-        {"alias": "release failures", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_release_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "C", "resultFormat": "time_series"},
-        {"alias": "renewals", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_renewals\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "D", "resultFormat": "time_series"},
-        {"alias": "renewal failures", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_renewal_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "E", "resultFormat": "time_series"}
+        {
+          "alias": "acquired",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_acquired\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "released",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_released\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "B",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "release failures",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_release_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "renewals",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_renewals\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "D",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "renewal failures",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_renewal_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "E",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "heartbeat failures",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_heartbeat_failures\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "F",
+          "resultFormat": "time_series"
+        }
       ],
       "title": "Lease activity per interval",
       "type": "timeseries"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
-      "description": "Rebalance move and skip deltas, split by acquire/claim/shed kind.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
+      "description": "Rebalance move and skip deltas, split by acquire/claim/shed kind, plus failed passes (skipped until the next tick).",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      },
       "id": 17,
-      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
-        {"alias": "moves ($tag_kind)", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_moves\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)", "rawQuery": true, "refId": "A", "resultFormat": "time_series"},
-        {"alias": "skips ($tag_kind)", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_skips\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)", "rawQuery": true, "refId": "B", "resultFormat": "time_series"}
+        {
+          "alias": "moves ($tag_kind)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_moves\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "skips ($tag_kind)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_skips\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
+          "rawQuery": true,
+          "refId": "B",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "pass failures",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_pass_failures\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C",
+          "resultFormat": "time_series"
+        }
       ],
       "title": "Rebalance activity per interval",
       "type": "timeseries"
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 41},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
       "id": 18,
       "panels": [],
       "title": "Worker lifecycle",
       "type": "row"
     },
     {
-      "datasource": {"type": "influxdb", "uid": "${datasource}"},
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${datasource}"
+      },
       "description": "Shard worker starts/stops and closed-shard completions per interval.",
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": false}, "decimals": 0, "unit": "short"},
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "decimals": 0,
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 42},
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
       "id": 19,
-      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
-        {"alias": "worker starts", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_worker_starts\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "A", "resultFormat": "time_series"},
-        {"alias": "worker stops ($tag_outcome)", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_worker_stops\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"outcome\" fill(null)", "rawQuery": true, "refId": "B", "resultFormat": "time_series"},
-        {"alias": "shards completed", "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_shards_completed\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)", "rawQuery": true, "refId": "C", "resultFormat": "time_series"}
+        {
+          "alias": "worker starts",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_worker_starts\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "A",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "worker stops ($tag_outcome)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_worker_stops\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"outcome\" fill(null)",
+          "rawQuery": true,
+          "refId": "B",
+          "resultFormat": "time_series"
+        },
+        {
+          "alias": "shards completed",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_shards_completed\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "rawQuery": true,
+          "refId": "C",
+          "resultFormat": "time_series"
+        }
       ],
       "title": "Worker and shard lifecycle per interval",
       "type": "timeseries"
@@ -469,7 +1038,11 @@
   ],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["kinesis", "consumer", "influxql"],
+  "tags": [
+    "kinesis",
+    "consumer",
+    "influxql"
+  ],
   "templating": {
     "list": [
       {
@@ -488,7 +1061,10 @@
       {
         "allValue": ".*",
         "current": {},
-        "datasource": {"type": "influxdb", "uid": "${datasource}"},
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${datasource}"
+        },
         "definition": "SHOW TAG VALUES FROM \"kinesis_consumer_records_processed\" WITH KEY = \"stream\"",
         "hide": 0,
         "includeAll": true,
@@ -505,7 +1081,10 @@
       {
         "allValue": ".*",
         "current": {},
-        "datasource": {"type": "influxdb", "uid": "${datasource}"},
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${datasource}"
+        },
         "definition": "SHOW TAG VALUES FROM \"kinesis_consumer_millis_behind_latest\" WITH KEY = \"shard\" WHERE \"stream\" =~ /^$stream$/",
         "hide": 0,
         "includeAll": true,
@@ -521,7 +1100,10 @@
       }
     ]
   },
-  "time": {"from": "now-6h", "to": "now"},
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "browser",
   "title": "Kinesis Consumer Overview",

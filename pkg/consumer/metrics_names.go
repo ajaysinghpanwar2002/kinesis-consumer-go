@@ -14,17 +14,20 @@ const (
 	metricHandlerRetries      = "kinesis_consumer.handler_retries"
 	metricCheckpointsSaved    = "kinesis_consumer.checkpoints_saved"
 	metricCheckpointFailures  = "kinesis_consumer.checkpoint_failures"
+	metricGetRecordsFailures  = "kinesis_consumer.get_records_failures"
 
-	metricLeaseAcquired        = "kinesis_consumer.lease_acquired"
-	metricLeaseReleased        = "kinesis_consumer.lease_released"
-	metricLeaseReleaseFailures = "kinesis_consumer.lease_release_failures"
-	metricLeaseRenewals        = "kinesis_consumer.lease_renewals"
-	metricLeaseRenewalFailures = "kinesis_consumer.lease_renewal_failures"
-	metricRebalanceMoves       = "kinesis_consumer.rebalance_moves"
-	metricRebalanceSkips       = "kinesis_consumer.rebalance_skips"
-	metricShardsCompleted      = "kinesis_consumer.shards_completed"
-	metricWorkerStarts         = "kinesis_consumer.worker_starts"
-	metricWorkerStops          = "kinesis_consumer.worker_stops"
+	metricLeaseAcquired         = "kinesis_consumer.lease_acquired"
+	metricLeaseReleased         = "kinesis_consumer.lease_released"
+	metricLeaseReleaseFailures  = "kinesis_consumer.lease_release_failures"
+	metricLeaseRenewals         = "kinesis_consumer.lease_renewals"
+	metricLeaseRenewalFailures  = "kinesis_consumer.lease_renewal_failures"
+	metricHeartbeatFailures     = "kinesis_consumer.heartbeat_failures"
+	metricRebalanceMoves        = "kinesis_consumer.rebalance_moves"
+	metricRebalanceSkips        = "kinesis_consumer.rebalance_skips"
+	metricRebalancePassFailures = "kinesis_consumer.rebalance_pass_failures"
+	metricShardsCompleted       = "kinesis_consumer.shards_completed"
+	metricWorkerStarts          = "kinesis_consumer.worker_starts"
+	metricWorkerStops           = "kinesis_consumer.worker_stops"
 
 	metricOwnedShards        = "kinesis_consumer.owned_shards"
 	metricActiveWorkers      = "kinesis_consumer.active_workers"
@@ -57,6 +60,13 @@ const (
 	metricKindAcquire = "acquire"
 	metricKindClaim   = "claim"
 	metricKindShed    = "shed"
+)
+
+// get_records_failures kind tag values.
+const (
+	metricKindThrottle = "throttle"
+	metricKindExpired  = "expired"
+	metricKindOther    = "other"
 )
 
 // worker_stops outcome tag values.

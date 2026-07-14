@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ type recordingHeartbeatManager struct {
 
 	mu    sync.Mutex
 	calls []heartbeatCall
+	err   error
 	ch    chan heartbeatCall
 }
 
@@ -46,7 +48,7 @@ func (m *recordingHeartbeatManager) Heartbeat(_ context.Context, streamName, own
 	default:
 	}
 
-	return nil
+	return m.err
 }
 
 func TestStreamKey(t *testing.T) {
@@ -132,6 +134,79 @@ func TestWorkerHeartbeatLoopStopsOnCancel(t *testing.T) {
 	_ = waitHeartbeat(t, manager)
 	cancel()
 	waitDone(t, done)
+}
+
+func TestWorkerHeartbeatLoopWarnsAndCountsFailures(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("heartbeat boom")
+	manager := newRecordingHeartbeatManager()
+	manager.err = errBoom
+	logHandler := newCapturingHandler()
+	reporter := &recordingReporter{}
+	c := newTestHeartbeatConsumer(manager)
+	c.logger = slog.New(logHandler)
+	c.reporter = reporter
+	c.tuning.heartbeatInterval = time.Hour // only the immediate send fires
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runHeartbeatLoop(ctx, c)
+
+	_ = waitHeartbeat(t, manager)
+	// Wait for the emission before cancelling: a cancel that lands between the
+	// failed Heartbeat return and its ctx.Err() check is treated as shutdown
+	// and deliberately emits nothing.
+	deadline := time.Now().Add(time.Second)
+	for len(reporter.countersNamed(metricHeartbeatFailures)) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	waitDone(t, done)
+
+	failures := reporter.countersNamed(metricHeartbeatFailures)
+	if len(failures) != 1 {
+		t.Fatalf("heartbeat_failures calls = %d, want 1", len(failures))
+	}
+	assertCounterTags(t, failures[0], map[string]string{"stream": "stream"})
+
+	var warns []capturedRecord
+	for _, rec := range logHandler.snapshot() {
+		if rec.message == "worker heartbeat failed" {
+			warns = append(warns, rec)
+		}
+	}
+	if len(warns) != 1 {
+		t.Fatalf("heartbeat warn logs = %d, want 1", len(warns))
+	}
+	if warns[0].level != slog.LevelWarn {
+		t.Fatalf("heartbeat log level = %v, want %v", warns[0].level, slog.LevelWarn)
+	}
+	if warns[0].attrs["owner"] != "owner" {
+		t.Fatalf("heartbeat log owner = %q, want owner", warns[0].attrs["owner"])
+	}
+	if warns[0].attrs["error"] == "" {
+		t.Fatal("heartbeat log error attribute missing")
+	}
+}
+
+func TestWorkerHeartbeatLoopSuccessEmitsNoFailures(t *testing.T) {
+	t.Parallel()
+
+	manager := newRecordingHeartbeatManager()
+	reporter := &recordingReporter{}
+	c := newTestHeartbeatConsumer(manager)
+	c.reporter = reporter
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runHeartbeatLoop(ctx, c)
+
+	_ = waitHeartbeat(t, manager)
+	cancel()
+	waitDone(t, done)
+
+	if failures := reporter.countersNamed(metricHeartbeatFailures); len(failures) != 0 {
+		t.Fatalf("heartbeat_failures calls = %d, want 0", len(failures))
+	}
 }
 
 func newTestHeartbeatConsumer(manager *recordingHeartbeatManager) *Consumer {

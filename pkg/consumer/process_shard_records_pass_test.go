@@ -1218,3 +1218,123 @@ func TestProcessShardRecordsPassZeroIdleTimeDisablesPacing(t *testing.T) {
 		t.Fatalf("sleeps = %v, want none (pacing disabled at 0)", sleeps)
 	}
 }
+
+func TestProcessShardRecordsPassCountsGetRecordsFailuresByKind(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		err      error
+		wantKind string
+		fatal    bool
+	}{
+		{name: "throttle", err: &types.ProvisionedThroughputExceededException{}, wantKind: "throttle"},
+		{name: "limit exceeded is throttle", err: &types.LimitExceededException{}, wantKind: "throttle"},
+		{name: "kms throttling is throttle", err: &types.KMSThrottlingException{}, wantKind: "throttle"},
+		{name: "generic throttling code is throttle", err: &smithy.GenericAPIError{Code: "ThrottlingException", Fault: smithy.FaultClient}, wantKind: "throttle"},
+		{name: "expired iterator", err: &types.ExpiredIteratorException{}, wantKind: "expired"},
+		{name: "server fault is other", err: &smithy.GenericAPIError{Code: "InternalFailure", Fault: smithy.FaultServer}, wantKind: "other"},
+		{name: "fatal client fault is other", err: &smithy.GenericAPIError{Code: "InvalidArgumentException", Fault: smithy.FaultClient}, wantKind: "other", fatal: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &fakeKinesisClient{
+				getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+					ShardIterator: aws.String("fresh-iterator"),
+				},
+				getRecordsErrs: []error{tt.err}, // first read fails
+				getRecordsOuts: []*kinesis.GetRecordsOutput{
+					{NextShardIterator: aws.String("tip-iterator")}, // recovery read: caught up
+				},
+			}
+			reporter := &recordingReporter{}
+			c := &Consumer{
+				logger:   slog.New(slog.DiscardHandler),
+				reporter: reporter,
+				cfg:      Config{StreamName: "stream"},
+				client:   client,
+				store:    &fakeCheckpointSaveStore{},
+				tuning:   tuningConfig{checkpointEvery: 10},
+				sleepFn: func(ctx context.Context, d time.Duration) error {
+					_ = ctx
+					_ = d
+					return nil
+				},
+				handler: func(ctx context.Context, record Record) error {
+					_ = ctx
+					_ = record
+					return nil
+				},
+			}
+
+			_, _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "held-iterator")
+			if tt.fatal && err == nil {
+				t.Fatal("processShardRecordsPass() error = nil, want fatal error")
+			}
+			if !tt.fatal && err != nil {
+				t.Fatalf("processShardRecordsPass() error = %v, want nil (survived)", err)
+			}
+
+			failures := reporter.countersNamed(metricGetRecordsFailures)
+			if len(failures) != 1 {
+				t.Fatalf("get_records_failures calls = %d, want 1", len(failures))
+			}
+			assertCounterTags(t, failures[0], map[string]string{
+				"stream": "stream",
+				"shard":  "shard-1",
+				"kind":   tt.wantKind,
+			})
+		})
+	}
+}
+
+// cancelingGetRecordsClient cancels the consumer context from inside the
+// GetRecords call and returns an error, modeling shutdown arriving while a
+// read is in flight.
+type cancelingGetRecordsClient struct {
+	*fakeKinesisClient
+	cancel context.CancelFunc
+}
+
+func (c *cancelingGetRecordsClient) GetRecords(ctx context.Context, params *kinesis.GetRecordsInput, optFns ...func(*kinesis.Options)) (*kinesis.GetRecordsOutput, error) {
+	_ = ctx
+	_ = params
+	_ = optFns
+	c.cancel()
+	return nil, context.Canceled
+}
+
+func TestProcessShardRecordsPassNoGetRecordsFailureOnShutdownCancellation(t *testing.T) {
+	t.Parallel()
+
+	// The pass is entered with a live context; shutdown lands mid-read and the
+	// call fails. That is cancellation, not a read failure: no counter, clean
+	// return, held iterator preserved.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reporter := &recordingReporter{}
+	client := &cancelingGetRecordsClient{fakeKinesisClient: &fakeKinesisClient{}, cancel: cancel}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: reporter,
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		tuning:   tuningConfig{checkpointEvery: 10},
+	}
+
+	lastSeq, count, nextIterator, err := c.processShardRecordsPass(ctx, "shard-1", 0, "held-iterator")
+	if err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	}
+	if lastSeq != "" || count != 0 {
+		t.Fatalf("lastSeq, count = %q, %d, want empty, 0", lastSeq, count)
+	}
+	if nextIterator != "held-iterator" {
+		t.Fatalf("nextIterator = %q, want the held iterator preserved", nextIterator)
+	}
+	if failures := reporter.countersNamed(metricGetRecordsFailures); len(failures) != 0 {
+		t.Fatalf("get_records_failures calls = %d, want 0 (shutdown cancellation)", len(failures))
+	}
+}

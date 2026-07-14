@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
@@ -90,6 +91,14 @@ func (c *Consumer) refreshAndRebalanceShardWorkersLoop(
 					}
 					return ctxErr
 				}
+				// A failed pass retries at the next tick, so it is survivable —
+				// but never silent: a half-broken lease backend would otherwise
+				// stop all rebalancing with zero diagnostics. Shard-sync errors
+				// (above) stay fatal by design: a failed sync means shard
+				// discovery is broken and resharding becomes invisible, which no
+				// later tick can be trusted to repair.
+				c.reporter.Counter(metricRebalancePassFailures, 1, c.streamTags())
+				c.logger.Warn("rebalance pass failed", slog.Any("error", err))
 			}
 			rebalanceTimer.Reset(nextRebalanceDelay())
 		}

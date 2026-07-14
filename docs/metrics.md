@@ -104,7 +104,7 @@ catalog.
 | `shard` | Kinesis shard ID for the operation or worker |
 | `handler` | `record` or `batch` |
 | `policy` | `skip` (currently used only by `records_skipped`) |
-| `kind` | `acquire`, `claim`, or `shed` for rebalance outcomes |
+| `kind` | `acquire`, `claim`, or `shed` for rebalance outcomes; `throttle`, `expired`, or `other` for GetRecords failures |
 | `outcome` | `clean` or `error` for worker stops |
 
 Owner and donor identifiers are deliberately not tags. Default owner IDs
@@ -121,6 +121,7 @@ batch.
 | --- | --- | --- | --- |
 | `kinesis_consumer.records_processed` | records | `stream`, `shard`, `handler` | A record handler succeeds, or a batch handler succeeds (adds the batch size). Records handled by skip or DLQ policy are excluded. |
 | `kinesis_consumer.pages_fetched` | pages | `stream`, `shard` | A `GetRecords` call succeeds, including an empty page. |
+| `kinesis_consumer.get_records_failures` | failures | `stream`, `shard`, `kind` | A `GetRecords` call fails, counted per attempt: `throttle` (throughput/limit/KMS throttling), `expired` (expired iterator, recovered in place), or `other` (server faults, network errors, and fatal client errors). Shutdown cancellation is not counted. Pair with `pages_fetched` for a failure ratio. |
 | `kinesis_consumer.records_skipped` | records | `stream`, `shard`, `policy=skip` | Handler retries are exhausted and skip policy accepts the record or page (adds the page size in batch mode). |
 | `kinesis_consumer.dlq_records_published` | records | `stream`, `shard` | One poison record is successfully published. A failed publish is not counted. |
 | `kinesis_consumer.handler_retries` | retry attempts | `stream`, `shard`, `handler` | A handler attempt after the first is about to run. |
@@ -131,6 +132,8 @@ batch.
 | `kinesis_consumer.lease_release_failures` | failures | `stream`, `shard` | A worker's bounded shutdown release fails or times out. |
 | `kinesis_consumer.lease_renewals` | renewals | `stream`, `shard` | A scheduled lease renewal succeeds. |
 | `kinesis_consumer.lease_renewal_failures` | failures | `stream`, `shard` | A scheduled renewal fails for a reason other than shutdown cancellation. Shutdown cancellation counts neither success nor failure. |
+| `kinesis_consumer.heartbeat_failures` | failures | `stream` | A worker-liveness heartbeat send fails (live context). Sustained failures mean peers will treat this worker as dead and claim its shards away. |
+| `kinesis_consumer.rebalance_pass_failures` | failures | `stream` | A rebalance pass returns an error and is skipped until the next tick (live context). Shard-sync failures are not counted here — they stop the consumer. |
 | `kinesis_consumer.rebalance_moves` | moves | `stream`, `shard`, `kind` | An unowned shard is acquired, a donor shard is claimed, or a local worker is selected and stopped for shedding. |
 | `kinesis_consumer.rebalance_skips` | skips | `stream`, `shard`, `kind` | A planned `acquire` or `claim` does not obtain a lease, typically because ownership changed concurrently. There is no `shed` skip emission. |
 | `kinesis_consumer.shards_completed` | shards | `stream`, `shard` | A closed shard's `SHARD_END` completion checkpoint is saved successfully. |
