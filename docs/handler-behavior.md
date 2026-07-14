@@ -96,7 +96,10 @@ metadata.
 
 DLQ publishing is part of handler processing. A publisher should honor `ctx`,
 return useful errors, and be safe for repeated calls. The consumer is
-at-least-once, so downstream DLQ handling should tolerate duplicates.
+at-least-once — replays after a crash and brief dual delivery during shard
+ownership transfers are both possible (see the ownership transfer windows in
+[features.md](features.md)) — so handlers and downstream DLQ handling should
+tolerate duplicates.
 
 ## Shard Concurrency and Ordering
 

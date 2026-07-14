@@ -118,9 +118,11 @@ consumer runs with no options at all.
 
 Leasing is automatic: run **more than one copy** of this program against the
 same stream and the same Valkey, and shards spread across the workers. Each
-worker holds an exclusive lease per shard and the pool fair-share rebalances as
-workers join or leave. Nothing extra to configure — it falls out of passing the
-Valkey store (which satisfies `lease.Provider`).
+worker holds a lease per shard (exclusive in steady state; ownership
+transfers open short, bounded dual-processing windows — see the ownership
+transfer windows in [features.md](features.md)) and the pool fair-share
+rebalances as workers join or leave. Nothing extra to configure — it falls
+out of passing the Valkey store (which satisfies `lease.Provider`).
 
 Lease keys live under `<checkpointPrefix>-lease` (here `my-app-lease`), adjacent
 to the checkpoint keys under `my-app`.

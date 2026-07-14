@@ -110,6 +110,11 @@ func (c *Consumer) executeRebalanceAcquireAction(
 	return true, nil
 }
 
+// executeRebalanceClaimAction claims the shard's lease from the donor and
+// starts a worker immediately; the donor keeps processing until its next
+// renew fails with ErrNotOwned. That dual-processing window is part of the
+// documented at-least-once contract (docs/features.md, "Ownership transfer
+// windows"): advance-only checkpoints bound it to duplicates, never rollback.
 func (c *Consumer) executeRebalanceClaimAction(
 	ctx context.Context,
 	shardID string,

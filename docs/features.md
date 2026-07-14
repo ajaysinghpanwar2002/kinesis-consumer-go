@@ -74,9 +74,11 @@ Leasing turns on automatically when the checkpoint store also implements
 Run multiple consumer processes against the same stream and store and shards
 spread across them.
 
-- **Leases:** each shard is owned by exactly one worker via an acquire / renew /
-  release lifecycle backed by owner-checked operations, so ownership transfers
-  stay safe against concurrent workers.
+- **Leases:** each shard is owned by one worker in steady state via an
+  acquire / renew / release lifecycle backed by owner-checked operations, so
+  ownership transfers stay safe against concurrent workers. Exclusivity is
+  time-bounded, not absolute — see
+  [Ownership transfer windows](#ownership-transfer-windows).
 - **Worker heartbeats:** each worker periodically records liveness
   (`WithHeartbeat`, default 5s interval / 20s TTL). Heartbeat state sizes each
   worker's fair share; a worker whose heartbeat lapses is treated as inactive.
@@ -99,6 +101,39 @@ spread across them.
   after its lease key's TTL lapses (the shard becomes unowned and is acquired on
   a later tick).
 
+### Ownership transfer windows
+
+Every ownership transfer opens a short window during which two workers may
+process the same shard. This is a deliberate part of the at-least-once
+contract — the library bounds the windows instead of trying to eliminate
+them:
+
+- **Rebalance claim:** the taker claims the lease and starts immediately; the
+  donor notices at its next lease renew (within one heartbeat interval,
+  default 5s) plus whatever in-flight handler work it finishes first.
+- **Failed-worker reclaim:** a crashed or partitioned worker's shard is
+  reclaimed once its lease TTL lapses (default 20s). If the old worker is
+  still running but cannot reach the lease backend, its renew attempts are
+  retried as transient failures until the TTL budget is exhausted, then the
+  worker stops; if it reaches the backend after the reclaim, the next renew
+  fails with `ErrNotOwned` and the worker stops immediately.
+- **Hung renew (zombie):** a worker whose renew call hangs without erroring is
+  fenced by a local lease-validity watchdog within the lease TTL plus two
+  heartbeat intervals (default 30s).
+
+Each bound above is the time until the old worker is *told* to stop; add the
+time its in-flight handler work takes to observe cancellation for the full
+window.
+
+During any of these windows the effect is bounded duplicate delivery, never
+data loss or checkpoint rollback: checkpoint saves are advance-only, so a
+fenced-out worker's late write cannot regress progress recorded by the new
+owner or overwrite a `SHARD_END` completion marker. Handlers must tolerate
+duplicates (see the delivery guarantee under
+[Checkpointing](#checkpointing)); if your workload needs cross-worker mutual
+exclusion or exactly-once effects, enforce them downstream (idempotent
+writes, conditional updates keyed by sequence number).
+
 ## Checkpointing
 
 - **Granularity:** progress is saved per successfully processed `GetRecords`
@@ -111,8 +146,10 @@ spread across them.
 - **Catch-up flush:** when a worker catches up to the shard tip, it flushes its
   pending position so a later restart or failover resumes from there.
 - **Delivery guarantee:** at-least-once. A crash between handler success and
-  checkpoint can re-deliver the in-flight page, so handlers should tolerate
-  duplicates.
+  checkpoint can re-deliver the in-flight page, and an ownership transfer can
+  briefly deliver the same records to two workers (see
+  [Ownership transfer windows](#ownership-transfer-windows)), so handlers
+  must tolerate duplicates.
 
 ## Handlers, retries, and failure policy
 

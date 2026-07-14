@@ -32,8 +32,9 @@ type Config = backend.LeaseConfig
 // Option customizes a Valkey-backed lease manager.
 type Option func(*Config) error
 
-// Manager coordinates exclusive shard ownership across consumer workers using
-// Valkey. Lease keys are written as:
+// Manager coordinates shard ownership across consumer workers using Valkey
+// (exclusive in steady state — see the lease.Manager contract for the
+// ownership-transfer windows). Lease keys are written as:
 //
 //	<KeyPrefix>:<streamName>:<shardID>
 //

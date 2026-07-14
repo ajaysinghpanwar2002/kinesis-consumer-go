@@ -8,7 +8,8 @@ import (
 )
 
 // MemoryManager is an in-memory Manager implementation intended for tests and
-// local development. It coordinates exclusive shard ownership and worker
+// local development. It coordinates shard ownership (exclusive in steady
+// state — see the Manager contract for the transfer windows) and worker
 // liveness in process memory, with TTL expiry driven by an injectable clock.
 //
 // Its semantics mirror the Redis reference backend: a lease can be acquired
