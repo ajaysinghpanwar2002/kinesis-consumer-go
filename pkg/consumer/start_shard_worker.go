@@ -26,12 +26,12 @@ func (c *Consumer) startRegisteredShardWorker(
 		workerBaseCtx = context.Background()
 	}
 	workerCtx, stopWorker := context.WithCancel(workerBaseCtx)
-	workers.add(shardID, stopWorker)
+	workerGen := workers.add(shardID, stopWorker)
 
 	workerWG.Add(1)
 	go func() {
 		defer workerWG.Done()
-		defer workers.done(shardID)
+		defer workers.done(shardID, workerGen)
 
 		c.reporter.Counter(metricWorkerStarts, 1, c.shardTags(shardID))
 		c.logger.Info("shard worker started", slog.String("shard", shardID))

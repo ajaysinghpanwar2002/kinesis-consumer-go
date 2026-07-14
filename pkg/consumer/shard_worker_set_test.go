@@ -12,12 +12,15 @@ func TestShardWorkerSetAddHasDone(t *testing.T) {
 	workers := newShardWorkerSet()
 	var cancelled int32
 
-	workers.add("shard-1", func() { atomic.AddInt32(&cancelled, 1) })
+	gen := workers.add("shard-1", func() { atomic.AddInt32(&cancelled, 1) })
+	if gen == 0 {
+		t.Fatal("add(shard-1) generation = 0, want non-zero")
+	}
 	if !workers.has("shard-1") {
 		t.Fatal("has(shard-1) = false, want true")
 	}
 
-	workers.done("shard-1")
+	workers.done("shard-1", gen)
 	if workers.has("shard-1") {
 		t.Fatal("has(shard-1) = true after done, want false")
 	}
@@ -32,8 +35,12 @@ func TestShardWorkerSetAddIgnoresEmptyShardIDAndNilCancel(t *testing.T) {
 	workers := newShardWorkerSet()
 	var cancelled int32
 
-	workers.add("", func() { atomic.AddInt32(&cancelled, 1) })
-	workers.add("shard-1", nil)
+	if gen := workers.add("", func() { atomic.AddInt32(&cancelled, 1) }); gen != 0 {
+		t.Fatalf("add(empty) generation = %d, want 0", gen)
+	}
+	if gen := workers.add("shard-1", nil); gen != 0 {
+		t.Fatalf("add(shard-1, nil) generation = %d, want 0", gen)
+	}
 
 	if workers.has("") {
 		t.Fatal("has(empty) = true, want false")
@@ -43,6 +50,53 @@ func TestShardWorkerSetAddIgnoresEmptyShardIDAndNilCancel(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&cancelled); got != 0 {
 		t.Fatalf("cancel calls = %d, want 0", got)
+	}
+}
+
+func TestShardWorkerSetDoneWithZeroGenerationRemovesNothing(t *testing.T) {
+	t.Parallel()
+
+	workers := newShardWorkerSet()
+	workers.add("shard-1", func() {})
+
+	workers.done("shard-1", 0)
+	if !workers.has("shard-1") {
+		t.Fatal("has(shard-1) = false after done with generation 0, want true")
+	}
+}
+
+func TestShardWorkerSetStaleDoneDoesNotDeregisterReplacement(t *testing.T) {
+	t.Parallel()
+
+	workers := newShardWorkerSet()
+	var oldCancelled int32
+	var newCancelled int32
+
+	// Old worker is stopped (shed), the shard is re-acquired, and only then
+	// does the old worker goroutine's deferred done run — after its lease
+	// release. That stale done must not delete the replacement registration.
+	oldGen := workers.add("shard-1", func() { atomic.AddInt32(&oldCancelled, 1) })
+	if !workers.stop("shard-1") {
+		t.Fatal("stop(shard-1) = false, want true")
+	}
+	newGen := workers.add("shard-1", func() { atomic.AddInt32(&newCancelled, 1) })
+	if newGen == oldGen {
+		t.Fatalf("replacement generation = %d, want different from old generation %d", newGen, oldGen)
+	}
+
+	workers.done("shard-1", oldGen)
+
+	if !workers.has("shard-1") {
+		t.Fatal("has(shard-1) = false after stale done, want true (replacement must survive)")
+	}
+	if !workers.stop("shard-1") {
+		t.Fatal("stop(shard-1) = false after stale done, want true (replacement must stay stoppable)")
+	}
+	if got := atomic.LoadInt32(&oldCancelled); got != 1 {
+		t.Fatalf("old worker cancel calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&newCancelled); got != 1 {
+		t.Fatalf("replacement cancel calls = %d, want 1", got)
 	}
 }
 
@@ -88,8 +142,9 @@ func TestShardWorkerSetStopCancelsOutsideLock(t *testing.T) {
 	workers := newShardWorkerSet()
 	done := make(chan struct{})
 
-	workers.add("shard-1", func() {
-		workers.done("shard-1")
+	var gen uint64
+	gen = workers.add("shard-1", func() {
+		workers.done("shard-1", gen)
 		close(done)
 	})
 
@@ -145,8 +200,9 @@ func TestShardWorkerSetStopAllCancelsOutsideLock(t *testing.T) {
 	workers := newShardWorkerSet()
 	done := make(chan struct{})
 
-	workers.add("shard-1", func() {
-		workers.done("shard-1")
+	var gen uint64
+	gen = workers.add("shard-1", func() {
+		workers.done("shard-1", gen)
 		close(done)
 	})
 

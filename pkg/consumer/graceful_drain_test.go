@@ -15,13 +15,13 @@ func TestDrainShardWorkersWaitsForNaturalExitWithoutCancel(t *testing.T) {
 
 	workers := newShardWorkerSet()
 	var cancelled int32
-	workers.add("shard-a", func() { atomic.AddInt32(&cancelled, 1) })
+	gen := workers.add("shard-a", func() { atomic.AddInt32(&cancelled, 1) })
 
 	var workerWG sync.WaitGroup
 	workerWG.Add(1)
 	go func() {
 		defer workerWG.Done()
-		defer workers.done("shard-a")
+		defer workers.done("shard-a", gen)
 		time.Sleep(5 * time.Millisecond)
 	}()
 
@@ -41,13 +41,13 @@ func TestDrainShardWorkersZeroTimeoutWaitsIndefinitely(t *testing.T) {
 
 	workers := newShardWorkerSet()
 	var cancelled int32
-	workers.add("shard-a", func() { atomic.AddInt32(&cancelled, 1) })
+	gen := workers.add("shard-a", func() { atomic.AddInt32(&cancelled, 1) })
 
 	var workerWG sync.WaitGroup
 	workerWG.Add(1)
 	go func() {
 		defer workerWG.Done()
-		defer workers.done("shard-a")
+		defer workers.done("shard-a", gen)
 		time.Sleep(5 * time.Millisecond)
 	}()
 
@@ -104,12 +104,12 @@ func TestConsumerDrainShardWorkersSetsDrainStateOnlyWhileWaiting(t *testing.T) {
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
 	workerWG.Add(1)
-	workers.add("shard-a", func() {})
+	gen := workers.add("shard-a", func() {})
 
 	observedDraining := make(chan struct{})
 	go func() {
 		defer workerWG.Done()
-		defer workers.done("shard-a")
+		defer workers.done("shard-a", gen)
 
 		for !c.isDraining() {
 			time.Sleep(time.Millisecond)

@@ -5,25 +5,36 @@ import (
 	"sync"
 )
 
+type shardWorkerRegistration struct {
+	gen    uint64
+	cancel context.CancelFunc
+}
+
 type shardWorkerSet struct {
 	mu      sync.RWMutex
-	workers map[string]context.CancelFunc
+	nextGen uint64
+	workers map[string]shardWorkerRegistration
 }
 
 func newShardWorkerSet() *shardWorkerSet {
 	return &shardWorkerSet{
-		workers: make(map[string]context.CancelFunc),
+		workers: make(map[string]shardWorkerRegistration),
 	}
 }
 
-func (s *shardWorkerSet) add(shardID string, cancel context.CancelFunc) {
+// add registers the worker and returns its generation, which the worker must
+// pass back to done. Generations start at 1; the 0 returned for ignored
+// registrations never matches a stored entry.
+func (s *shardWorkerSet) add(shardID string, cancel context.CancelFunc) uint64 {
 	if shardID == "" || cancel == nil {
-		return
+		return 0
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.workers[shardID] = cancel
+	s.nextGen++
+	s.workers[shardID] = shardWorkerRegistration{gen: s.nextGen, cancel: cancel}
+	return s.nextGen
 }
 
 func (s *shardWorkerSet) has(shardID string) bool {
@@ -33,32 +44,39 @@ func (s *shardWorkerSet) has(shardID string) bool {
 	return ok
 }
 
-func (s *shardWorkerSet) done(shardID string) {
+// done removes the registration only if it still belongs to the caller's
+// generation. A worker's deferred done runs after lease release (up to
+// several seconds after its stop), so the shard may already be registered to
+// a replacement worker — deleting unconditionally would orphan that
+// replacement from has/stop/stopAll.
+func (s *shardWorkerSet) done(shardID string, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.workers, shardID)
+	if reg, ok := s.workers[shardID]; ok && reg.gen == gen {
+		delete(s.workers, shardID)
+	}
 }
 
 func (s *shardWorkerSet) stop(shardID string) bool {
 	s.mu.Lock()
-	cancel := s.workers[shardID]
+	reg, ok := s.workers[shardID]
 	delete(s.workers, shardID)
 	s.mu.Unlock()
 
-	if cancel == nil {
+	if !ok {
 		return false
 	}
-	cancel()
+	reg.cancel()
 	return true
 }
 
 func (s *shardWorkerSet) stopAll() {
 	s.mu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(s.workers))
-	for _, cancel := range s.workers {
-		cancels = append(cancels, cancel)
+	for _, reg := range s.workers {
+		cancels = append(cancels, reg.cancel)
 	}
-	s.workers = make(map[string]context.CancelFunc)
+	s.workers = make(map[string]shardWorkerRegistration)
 	s.mu.Unlock()
 
 	for _, cancel := range cancels {
