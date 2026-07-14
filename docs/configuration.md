@@ -78,8 +78,8 @@ The Valkey checkpoint store doubles as the lease provider. Construct it with
 
 | Option | Parameters | Default | Effect |
 | --- | --- | --- | --- |
-| `WithKeyPrefix` | `prefix string` | `kinesis-checkpoint` | Prefix for checkpoint keys. Also the base for the derived lease prefix. |
-| `WithLeasePrefix` | `prefix string` | `<checkpointPrefix>-lease` | Prefix for lease keys. Defaults to the checkpoint prefix + `-lease`. |
+| `WithKeyPrefix` | `prefix string` | `kinesis-checkpoint` | Prefix for checkpoint keys. Also the base for the derived lease prefix when customized. |
+| `WithLeasePrefix` | `prefix string` | `kinesis-lease` (default checkpoint prefix) / `<checkpointPrefix>-lease` (custom) | Prefix for lease keys. The default checkpoint prefix maps to the shared standalone default so both lease-manager construction paths coordinate in one namespace; a custom checkpoint prefix derives `<prefix>-lease`. |
 | `WithPingTimeout` | `timeout time.Duration` | `5s` | Timeout for the connectivity check performed in `New`. |
 | `WithDB` | `db int` | `0` | Valkey database index (standalone only; not supported with cluster). |
 | `WithTLS` | — | off | Connect over TLS. |
@@ -97,7 +97,29 @@ Valkey:
 | Key | Format | Default prefix |
 | --- | --- | --- |
 | Checkpoint | `<checkpointPrefix>:<stream>:<shard>` | `kinesis-checkpoint` |
-| Lease | `<leasePrefix>:<stream>:<shard>` | `<checkpointPrefix>-lease` |
-| Worker heartbeat | `<leasePrefix>-worker:<stream>:<owner>` | `<checkpointPrefix>-lease-worker` |
+| Lease | `<leasePrefix>:<stream>:<shard>` | `kinesis-lease` |
+| Worker heartbeat | `<leasePrefix>-worker:<stream>:<owner>` | `kinesis-lease-worker` |
 
 `<stream>` is the `StreamName` or `StreamARN`, whichever the `Config` sets.
+
+The default lease prefix is the same whether the manager is store-provided or
+built standalone with `valkeylease.NewManager`, so default-configured workers
+always coordinate in one namespace. If you customize the checkpoint prefix,
+the store derives `<checkpointPrefix>-lease` — any standalone manager in that
+deployment must be given the matching prefix explicitly, or its workers will
+lease in a separate namespace and process every shard twice.
+
+### Migration note: default lease prefix change
+
+Store-provided lease managers with default prefixes previously wrote lease
+and worker-heartbeat keys under `kinesis-checkpoint-lease(-worker)`; they now
+use `kinesis-lease(-worker)`, matching the standalone default. When upgrading
+a deployment that used the old default:
+
+- Checkpoints are unaffected; lease and heartbeat keys are ephemeral TTL
+  state that simply regrows under the new prefix.
+- Do **not** roll the upgrade gradually: old and new workers would
+  coordinate in different namespaces and dual-process every shard until the
+  last old worker stops. Stop all workers, upgrade, then restart.
+- To defer the migration, pin the old namespace explicitly with
+  `WithLeasePrefix("kinesis-checkpoint-lease")`.

@@ -69,7 +69,7 @@ func TestFinalizeCheckpointConfigDefaultsAndPreservation(t *testing.T) {
 			want: CheckpointConfig{
 				Addr:        "addr",
 				KeyPrefix:   "kinesis-checkpoint",
-				LeasePrefix: "kinesis-checkpoint-lease",
+				LeasePrefix: "kinesis-lease",
 				PingTimeout: 5 * time.Second,
 			},
 		},
@@ -100,7 +100,7 @@ func TestFinalizeCheckpointConfigDefaultsAndPreservation(t *testing.T) {
 				Addr:        "addr",
 				UseCluster:  true,
 				KeyPrefix:   "kinesis-checkpoint",
-				LeasePrefix: "kinesis-checkpoint-lease",
+				LeasePrefix: "kinesis-lease",
 				PingTimeout: 5 * time.Second,
 			},
 		},
@@ -111,7 +111,7 @@ func TestFinalizeCheckpointConfigDefaultsAndPreservation(t *testing.T) {
 				Addr:        "addr",
 				DB:          2,
 				KeyPrefix:   "kinesis-checkpoint",
-				LeasePrefix: "kinesis-checkpoint-lease",
+				LeasePrefix: "kinesis-lease",
 				PingTimeout: time.Second,
 			},
 		},
@@ -149,7 +149,8 @@ func TestDefaultLeasePrefix(t *testing.T) {
 		want             string
 	}{
 		{name: "empty falls back to standalone default", checkpointPrefix: "", want: "kinesis-lease"},
-		{name: "derives from checkpoint prefix", checkpointPrefix: "kinesis-checkpoint", want: "kinesis-checkpoint-lease"},
+		{name: "default checkpoint prefix maps to the shared standalone default", checkpointPrefix: "kinesis-checkpoint", want: "kinesis-lease"},
+		{name: "custom checkpoint prefix derives an adjacent lease prefix", checkpointPrefix: "custom", want: "custom-lease"},
 	}
 
 	for _, tt := range tests {
@@ -160,6 +161,27 @@ func TestDefaultLeasePrefix(t *testing.T) {
 				t.Fatalf("DefaultLeasePrefix(%q) = %q, want %q", tt.checkpointPrefix, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestDefaultPrefixesAgreeAcrossConstructionPaths pins COORD-4: a default
+// standalone lease manager and a default store-provided one must coordinate
+// in the same key namespace, or two such workers each acquire every shard.
+func TestDefaultPrefixesAgreeAcrossConstructionPaths(t *testing.T) {
+	t.Parallel()
+
+	leaseCfg, err := FinalizeLeaseConfig(DefaultLeaseConfig("addr"), "valkey")
+	if err != nil {
+		t.Fatalf("FinalizeLeaseConfig error = %v, want nil", err)
+	}
+	checkpointCfg, err := FinalizeCheckpointConfig(DefaultCheckpointConfig("addr"), "valkey")
+	if err != nil {
+		t.Fatalf("FinalizeCheckpointConfig error = %v, want nil", err)
+	}
+
+	if leaseCfg.KeyPrefix != checkpointCfg.LeasePrefix {
+		t.Fatalf("standalone default lease prefix %q != store-derived default lease prefix %q; the construction paths coordinate in different namespaces",
+			leaseCfg.KeyPrefix, checkpointCfg.LeasePrefix)
 	}
 }
 

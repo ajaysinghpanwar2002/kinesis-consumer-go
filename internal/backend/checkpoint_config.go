@@ -71,14 +71,19 @@ func CheckpointKey(prefix, streamName, shardID string) string {
 	return fmt.Sprintf("%s:%s:%s", prefix, streamName, shardID)
 }
 
-// DefaultLeasePrefix derives a lease prefix from a checkpoint prefix so lease
-// keys stay adjacent to checkpoint keys. An empty checkpoint prefix falls back
-// to the standalone lease default.
+// DefaultLeasePrefix derives a lease prefix from a checkpoint prefix. The
+// default (or empty) checkpoint prefix maps to the shared standalone lease
+// default, so a store-provided manager and a default standalone manager
+// coordinate in the same namespace — different defaults would let two such
+// workers each acquire every shard (silent dual processing). A custom
+// checkpoint prefix derives `<prefix>-lease` so lease keys stay adjacent to
+// checkpoint keys under prefix-based tenant isolation; standalone managers in
+// such deployments must be given the matching prefix explicitly.
 func DefaultLeasePrefix(checkpointPrefix string) string {
-	if checkpointPrefix != "" {
-		return checkpointPrefix + "-lease"
+	if checkpointPrefix == "" || checkpointPrefix == defaultCheckpointKeyPrefix {
+		return defaultLeasePrefix
 	}
-	return defaultLeasePrefix
+	return checkpointPrefix + "-lease"
 }
 
 // SetCheckpointKeyPrefix overrides the checkpoint key prefix, rejecting an

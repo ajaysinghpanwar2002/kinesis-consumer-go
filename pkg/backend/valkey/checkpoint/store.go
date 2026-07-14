@@ -198,8 +198,9 @@ func WithKeyPrefix(prefix string) Option {
 }
 
 // WithLeasePrefix overrides the prefix used for lease keys created by
-// LeaseManager. When unset, the lease prefix is derived from the checkpoint key
-// prefix (for example "kinesis-checkpoint-lease").
+// LeaseManager. When unset, the default checkpoint prefix maps to the shared
+// standalone lease default ("kinesis-lease"), and a custom checkpoint prefix
+// derives an adjacent lease prefix (for example "custom-lease").
 func WithLeasePrefix(prefix string) Option {
 	return func(cfg *Config) error {
 		return backend.SetCheckpointLeasePrefix(cfg, prefix)

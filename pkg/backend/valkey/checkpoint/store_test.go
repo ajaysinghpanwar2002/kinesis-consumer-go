@@ -231,10 +231,11 @@ func TestStoreLeaseManagerDefaultPrefix(t *testing.T) {
 		t.Fatalf("Acquire = (%v, %v, %v), want (lease, true, nil)", lease, ok, err)
 	}
 
-	// The lease prefix is derived from the default checkpoint prefix, so leases
-	// are written under "kinesis-checkpoint-lease". Assert the raw key to prove
-	// the store wired its lease prefix into the manager.
-	key := backend.LeaseKey("kinesis-checkpoint-lease", "stream", "shard-1")
+	// The default checkpoint prefix maps to the shared standalone lease
+	// default, so leases are written under "kinesis-lease" — the same
+	// namespace a default standalone manager uses. Assert the raw key to
+	// prove the store wired its lease prefix into the manager.
+	key := backend.LeaseKey("kinesis-lease", "stream", "shard-1")
 	if got, err := server.Get(key); err != nil || got != "owner-1" {
 		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", key, got, err)
 	}
@@ -262,8 +263,8 @@ func TestStoreLeaseManagerWithLeasePrefix(t *testing.T) {
 		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", key, got, err)
 	}
 
-	// The default-derived lease key must not be used when a prefix is set.
-	derived := backend.LeaseKey("kinesis-checkpoint-lease", "stream", "shard-1")
+	// The default lease key must not be used when a prefix is set.
+	derived := backend.LeaseKey("kinesis-lease", "stream", "shard-1")
 	if _, err := server.Get(derived); err == nil {
 		t.Fatalf("unexpected lease at default-derived key %q", derived)
 	}
@@ -287,7 +288,7 @@ func TestStoreLeaseManagerNamespaceIndependentFromCheckpoints(t *testing.T) {
 	if got, err := server.Get(checkpointKey); err != nil || got != "seq-1" {
 		t.Fatalf("server.Get(%q) = (%q, %v), want (\"seq-1\", nil)", checkpointKey, got, err)
 	}
-	leaseKey := backend.LeaseKey("kinesis-checkpoint-lease", "stream", "shard-1")
+	leaseKey := backend.LeaseKey("kinesis-lease", "stream", "shard-1")
 	if got, err := server.Get(leaseKey); err != nil || got != "owner-1" {
 		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", leaseKey, got, err)
 	}
