@@ -1,6 +1,8 @@
 // Package checkpoint provides a Valkey-backed implementation of the core
 // checkpoint.Store contract. Checkpoints are stored as plain string values so
-// sequence numbers and SHARD_END markers persist verbatim.
+// sequence numbers and SHARD_END markers persist verbatim; saves are
+// advance-only (atomic compare-and-set), so a stale writer can neither
+// regress a checkpoint nor overwrite a completion marker.
 package checkpoint
 
 import (
@@ -111,10 +113,16 @@ func (s *Store) Get(ctx context.Context, streamName, shardID string) (string, er
 	return val, nil
 }
 
-// Save stores the sequence number (or SHARD_END marker) for a shard verbatim.
+// Save stores the sequence number (or SHARD_END marker) for a shard verbatim,
+// but only when it advances the checkpoint: a stale or duplicate value is
+// silently discarded and a completed (SHARD_END-prefixed) value is never
+// overwritten, per the checkpoint.Store contract. The advance-only
+// compare-and-set runs atomically as a Lua script.
 func (s *Store) Save(ctx context.Context, streamName, shardID, sequenceNumber string) error {
 	key := s.key(streamName, shardID)
-	if err := s.client.Do(ctx, s.client.B().Set().Key(key).Value(sequenceNumber).Build()).Error(); err != nil {
+	cmd := s.client.B().Eval().Script(backend.CheckpointSaveScript).Numkeys(1).Key(key).
+		Arg(sequenceNumber).Arg(corecheckpoint.CompletedPrefix).Build()
+	if err := s.client.Do(ctx, cmd).Error(); err != nil {
 		return fmt.Errorf("save checkpoint %s/%s: %w", streamName, shardID, err)
 	}
 	return nil

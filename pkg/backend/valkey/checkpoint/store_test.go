@@ -66,6 +66,98 @@ func TestStoreGetSaveDelete(t *testing.T) {
 	}
 }
 
+func TestStoreSaveIsAdvanceOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		saves []string
+		want  string
+	}{
+		{
+			// Lexicographically "99" > "100"; only length-first numeric
+			// ordering keeps the later, larger sequence.
+			name:  "shorter numeric regression discarded",
+			saves: []string{"100", "99"},
+			want:  "100",
+		},
+		{
+			name:  "equal-length regression discarded",
+			saves: []string{"101", "100"},
+			want:  "101",
+		},
+		{
+			name:  "longer numeric advance persists",
+			saves: []string{"99", "100"},
+			want:  "100",
+		},
+		{
+			name:  "equal-length advance persists",
+			saves: []string{"100", "101"},
+			want:  "101",
+		},
+		{
+			name:  "same value is an idempotent no-op",
+			saves: []string{"100", "100"},
+			want:  "100",
+		},
+		{
+			name:  "shard end never overwritten by a sequence",
+			saves: []string{"SHARD_END:100", "200"},
+			want:  "SHARD_END:100",
+		},
+		{
+			name:  "shard end never overwritten by another completion",
+			saves: []string{"SHARD_END:100", "SHARD_END:200"},
+			want:  "SHARD_END:100",
+		},
+		{
+			name:  "completion overwrites a plain sequence",
+			saves: []string{"100", "SHARD_END:100"},
+			want:  "SHARD_END:100",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, _ := newTestStore(t)
+			ctx := context.Background()
+			for i, seq := range tt.saves {
+				if err := store.Save(ctx, "stream", "shard-1", seq); err != nil {
+					t.Fatalf("Save #%d (%q): %v", i+1, seq, err)
+				}
+			}
+			if got, err := store.Get(ctx, "stream", "shard-1"); err != nil || got != tt.want {
+				t.Fatalf("Get = (%q, %v), want (%q, nil)", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestStoreDeleteAllowsRewind(t *testing.T) {
+	t.Parallel()
+
+	// Delete is the documented rewind path: a missing key makes the next
+	// save unconditional even for a lower sequence.
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	if err := store.Save(ctx, "stream", "shard-1", "500"); err != nil {
+		t.Fatalf("Save 500: %v", err)
+	}
+	if err := store.Delete(ctx, "stream", "shard-1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := store.Save(ctx, "stream", "shard-1", "300"); err != nil {
+		t.Fatalf("Save 300 after delete: %v", err)
+	}
+	if got, err := store.Get(ctx, "stream", "shard-1"); err != nil || got != "300" {
+		t.Fatalf("Get = (%q, %v), want (\"300\", nil)", got, err)
+	}
+}
+
 func TestStoreDeleteMissingIsNoOp(t *testing.T) {
 	t.Parallel()
 

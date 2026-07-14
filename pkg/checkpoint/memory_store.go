@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"strings"
 	"sync"
 )
 
@@ -32,13 +33,39 @@ func (m *MemoryStore) Get(_ context.Context, streamName, shardID string) (string
 	return m.data[m.key(streamName, shardID)], nil
 }
 
-// Save persists the sequence number for the shard, overwriting any previous
-// value. The value is stored verbatim, including SHARD_END completion markers.
+// Save persists the sequence number for the shard if it advances the
+// checkpoint, per the Store contract; a stale or duplicate value is silently
+// discarded. The value is stored verbatim, including SHARD_END completion
+// markers.
 func (m *MemoryStore) Save(_ context.Context, streamName, shardID, sequenceNumber string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.data[m.key(streamName, shardID)] = sequenceNumber
+	key := m.key(streamName, shardID)
+	if checkpointAdvances(m.data[key], sequenceNumber) {
+		m.data[key] = sequenceNumber
+	}
 	return nil
+}
+
+// checkpointAdvances implements the Store contract's advance-only rule. It
+// must stay in lockstep with the Valkey backend's CheckpointSaveScript.
+func checkpointAdvances(current, next string) bool {
+	if current == "" {
+		return true
+	}
+	if next == current {
+		return false
+	}
+	if strings.HasPrefix(current, CompletedPrefix) {
+		return false
+	}
+	if strings.HasPrefix(next, CompletedPrefix) {
+		return true
+	}
+	if len(next) != len(current) {
+		return len(next) > len(current)
+	}
+	return next > current
 }
 
 // Delete removes any stored checkpoint for the shard. It is a no-op when no

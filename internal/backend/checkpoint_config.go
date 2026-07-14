@@ -119,3 +119,37 @@ func SetCheckpointDB(cfg *CheckpointConfig, db int) error {
 	cfg.DB = db
 	return nil
 }
+
+// CheckpointSaveScript applies a checkpoint save only when it advances the
+// stored value, per the checkpoint.Store contract: first write wins on a
+// missing key; an equal value is an idempotent no-op; a completed
+// (prefix-marked) value is terminal; a new completed value always advances;
+// otherwise values compare as Kinesis sequence numbers — unsigned decimal
+// strings without leading zeros, so longer is greater and equal lengths
+// compare lexicographically (the numbers exceed Lua's 53-bit numeric
+// precision, so tonumber would corrupt the order). Stale writes return 0 and
+// change nothing. It must stay in lockstep with the memory store's
+// checkpointAdvances. KEYS[1]=checkpoint key, ARGV[1]=new value,
+// ARGV[2]=completed prefix.
+const CheckpointSaveScript = `
+local cur = redis.call("get", KEYS[1])
+if cur == false then
+  redis.call("set", KEYS[1], ARGV[1])
+  return 1
+end
+if cur == ARGV[1] then
+  return 0
+end
+if string.sub(cur, 1, #ARGV[2]) == ARGV[2] then
+  return 0
+end
+if string.sub(ARGV[1], 1, #ARGV[2]) == ARGV[2] then
+  redis.call("set", KEYS[1], ARGV[1])
+  return 1
+end
+if #ARGV[1] > #cur or (#ARGV[1] == #cur and ARGV[1] > cur) then
+  redis.call("set", KEYS[1], ARGV[1])
+  return 1
+end
+return 0
+`

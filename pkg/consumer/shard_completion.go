@@ -3,9 +3,11 @@ package consumer
 import (
 	"errors"
 	"strings"
+
+	"github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
 )
 
-const shardCompletedPrefix = "SHARD_END"
+const shardCompletedPrefix = checkpoint.CompletedPrefix
 
 var errShardCompleted = errors.New("shard already completed")
 
