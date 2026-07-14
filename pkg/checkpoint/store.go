@@ -32,7 +32,27 @@ const CompletedPrefix = "SHARD_END"
 // There is no in-band rewind: an intentional replay is performed by calling
 // Delete (a missing key makes the next Save unconditional).
 type Store interface {
+	// Get returns the sequence number last persisted for the shard, verbatim
+	// — including a SHARD_END / SHARD_END:<finalSequenceNumber> completion
+	// marker. It returns ("", nil) when no checkpoint exists for the shard; an
+	// empty string is the sole "no checkpoint" signal (there is no
+	// ErrNotFound, and the consumer treats empty as "start from the configured
+	// position"). A non-nil error means the lookup itself failed, not that the
+	// key is absent.
 	Get(ctx context.Context, streamName, shardID string) (string, error)
+
+	// Save persists sequenceNumber for the shard following the advance-only
+	// rule described above: it applies the write only when the value advances
+	// the checkpoint and otherwise returns nil without writing (a no-op for an
+	// equal value — idempotent — or a stale value, and permanently a no-op
+	// once a completion marker is stored). The value is persisted verbatim, so
+	// a SHARD_END:<finalSequenceNumber> marker round-trips unchanged through
+	// Get. A non-nil error is reserved for backend failures; a discarded stale
+	// write is success, not an error.
 	Save(ctx context.Context, streamName, shardID, sequenceNumber string) error
+
+	// Delete removes any checkpoint for the shard and is the only supported
+	// rewind: after Delete the next Save is unconditional. It is idempotent —
+	// deleting an absent checkpoint returns nil.
 	Delete(ctx context.Context, streamName, shardID string) error
 }
