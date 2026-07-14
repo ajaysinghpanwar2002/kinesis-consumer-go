@@ -50,14 +50,12 @@ type Reporter interface {
 	Counter(name string, value int64, tags []metrics.Tag)
 	Gauge(name string, value float64, tags []metrics.Tag)
 	Timing(name string, value time.Duration, tags []metrics.Tag)
-	Histogram(name string, value float64, tags []metrics.Tag)
 }
 ```
 
 Calls can arrive concurrently from multiple shard workers and run inline with
 consumer work. A custom implementation should therefore be concurrency-safe,
-return quickly, and handle its own buffering or error reporting. The consumer
-uses `Counter`, `Gauge`, and `Timing`; it does not call `Histogram`.
+return quickly, and handle its own buffering or error reporting.
 
 ## Naming and wire format
 

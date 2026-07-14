@@ -69,8 +69,6 @@ func (r *recordingReporter) Timing(name string, value time.Duration, tags []metr
 	r.timings = append(r.timings, timingCall{name: name, value: value, tags: metricTagMap(tags)})
 }
 
-func (r *recordingReporter) Histogram(string, float64, []metrics.Tag) {}
-
 // countersNamed returns all recorded counter calls with the given name.
 func (r *recordingReporter) countersNamed(name string) []counterCall {
 	r.mu.Lock()

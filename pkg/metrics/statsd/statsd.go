@@ -64,10 +64,6 @@ func (r *Reporter) Timing(name string, value time.Duration, tags []metrics.Tag) 
 	r.send(name, formatFloat(float64(value)/float64(time.Millisecond)), "ms", tags)
 }
 
-func (r *Reporter) Histogram(name string, value float64, tags []metrics.Tag) {
-	r.send(name, formatFloat(value), "h", tags)
-}
-
 func (r *Reporter) send(name, value, metricType string, tags []metrics.Tag) {
 	var datagram strings.Builder
 	datagram.WriteString(name)

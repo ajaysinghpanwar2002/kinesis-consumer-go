@@ -126,18 +126,6 @@ func TestTimingDatagramEmitsMilliseconds(t *testing.T) {
 	}
 }
 
-func TestHistogramDatagram(t *testing.T) {
-	t.Parallel()
-
-	reporter, receive := newTestReporter(t)
-	reporter.Histogram("kinesis_consumer.example", 0.25, nil)
-
-	want := "kinesis_consumer.example:0.25|h"
-	if got := receive(); got != want {
-		t.Fatalf("datagram = %q, want %q", got, want)
-	}
-}
-
 func TestTagValuesKeepColons(t *testing.T) {
 	t.Parallel()
 
@@ -183,7 +171,6 @@ func TestEmitAfterCloseDoesNotPanic(t *testing.T) {
 	reporter.Counter("kinesis_consumer.records_processed", 1, nil)
 	reporter.Gauge("kinesis_consumer.owned_shards", 1, nil)
 	reporter.Timing("kinesis_consumer.handler_duration", time.Millisecond, nil)
-	reporter.Histogram("kinesis_consumer.example", 1, nil)
 }
 
 func TestConcurrentEmissionsDeliverWholeDatagrams(t *testing.T) {
