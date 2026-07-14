@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	valkeycheckpoint "github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
+	valkeycheckpoint "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
 )
 
 // TestKeyPrefixIsolationAcrossStreams proves scenario #25 (IT-22): two consumers

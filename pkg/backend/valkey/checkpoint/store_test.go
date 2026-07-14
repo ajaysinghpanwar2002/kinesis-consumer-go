@@ -8,8 +8,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
-	"github.com/pratilipi/kinesis-consumer-go/internal/backend"
-	consumerlease "github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/internal/backend"
+	consumerlease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 func newTestStore(t *testing.T, opts ...Option) (*Store, *miniredis.Miniredis) {

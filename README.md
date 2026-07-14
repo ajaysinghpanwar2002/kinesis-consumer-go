@@ -30,7 +30,7 @@ No Java, no MultiLangDaemon.
 ## Install
 
 ```bash
-go get github.com/pratilipi/kinesis-consumer-go
+go get github.com/ajaysinghpanwar2002/kinesis-consumer-go
 ```
 
 ## Documentation

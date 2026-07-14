@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 )
 
 // TestStaleLeaseReclaimedAfterTTLExpiry proves the uncooperative-failover

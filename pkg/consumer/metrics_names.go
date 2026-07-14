@@ -1,6 +1,6 @@
 package consumer
 
-import "github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
+import "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 
 // Metric names are dot-delimited statsd-style names under a single prefix.
 // Downstream pipelines map dots to underscores, so these land in InfluxDB as

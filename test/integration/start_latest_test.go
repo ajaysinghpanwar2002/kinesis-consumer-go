@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 )
 
 // TestStartLatestSkipsBacklogDeliversNew proves scenario #9 (IT-13a): a FRESH

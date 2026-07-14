@@ -9,9 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 
-	valkeycheckpoint "github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	valkeycheckpoint "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 // TestRebalanceMaxMovesPerTick proves scenario #24 (IT-21): maxMoves=1 is a

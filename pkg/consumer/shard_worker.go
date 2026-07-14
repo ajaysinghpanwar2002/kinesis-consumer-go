@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLease lease.Lease) error {

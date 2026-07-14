@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 )
 
 // concurrencyProbe wraps a plain collector but instruments the handler to track

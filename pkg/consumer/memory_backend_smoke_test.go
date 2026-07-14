@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 )
 
 func TestMemoryBackendsRunConsumerSmoke(t *testing.T) {

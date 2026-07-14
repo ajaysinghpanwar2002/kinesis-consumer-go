@@ -1,12 +1,12 @@
-module github.com/pratilipi/kinesis-consumer-go/examples/valkey
+module github.com/ajaysinghpanwar2002/kinesis-consumer-go/examples/valkey
 
 go 1.26.3
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.37.1
 	github.com/aws/aws-sdk-go-v2/service/kinesis v1.36.1
-	github.com/pratilipi/kinesis-consumer-go v0.0.0
-	github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey v0.0.0
+	github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.1.0
+	github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.1.0
 )
 
 require (
@@ -17,9 +17,3 @@ require (
 	github.com/valkey-io/valkey-go v1.0.65 // indirect
 	golang.org/x/sys v0.31.0 // indirect
 )
-
-// The core module and the Valkey backend module are not published; resolve them
-// from the local checkout.
-replace github.com/pratilipi/kinesis-consumer-go => ../..
-
-replace github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey => ../../pkg/backend/valkey

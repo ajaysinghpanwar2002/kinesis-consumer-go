@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 )
 
 func TestRunShardWorkerReleasesLeaseAfterContextCancellation(t *testing.T) {

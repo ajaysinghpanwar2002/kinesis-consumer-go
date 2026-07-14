@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 )
 
 type noopDLQPublisher struct{}

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
 )
 
 const shardCompletedPrefix = checkpoint.CompletedPrefix

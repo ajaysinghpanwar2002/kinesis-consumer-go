@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
 
 // Consumer owns Kinesis shard consumption for one worker process.

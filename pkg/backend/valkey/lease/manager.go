@@ -16,8 +16,8 @@ import (
 
 	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/pratilipi/kinesis-consumer-go/internal/backend"
-	consumerlease "github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/internal/backend"
+	consumerlease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 // Manager and valkeyLease satisfy the core lease contracts.

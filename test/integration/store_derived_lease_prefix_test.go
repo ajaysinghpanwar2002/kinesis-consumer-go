@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	valkeylease "github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey/lease"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	valkeylease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 // TestStoreDerivedLeasePrefix proves scenario #26 (IT-23): a consumer given ONLY

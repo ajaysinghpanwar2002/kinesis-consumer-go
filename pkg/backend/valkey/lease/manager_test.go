@@ -10,8 +10,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/pratilipi/kinesis-consumer-go/internal/backend"
-	consumerlease "github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/internal/backend"
+	consumerlease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 func newTestManager(t *testing.T, opts ...Option) (*Manager, *miniredis.Miniredis) {

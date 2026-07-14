@@ -10,8 +10,8 @@ for checkpoints and shard leasing. For the full capability list see
 The core library and the Valkey backend are separate modules — add both:
 
 ```bash
-go get github.com/pratilipi/kinesis-consumer-go
-go get github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey
+go get github.com/ajaysinghpanwar2002/kinesis-consumer-go
+go get github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey
 ```
 
 You also need the AWS SDK v2 Kinesis client (pulled in transitively, but you
@@ -51,8 +51,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 
-	valkeycheckpoint "github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
+	valkeycheckpoint "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 )
 
 func main() {

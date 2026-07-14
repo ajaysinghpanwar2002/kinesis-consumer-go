@@ -6,3 +6,14 @@ use (
 	./pkg/backend/valkey
 	./test/integration
 )
+
+// Local development resolves the intra-repo module dependencies from this
+// checkout. These replacements live in go.work (never included in a published
+// module zip) instead of the individual go.mod files, so the released modules
+// stay clean: a third party's `go get ...@v0.1.0` sees only the real version
+// requires and fetches the published tags. When bumping to a new release
+// version, update these replacement versions to match the go.mod requires
+// (see docs/releasing.md).
+replace github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.1.0 => .
+
+replace github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.1.0 => ./pkg/backend/valkey

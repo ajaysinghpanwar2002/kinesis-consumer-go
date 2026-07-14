@@ -1,4 +1,4 @@
-module github.com/pratilipi/kinesis-consumer-go
+module github.com/ajaysinghpanwar2002/kinesis-consumer-go
 
 go 1.26.3
 

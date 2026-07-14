@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/aws/smithy-go"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 )
 
 // Backoff for retryable GetRecords errors (throttling, server faults, network

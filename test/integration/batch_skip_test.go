@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 )
 
 // errBatchSkipBoom is the permanent BATCH-handler error that causes a whole page

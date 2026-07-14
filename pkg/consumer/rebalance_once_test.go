@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 type recordingRebalanceOnceManager struct {

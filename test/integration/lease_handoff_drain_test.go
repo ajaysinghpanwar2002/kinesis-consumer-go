@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 )
 
 // TestGracefulDrainHandsOffToLiveSuccessor proves the drain-on-departure handoff

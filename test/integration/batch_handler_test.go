@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	valkeycheckpoint "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
-	valkeycheckpoint "github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
 )
 
 // batchCollector records what a BATCH handler observes: every payload's

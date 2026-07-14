@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
-	"github.com/pratilipi/kinesis-consumer-go/pkg/lease"
 
-	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 )
 
 func TestStartPropagatesShardListingError(t *testing.T) {

@@ -17,8 +17,8 @@ Create the reporter, keep it alive for the consumer's lifetime, and pass it to
 
 ```go
 import (
-	"github.com/pratilipi/kinesis-consumer-go/pkg/consumer"
-	metricstatsd "github.com/pratilipi/kinesis-consumer-go/pkg/metrics/statsd"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
+	metricstatsd "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics/statsd"
 )
 
 reporter, err := metricstatsd.New("localhost:8125")

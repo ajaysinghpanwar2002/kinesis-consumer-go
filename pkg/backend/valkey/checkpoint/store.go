@@ -14,10 +14,10 @@ import (
 
 	valkey "github.com/valkey-io/valkey-go"
 
-	"github.com/pratilipi/kinesis-consumer-go/internal/backend"
-	valkeylease "github.com/pratilipi/kinesis-consumer-go/pkg/backend/valkey/lease"
-	corecheckpoint "github.com/pratilipi/kinesis-consumer-go/pkg/checkpoint"
-	consumerlease "github.com/pratilipi/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/internal/backend"
+	valkeylease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/lease"
+	corecheckpoint "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
+	consumerlease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 // Store satisfies the core checkpoint.Store contract and can provide a matching
