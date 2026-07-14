@@ -66,6 +66,8 @@ func (c *Consumer) refreshAndRebalanceShardWorkersLoop(
 				ctx,
 				knownShards,
 				completionState,
+				cooldown,
+				now(),
 				workers,
 				workerWG,
 				workerErrCh,

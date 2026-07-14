@@ -64,6 +64,36 @@ func removeRebalanceShard(
 	return shards
 }
 
+// selectSyncAcquireShards picks the unowned shards the startup/shard-sync
+// path may acquire: at most up to the fair-share high bound (greedy
+// acquisition past it would just be shed again), skipping shards in
+// post-move cooldown (or the same worker that shed a shard re-acquires it
+// at the next sync tick) and shards with a live local worker.
+func selectSyncAcquireShards(
+	snapshot rebalanceOwnershipSnapshot,
+	self string,
+	cooldown map[string]time.Time,
+	workers *shardWorkerSet,
+	now time.Time,
+) []string {
+	budget := snapshot.high - snapshot.ownerCounts[self]
+	if budget <= 0 {
+		return nil
+	}
+
+	unowned := append([]string(nil), snapshot.unowned...)
+	picked := make([]string, 0, budget)
+	for len(picked) < budget {
+		shardID := pickRebalanceShard(unowned, cooldown, workers, now)
+		if shardID == "" {
+			break
+		}
+		unowned = removeRebalanceShard(unowned, shardID)
+		picked = append(picked, shardID)
+	}
+	return picked
+}
+
 func selectLocalRebalanceShedShards(
 	snapshot rebalanceOwnershipSnapshot,
 	self string,

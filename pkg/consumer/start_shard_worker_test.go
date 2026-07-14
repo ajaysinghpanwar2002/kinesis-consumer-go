@@ -267,6 +267,8 @@ func TestAcquireAndStartReadyShardWorkersSkipsRunningWorkersBeforeAcquire(t *tes
 		ctx,
 		readyShardWorkerMap("shard-ready", "shard-running"),
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -291,6 +293,134 @@ func TestAcquireAndStartReadyShardWorkersSkipsRunningWorkersBeforeAcquire(t *tes
 	}
 }
 
+// syncOwnershipManager wraps the recording acquire manager with fixed
+// List/Workers answers so tests can shape the sync path's ownership snapshot.
+type syncOwnershipManager struct {
+	*recordingAcquireManager
+	leaseOwners  map[string]string
+	workerOwners []string
+}
+
+func (m *syncOwnershipManager) List(context.Context, string) (map[string]string, error) {
+	return m.leaseOwners, nil
+}
+
+func (m *syncOwnershipManager) Workers(context.Context, string) ([]string, error) {
+	return m.workerOwners, nil
+}
+
+func TestAcquireAndStartReadyShardWorkersStopsAtFairShareHigh(t *testing.T) {
+	t.Parallel()
+
+	// 4 ready shards and one live peer worker -> high = ceil(4/2) = 2. The
+	// old greedy path took all four (cold-start thundering herd) and the
+	// peer had to claim them back two per rebalance tick.
+	recording := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: &recordingReleaseLease{}, acquired: true},
+			{lease: &recordingReleaseLease{}, acquired: true},
+		},
+	}
+	c := newTestReadyShardWorkerConsumer(recording, nil)
+	c.leaseManager = &syncOwnershipManager{
+		recordingAcquireManager: recording,
+		workerOwners:            []string{"peer"},
+	}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.acquireAndStartReadyShardWorkers(
+		ctx,
+		readyShardWorkerMap("shard-1", "shard-2", "shard-3", "shard-4"),
+		newShardCompletionState(),
+		nil,
+		time.Now(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if err != nil {
+		t.Fatalf("acquireAndStartReadyShardWorkers() error = %v, want nil", err)
+	}
+
+	assertAcquireShardOrder(t, recording.calls, []string{"shard-1", "shard-2"})
+	if workers.has("shard-3") || workers.has("shard-4") {
+		t.Fatal("worker started beyond the fair-share high bound")
+	}
+
+	workers.stopAll()
+	waitWorkerGroupDone(t, &workerWG)
+}
+
+func TestAcquireAndStartReadyShardWorkersHonorsCooldown(t *testing.T) {
+	t.Parallel()
+
+	// A shard freshly shed by this worker is in cooldown: the sync tick must
+	// not re-acquire it (the shed/sync ping-pong), but may take it again once
+	// the cooldown has expired.
+	recording := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: &recordingReleaseLease{}, acquired: true},
+		},
+	}
+	c := newTestReadyShardWorkerConsumer(recording, nil)
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	now := time.Now()
+	cooldown := map[string]time.Time{"shard-1": now.Add(10 * time.Second)}
+
+	err := c.acquireAndStartReadyShardWorkers(
+		ctx,
+		readyShardWorkerMap("shard-1"),
+		newShardCompletionState(),
+		cooldown,
+		now,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if err != nil {
+		t.Fatalf("acquireAndStartReadyShardWorkers() error = %v, want nil", err)
+	}
+	assertAcquireShardOrder(t, recording.calls, nil)
+	if workers.has("shard-1") {
+		t.Fatal("workers.has(shard-1) = true, want false (shard in cooldown)")
+	}
+
+	err = c.acquireAndStartReadyShardWorkers(
+		ctx,
+		readyShardWorkerMap("shard-1"),
+		newShardCompletionState(),
+		cooldown,
+		now.Add(11*time.Second),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if err != nil {
+		t.Fatalf("acquireAndStartReadyShardWorkers() after cooldown error = %v, want nil", err)
+	}
+	assertAcquireShardOrder(t, recording.calls, []string{"shard-1"})
+	if !workers.has("shard-1") {
+		t.Fatal("workers.has(shard-1) = false after cooldown expiry, want true")
+	}
+
+	workers.stopAll()
+	waitWorkerGroupDone(t, &workerWG)
+}
+
 func TestAcquireAndStartReadyShardWorkersDoesNotStartUnacquiredShards(t *testing.T) {
 	t.Parallel()
 
@@ -311,6 +441,8 @@ func TestAcquireAndStartReadyShardWorkersDoesNotStartUnacquiredShards(t *testing
 		ctx,
 		readyShardWorkerMap("shard-1"),
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -347,6 +479,8 @@ func TestAcquireAndStartReadyShardWorkersReturnsReadyShardError(t *testing.T) {
 		ctx,
 		readyShardWorkerMap("shard-1"),
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -380,6 +514,8 @@ func TestAcquireAndStartReadyShardWorkersReturnsAcquireError(t *testing.T) {
 		ctx,
 		readyShardWorkerMap("shard-1"),
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -430,6 +566,8 @@ func TestRefreshAndStartReadyShardWorkersRefreshesKnownShardsAndStartsNewReadySh
 		ctx,
 		knownShards,
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -484,6 +622,8 @@ func TestRefreshAndStartReadyShardWorkersReturnsRefreshErrorWithoutAcquire(t *te
 		ctx,
 		knownShards,
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -528,6 +668,8 @@ func TestRefreshAndStartReadyShardWorkersReturnsAcquireErrorAfterRefresh(t *test
 		ctx,
 		knownShards,
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -576,6 +718,8 @@ func TestRefreshAndStartReadyShardWorkersLoopRunsOnTickAndStopsOnCancel(t *testi
 		time.Millisecond,
 		knownShards,
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -613,6 +757,8 @@ func TestRefreshAndStartReadyShardWorkersLoopReturnsRefreshError(t *testing.T) {
 		time.Millisecond,
 		knownShards,
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -645,6 +791,8 @@ func TestRefreshAndStartReadyShardWorkersLoopReturnsDeadlineExceeded(t *testing.
 		time.Hour,
 		knownShards,
 		newShardCompletionState(),
+		nil,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,
@@ -698,6 +846,8 @@ func runRefreshAndStartReadyShardWorkersLoop(
 	interval time.Duration,
 	knownShards map[string]types.Shard,
 	completionState *shardCompletionState,
+	cooldown map[string]time.Time,
+	now time.Time,
 	workers *shardWorkerSet,
 	workerWG *sync.WaitGroup,
 	workerErrCh chan<- error,
@@ -710,6 +860,8 @@ func runRefreshAndStartReadyShardWorkersLoop(
 			interval,
 			knownShards,
 			completionState,
+			cooldown,
+			func() time.Time { return now },
 			workers,
 			workerWG,
 			workerErrCh,

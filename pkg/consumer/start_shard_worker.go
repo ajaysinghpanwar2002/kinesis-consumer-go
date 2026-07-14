@@ -73,10 +73,20 @@ func (c *Consumer) startRegisteredShardWorkers(
 	}
 }
 
+// acquireAndStartReadyShardWorkers fills this worker toward its fair-share
+// high bound from unowned ready shards. It applies the same ownership
+// snapshot, fair-share cap, and post-move cooldown as the rebalance planner:
+// greedy acquisition past high would immediately be shed again (cold-start
+// thundering herd), and ignoring cooldown lets the very worker that shed a
+// shard re-acquire it at its next sync tick. The cooldown map needs no lock:
+// the initial acquisition runs before the orchestration goroutine starts,
+// and afterwards sync and rebalance ticks share that goroutine's select loop.
 func (c *Consumer) acquireAndStartReadyShardWorkers(
 	ctx context.Context,
 	knownShards map[string]types.Shard,
 	completionState *shardCompletionState,
+	cooldown map[string]time.Time,
+	now time.Time,
 	workers *shardWorkerSet,
 	workerWG *sync.WaitGroup,
 	workerErrCh chan<- error,
@@ -86,14 +96,21 @@ func (c *Consumer) acquireAndStartReadyShardWorkers(
 	if err != nil {
 		return err
 	}
-
-	acquireShardIDs := make([]string, 0, len(readyShardIDs))
-	for _, shardID := range readyShardIDs {
-		if workers.has(shardID) {
-			continue
-		}
-		acquireShardIDs = append(acquireShardIDs, shardID)
+	if len(readyShardIDs) == 0 {
+		return nil
 	}
+
+	leaseOwners, err := c.listRebalanceLeaseOwnersWithRetry(ctx)
+	if err != nil {
+		return err
+	}
+	workerOwners, err := c.listRebalanceWorkerOwnersWithRetry(ctx)
+	if err != nil {
+		return err
+	}
+
+	snapshot := buildRebalanceOwnershipSnapshot(readyShardIDs, leaseOwners, workerOwners, c.leaseOwner)
+	acquireShardIDs := selectSyncAcquireShards(snapshot, c.leaseOwner, cooldown, workers, now)
 
 	shardLeases, err := c.acquireShardLeases(ctx, acquireShardIDs)
 	if err != nil {
@@ -107,6 +124,8 @@ func (c *Consumer) refreshAndStartReadyShardWorkers(
 	ctx context.Context,
 	knownShards map[string]types.Shard,
 	completionState *shardCompletionState,
+	cooldown map[string]time.Time,
+	now time.Time,
 	workers *shardWorkerSet,
 	workerWG *sync.WaitGroup,
 	workerErrCh chan<- error,
@@ -119,6 +138,8 @@ func (c *Consumer) refreshAndStartReadyShardWorkers(
 		ctx,
 		knownShards,
 		completionState,
+		cooldown,
+		now,
 		workers,
 		workerWG,
 		workerErrCh,
@@ -131,11 +152,17 @@ func (c *Consumer) refreshAndStartReadyShardWorkersLoop(
 	interval time.Duration,
 	knownShards map[string]types.Shard,
 	completionState *shardCompletionState,
+	cooldown map[string]time.Time,
+	now func() time.Time,
 	workers *shardWorkerSet,
 	workerWG *sync.WaitGroup,
 	workerErrCh chan<- error,
 	stopRun context.CancelFunc,
 ) error {
+	if now == nil {
+		now = time.Now
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -151,6 +178,8 @@ func (c *Consumer) refreshAndStartReadyShardWorkersLoop(
 				ctx,
 				knownShards,
 				completionState,
+				cooldown,
+				now(),
 				workers,
 				workerWG,
 				workerErrCh,

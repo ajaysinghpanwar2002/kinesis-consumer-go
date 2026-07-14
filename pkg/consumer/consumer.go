@@ -93,6 +93,8 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 		runCtx,
 		shardMap,
 		completionState,
+		rebalanceCooldown,
+		time.Now(),
 		workers,
 		&workerWG,
 		workerErrCh,

@@ -90,6 +90,11 @@ spread across them.
     fair-share low bound) first acquires unowned shards, then, if still short,
     claims a shard from an over-share donor (a worker holding more than the high
     bound); separately, an over-share worker sheds its excess shards.
+  - Startup and shard-sync acquisition are bounded by the same fair share and
+    cooldown: a worker fills toward its high bound from unowned shards only, so
+    a cold-starting worker does not grab the whole stream just to shed it back,
+    and a shard this worker just shed is not re-acquired before its cooldown
+    expires.
 - **Reclaim of failed workers:** a shard held by an inactive worker is reclaimed
   after its lease key's TTL lapses (the shard becomes unowned and is acquired on
   a later tick).

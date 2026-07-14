@@ -6,6 +6,80 @@ import (
 	"time"
 )
 
+func TestSelectSyncAcquireShardsCapsAtFairShareHigh(t *testing.T) {
+	t.Parallel()
+
+	// 4 ready shards, 2 workers (self + peer) -> high = 2. Self already owns
+	// one shard, so the sync path may take exactly one more unowned shard.
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-1", "shard-2", "shard-3", "shard-4"},
+		map[string]string{"shard-4": "self"},
+		[]string{"peer"},
+		"self",
+	)
+
+	got := selectSyncAcquireShards(snapshot, "self", nil, newShardWorkerSet(), time.Now())
+	if !slices.Equal(got, []string{"shard-1"}) {
+		t.Fatalf("selectSyncAcquireShards = %v, want [shard-1]", got)
+	}
+}
+
+func TestSelectSyncAcquireShardsNoBudgetAtOrAboveHigh(t *testing.T) {
+	t.Parallel()
+
+	// 4 ready shards, 2 workers -> high = 2; self already owns 2. The sync
+	// path must not acquire past the fair share even with unowned shards
+	// available.
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-1", "shard-2", "shard-3", "shard-4"},
+		map[string]string{"shard-3": "self", "shard-4": "self"},
+		[]string{"peer"},
+		"self",
+	)
+
+	if got := selectSyncAcquireShards(snapshot, "self", nil, newShardWorkerSet(), time.Now()); got != nil {
+		t.Fatalf("selectSyncAcquireShards = %v, want nil (already at fair share)", got)
+	}
+}
+
+func TestSelectSyncAcquireShardsSkipsCooldownAndRunningWorkers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-1", "shard-2", "shard-3"},
+		nil,
+		nil,
+		"self",
+	)
+	cooldown := map[string]time.Time{"shard-1": now.Add(10 * time.Second)}
+	workers := newShardWorkerSet()
+	workers.add("shard-2", func() {})
+
+	got := selectSyncAcquireShards(snapshot, "self", cooldown, workers, now)
+	if !slices.Equal(got, []string{"shard-3"}) {
+		t.Fatalf("selectSyncAcquireShards = %v, want [shard-3]", got)
+	}
+}
+
+func TestSelectSyncAcquireShardsExpiredCooldownIsEligible(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-1"},
+		nil,
+		nil,
+		"self",
+	)
+	cooldown := map[string]time.Time{"shard-1": now.Add(-time.Second)}
+
+	got := selectSyncAcquireShards(snapshot, "self", cooldown, newShardWorkerSet(), now)
+	if !slices.Equal(got, []string{"shard-1"}) {
+		t.Fatalf("selectSyncAcquireShards = %v, want [shard-1] (cooldown expired)", got)
+	}
+}
+
 func TestPickRebalanceDonorDeterministicTieBreak(t *testing.T) {
 	t.Parallel()
 
