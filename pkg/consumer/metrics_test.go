@@ -659,9 +659,15 @@ func TestRenewShardLeaseLoopCountsRenewalFailure(t *testing.T) {
 		t.Fatal("renewShardLeaseLoop() error = nil, want renew error")
 	}
 
+	// Transient failures are retried within the ttl budget and every failed
+	// attempt counts — one counter per renew call, including the
+	// budget-exhausting final attempt.
 	failures := reporter.countersNamed(metricLeaseRenewalFailures)
-	if len(failures) != 1 {
-		t.Fatalf("lease_renewal_failures calls = %d, want 1", len(failures))
+	if len(failures) < 2 {
+		t.Fatalf("lease_renewal_failures calls = %d, want >= 2 (per-attempt counting)", len(failures))
+	}
+	if len(failures) != shardLease.calls {
+		t.Fatalf("lease_renewal_failures calls = %d, want %d (one per renew attempt)", len(failures), shardLease.calls)
 	}
 	assertCounterTags(t, failures[0], map[string]string{
 		"stream": "stream",

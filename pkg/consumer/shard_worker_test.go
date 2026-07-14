@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,8 +149,10 @@ func TestRunShardWorkerReturnsRenewalError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("runShardWorker() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "renew shard lease shard-1: boom" {
-		t.Fatalf("runShardWorker() error = %v, want %q", err, "renew shard lease shard-1: boom")
+	// Persistent renew failures retry within the ttl budget, then surface as a
+	// ttl-exhaustion error wrapping the cause.
+	if err == nil || !strings.Contains(err.Error(), "not renewed within ttl") {
+		t.Fatalf("runShardWorker() error = %v, want ttl-exhaustion wrapping the renew failure", err)
 	}
 	select {
 	case <-processCanceled:

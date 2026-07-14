@@ -59,9 +59,12 @@ nothing per record, per poll, or per rebalance tick.
 | `shard lease acquired` | Debug | `shard`, `owner` | Initial/refresh acquisition succeeded (`acquireShardLeases`). |
 | `shard lease released` | Debug | `shard` | The bounded release at worker exit succeeded. |
 | `shard lease release failed` | Warn | `shard`, `error` | The bounded release failed or timed out. Logged here because the caller discards the release error when the worker already failed, so this Warn can be the only record of it. |
+| `shard lease renew failed; will retry` | Warn | `shard`, `since_last_renew`, `ttl`, `error` | A transient renew failure. The loop retries on subsequent heartbeat ticks while the TTL budget since the last successful renew lasts. `ErrNotOwned` and budget exhaustion are not retried — they stop the worker and surface through the worker-stop Warn. |
 
-Lease renewal failures are not logged separately: `runShardWorker` returns
-them, and the worker-stop Warn is the aggregation point.
+Terminal lease-renewal failures (`ErrNotOwned`, TTL-budget exhaustion) are not
+logged separately: `runShardWorker` returns them, and the worker-stop Warn is
+the aggregation point. Only the retried transient failures log in place, since
+they would otherwise be invisible.
 
 ### Rebalancing
 
@@ -127,5 +130,8 @@ can swallow the release error entirely.
   - `get records failed; backing off` — sustained occurrences mean the
     consumer is throttled or Kinesis is degraded; check `WithBatching`,
     `WithIdleTimeBetweenReads`, and competing consumers on the stream.
+  - `shard lease renew failed; will retry` — sustained occurrences mean the
+    lease backend is flaky or overloaded; workers stop (and shards fail over)
+    once the TTL budget is exhausted.
 - All events carry machine-parseable attributes (`shard`, `stream`, `owner`,
   `donor`, counts, `error`), so JSON handlers can index them directly.

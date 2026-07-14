@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1034,8 +1035,13 @@ func TestStartReturnsRenewalError(t *testing.T) {
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("Start() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "renew shard lease shard-1: boom" {
-		t.Fatalf("Start() error = %v, want %q", err, "renew shard lease shard-1: boom")
+	// Persistent renew failures are retried within the ttl budget first, then
+	// surface as a ttl-exhaustion error wrapping the cause.
+	if err == nil || !strings.Contains(err.Error(), "not renewed within ttl") {
+		t.Fatalf("Start() error = %v, want ttl-exhaustion wrapping %q", err, "renew shard lease shard-1: boom")
+	}
+	if !strings.Contains(err.Error(), "renew shard lease shard-1: boom") {
+		t.Fatalf("Start() error = %v, want cause %q preserved", err, "renew shard lease shard-1: boom")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +166,7 @@ type recordingRenewLease struct {
 	ttl   time.Duration
 	calls int
 	err   error
+	errs  []error // per-call error queue (nil entry = success); overrides err while non-empty
 	ch    chan renewCall
 }
 
@@ -182,6 +184,11 @@ func (l *recordingRenewLease) Renew(ctx context.Context, ttl time.Duration) erro
 		case l.ch <- renewCall{ctx: ctx, ttl: ttl}:
 		default:
 		}
+	}
+	if len(l.errs) > 0 {
+		err := l.errs[0]
+		l.errs = l.errs[1:]
+		return err
 	}
 	return l.err
 }
@@ -854,22 +861,107 @@ func TestRenewShardLeaseLoopRenewsOnTick(t *testing.T) {
 	}
 }
 
-func TestRenewShardLeaseLoopStopsOnRenewalError(t *testing.T) {
+func TestRenewShardLeaseLoopStopsAfterTTLBudgetExhausted(t *testing.T) {
 	t.Parallel()
 
+	// Persistent transient failures: the loop retries on each tick while the
+	// lease's TTL budget lasts, then stops — the backend lease has lapsed and a
+	// peer may own the shard.
 	errBoom := errors.New("boom")
 	shardLease := &recordingRenewLease{err: errBoom}
 	c := newTestLeaseLoopConsumer(time.Millisecond, 30*time.Millisecond)
 
+	start := time.Now()
 	err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease)
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("renewShardLeaseLoop() error = %v, want wraps %v", err, errBoom)
 	}
-	if err == nil || err.Error() != "renew shard lease shard-1: boom" {
-		t.Fatalf("renewShardLeaseLoop() error = %v, want %q", err, "renew shard lease shard-1: boom")
+	if err == nil || !strings.Contains(err.Error(), "not renewed within ttl") {
+		t.Fatalf("renewShardLeaseLoop() error = %v, want ttl-exhaustion message", err)
+	}
+	if shardLease.calls < 2 {
+		t.Fatalf("Renew calls = %d, want >= 2 (transient failures retried)", shardLease.calls)
+	}
+	if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
+		t.Fatalf("loop stopped after %v, want >= the 30ms ttl budget", elapsed)
+	}
+}
+
+func TestRenewShardLeaseLoopRetriesTransientFailureAndRecovers(t *testing.T) {
+	t.Parallel()
+
+	// One dropped renew must not stop the worker: the failure is retried on the
+	// next tick and the loop keeps running once renewal succeeds again.
+	errBoom := errors.New("boom")
+	shardLease := &recordingRenewLease{
+		errs: []error{errBoom, nil, nil, nil},
+		ch:   make(chan renewCall, 4),
+	}
+	logHandler := newCapturingHandler()
+	reporter := &recordingReporter{}
+	c := newTestLeaseLoopConsumer(time.Millisecond, time.Hour)
+	c.logger = slog.New(logHandler)
+	c.reporter = reporter
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRenewShardLeaseLoop(ctx, c, "shard-1", shardLease)
+
+	// The failed call, then at least one successful retry.
+	waitRenewCall(t, shardLease)
+	waitRenewCall(t, shardLease)
+	cancel()
+	waitRenewLoopDone(t, done, nil)
+
+	if shardLease.calls < 2 {
+		t.Fatalf("Renew calls = %d, want >= 2 (failure retried)", shardLease.calls)
+	}
+	// Both counters fire across the failure-then-recovery sequence.
+	if failures := reporter.countersNamed(metricLeaseRenewalFailures); len(failures) != 1 {
+		t.Fatalf("lease_renewal_failures calls = %d, want 1 (the single transient failure)", len(failures))
+	}
+	if renewals := reporter.countersNamed(metricLeaseRenewals); len(renewals) < 1 {
+		t.Fatalf("lease_renewals calls = %d, want >= 1 (recovered)", len(renewals))
+	}
+	var warns []capturedRecord
+	for _, rec := range logHandler.snapshot() {
+		if rec.message == "shard lease renew failed; will retry" {
+			warns = append(warns, rec)
+		}
+	}
+	if len(warns) != 1 {
+		t.Fatalf("renew retry warn logs = %d, want 1", len(warns))
+	}
+	if warns[0].level != slog.LevelWarn {
+		t.Fatalf("renew retry log level = %v, want %v", warns[0].level, slog.LevelWarn)
+	}
+	if warns[0].attrs["shard"] != "shard-1" {
+		t.Fatalf("renew retry log shard = %q, want shard-1", warns[0].attrs["shard"])
+	}
+	if warns[0].attrs["since_last_renew"] == "" {
+		t.Fatal("renew retry log since_last_renew attribute missing")
+	}
+	if warns[0].attrs["ttl"] != time.Hour.String() {
+		t.Fatalf("renew retry log ttl = %q, want %q", warns[0].attrs["ttl"], time.Hour.String())
+	}
+	if warns[0].attrs["error"] == "" {
+		t.Fatal("renew retry log error attribute missing")
+	}
+}
+
+func TestRenewShardLeaseLoopStopsPromptlyOnErrNotOwned(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingRenewLease{err: lease.ErrNotOwned}
+	// A long TTL proves the loop does NOT burn the ttl budget on ErrNotOwned —
+	// it stops on the first tick.
+	c := newTestLeaseLoopConsumer(time.Millisecond, time.Hour)
+
+	err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease)
+	if !errors.Is(err, lease.ErrNotOwned) {
+		t.Fatalf("renewShardLeaseLoop() error = %v, want wraps %v", err, lease.ErrNotOwned)
 	}
 	if shardLease.calls != 1 {
-		t.Fatalf("Renew calls = %d, want 1", shardLease.calls)
+		t.Fatalf("Renew calls = %d, want 1 (no retry once the lease is lost)", shardLease.calls)
 	}
 }
 
@@ -1005,6 +1097,7 @@ func newTestLeaseConsumer(heartbeatTTL time.Duration) *Consumer {
 
 func newTestLeaseLoopConsumer(heartbeatInterval, heartbeatTTL time.Duration) *Consumer {
 	return &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
 		reporter: metrics.Nop{},
 		tuning: tuningConfig{
 			heartbeatInterval: heartbeatInterval,

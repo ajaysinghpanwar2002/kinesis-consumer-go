@@ -123,6 +123,10 @@ func (c *Consumer) renewShardLeaseLoop(ctx context.Context, shardID string, shar
 	ticker := time.NewTicker(c.tuning.heartbeatInterval)
 	defer ticker.Stop()
 
+	// The lease was just acquired/claimed, so the TTL budget for retrying
+	// transient renew failures starts now.
+	lastRenewed := time.Now()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -131,18 +135,41 @@ func (c *Consumer) renewShardLeaseLoop(ctx context.Context, shardID string, shar
 			}
 			return ctx.Err()
 		case <-ticker.C:
-			if err := c.renewShardLease(ctx, shardID, shardLease); err != nil {
-				if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-					// Shutdown cancellation, not a renewal failure: count neither.
-					if errors.Is(ctx.Err(), context.Canceled) {
-						return nil
-					}
-					return ctx.Err()
+			err := c.renewShardLease(ctx, shardID, shardLease)
+			if err == nil {
+				lastRenewed = time.Now()
+				c.reporter.Counter(metricLeaseRenewals, 1, c.shardTags(shardID))
+				continue
+			}
+			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+				// Shutdown cancellation, not a renewal failure: count neither.
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
 				}
-				c.reporter.Counter(metricLeaseRenewalFailures, 1, c.shardTags(shardID))
+				return ctx.Err()
+			}
+			c.reporter.Counter(metricLeaseRenewalFailures, 1, c.shardTags(shardID))
+			if errors.Is(err, lease.ErrNotOwned) {
+				// The lease is held by someone else (takeover, or expiry plus
+				// reclaim): retrying cannot get it back — stop promptly.
 				return err
 			}
-			c.reporter.Counter(metricLeaseRenewals, 1, c.shardTags(shardID))
+			// Transient backend failure. The lease stays ours at the backend
+			// until heartbeatTTL since the last successful renew, so retry on
+			// subsequent ticks within that budget — one dropped renew must not
+			// restart the whole consumer.
+			sinceRenewed := time.Since(lastRenewed)
+			if sinceRenewed >= c.tuning.heartbeatTTL {
+				// Budget exhausted: the backend lease has lapsed and a peer may
+				// already own the shard; continuing risks dual processing.
+				return fmt.Errorf("shard lease %s not renewed within ttl %v: %w", shardID, c.tuning.heartbeatTTL, err)
+			}
+			c.logger.Warn("shard lease renew failed; will retry",
+				slog.String("shard", shardID),
+				slog.Duration("since_last_renew", sinceRenewed),
+				slog.Duration("ttl", c.tuning.heartbeatTTL),
+				slog.Any("error", err),
+			)
 		}
 	}
 }
