@@ -19,7 +19,7 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 	renewDone := make(chan struct{})
 	go func() {
 		defer close(renewDone)
-		if err := c.renewShardLeaseLoop(renewCtx, shardID, shardLease); err != nil {
+		if err := c.renewShardLeaseLoopWithWatchdog(renewCtx, shardID, shardLease); err != nil {
 			if c.isDraining() && errors.Is(err, lease.ErrNotOwned) {
 				// A peer claimed the shard mid-drain. That completes this
 				// shard's drain: the peer resumes from the last checkpoint, so

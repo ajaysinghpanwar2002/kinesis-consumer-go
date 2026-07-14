@@ -53,7 +53,9 @@ func TestRunShardWorkerStopsRenewalBeforeRelease(t *testing.T) {
 	shardLease := &orderedRenewReleaseLease{
 		events: make(chan string, 3),
 	}
-	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+	// A wide interval keeps the per-call renew deadline from firing before
+	// the cancellation this test drives (the fake blocks until ctx-done).
+	c := newTestShardWorkerConsumer(20*time.Millisecond, 100*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runShardWorker(ctx, c, "shard-1", shardLease)
@@ -74,7 +76,9 @@ func TestRunShardWorkerCompletesAfterProcessingCompletion(t *testing.T) {
 	shardLease := &countingOrderedRenewReleaseLease{
 		events: make(chan string, 3),
 	}
-	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+	// A wide interval keeps the per-call renew deadline from firing before
+	// processing completes (the fake blocks until ctx-done).
+	c := newTestShardWorkerConsumer(20*time.Millisecond, 100*time.Millisecond)
 	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
 		_ = ctx
 		processedShard <- shardID
@@ -107,7 +111,9 @@ func TestRunShardWorkerStopsRenewalAndReleasesLeaseAfterProcessingError(t *testi
 	shardLease := &orderedRenewReleaseLease{
 		events: make(chan string, 3),
 	}
-	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+	// A wide interval keeps the per-call renew deadline from firing before
+	// the processing error this test drives (the fake blocks until ctx-done).
+	c := newTestShardWorkerConsumer(20*time.Millisecond, 100*time.Millisecond)
 	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
 		_ = ctx
 		_ = shardID
@@ -159,6 +165,47 @@ func TestRunShardWorkerReturnsRenewalError(t *testing.T) {
 	case <-processCanceled:
 	default:
 		t.Fatal("processing was not canceled after renewal error")
+	}
+}
+
+func TestRunShardWorkerFencesHungRenewAndReleasesLease(t *testing.T) {
+	t.Parallel()
+
+	// The lease backend ignores its context and never returns from Renew: no
+	// renew attempt ever errors, so only the local lease-validity watchdog
+	// can stop the worker before a peer's takeover causes dual processing.
+	shardLease := &hangingRenewLease{unblock: make(chan struct{})}
+	t.Cleanup(func() { close(shardLease.unblock) })
+	processStarted := make(chan struct{})
+	processCanceled := make(chan struct{})
+	c := newTestShardWorkerConsumer(10*time.Millisecond, 40*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		close(processStarted)
+		<-ctx.Done()
+		close(processCanceled)
+		return "", 0, nil
+	}
+
+	done := runShardWorker(context.Background(), c, "shard-1", shardLease)
+	<-processStarted
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the watchdog to fence the worker")
+	}
+	if err == nil || !strings.Contains(err.Error(), "validity expired") {
+		t.Fatalf("runShardWorker() error = %v, want lease-validity expiry", err)
+	}
+	select {
+	case <-processCanceled:
+	default:
+		t.Fatal("processing was not canceled after the validity expiry")
+	}
+	if calls := shardLease.releaseCalls.Load(); calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", calls)
 	}
 }
 

@@ -1236,7 +1236,10 @@ func TestStartWaitsForRenewalLoopsBeforeRelease(t *testing.T) {
 		},
 		manager,
 	)
-	c.tuning.heartbeatInterval = time.Millisecond
+	// A wide interval keeps the per-call renew deadline from firing before
+	// the cancellation this test drives (the fake blocks until ctx-done).
+	c.tuning.heartbeatInterval = 20 * time.Millisecond
+	c.tuning.heartbeatTTL = 100 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runStart(ctx, c)

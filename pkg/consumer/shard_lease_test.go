@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -804,6 +805,31 @@ func TestRenewShardLeaseForwardsContextAndTTL(t *testing.T) {
 	}
 }
 
+func TestRenewShardLeaseBoundsCallWithHeartbeatIntervalDeadline(t *testing.T) {
+	t.Parallel()
+
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "value")
+	shardLease := &recordingRenewLease{}
+	c := newTestLeaseLoopConsumer(50*time.Millisecond, 200*time.Millisecond)
+
+	before := time.Now()
+	err := c.renewShardLease(ctx, "shard-1", shardLease)
+	if err != nil {
+		t.Fatalf("renewShardLease() error = %v, want nil", err)
+	}
+	deadline, ok := shardLease.ctx.Deadline()
+	if !ok {
+		t.Fatal("Renew context has no deadline, want heartbeat-interval bound")
+	}
+	if until := deadline.Sub(before); until < 50*time.Millisecond || until > 150*time.Millisecond {
+		t.Fatalf("Renew deadline = %v from call start, want ~%v (the heartbeat interval)", until, 50*time.Millisecond)
+	}
+	if got := shardLease.ctx.Value(contextKey{}); got != "value" {
+		t.Fatalf("Renew context value = %v, want %q (must derive from the caller context)", got, "value")
+	}
+}
+
 func TestRenewShardLeaseWrapsError(t *testing.T) {
 	t.Parallel()
 
@@ -831,7 +857,7 @@ func TestRenewShardLeaseLoopStopsOnContextCancellationWithoutRenewing(t *testing
 	shardLease := &recordingRenewLease{}
 	c := newTestLeaseLoopConsumer(time.Hour, 30*time.Millisecond)
 
-	err := c.renewShardLeaseLoop(ctx, "shard-1", shardLease)
+	err := c.renewShardLeaseLoop(ctx, "shard-1", shardLease, newLeaseRenewTracker())
 	if err != nil {
 		t.Fatalf("renewShardLeaseLoop() error = %v, want nil", err)
 	}
@@ -843,18 +869,24 @@ func TestRenewShardLeaseLoopStopsOnContextCancellationWithoutRenewing(t *testing
 func TestRenewShardLeaseLoopRenewsOnTick(t *testing.T) {
 	t.Parallel()
 
+	type contextKey struct{}
 	shardLease := &recordingRenewLease{ch: make(chan renewCall, 1)}
 	c := newTestLeaseLoopConsumer(time.Millisecond, 45*time.Millisecond)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "value"))
 	done := runRenewShardLeaseLoop(ctx, c, "shard-1", shardLease)
 
 	call := waitRenewCall(t, shardLease)
 	cancel()
 	waitRenewLoopDone(t, done, nil)
 
-	if call.ctx != ctx {
-		t.Fatalf("Renew context = %v, want %v", call.ctx, ctx)
+	// The per-call context derives from the loop context (values propagate)
+	// and carries the heartbeat-interval deadline.
+	if got := call.ctx.Value(contextKey{}); got != "value" {
+		t.Fatalf("Renew context value = %v, want %q", got, "value")
+	}
+	if _, ok := call.ctx.Deadline(); !ok {
+		t.Fatal("Renew context has no deadline, want heartbeat-interval bound")
 	}
 	if call.ttl != 45*time.Millisecond {
 		t.Fatalf("Renew ttl = %v, want %v", call.ttl, 45*time.Millisecond)
@@ -872,7 +904,7 @@ func TestRenewShardLeaseLoopStopsAfterTTLBudgetExhausted(t *testing.T) {
 	c := newTestLeaseLoopConsumer(time.Millisecond, 30*time.Millisecond)
 
 	start := time.Now()
-	err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease)
+	err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease, newLeaseRenewTracker())
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("renewShardLeaseLoop() error = %v, want wraps %v", err, errBoom)
 	}
@@ -956,7 +988,7 @@ func TestRenewShardLeaseLoopStopsPromptlyOnErrNotOwned(t *testing.T) {
 	// it stops on the first tick.
 	c := newTestLeaseLoopConsumer(time.Millisecond, time.Hour)
 
-	err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease)
+	err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease, newLeaseRenewTracker())
 	if !errors.Is(err, lease.ErrNotOwned) {
 		t.Fatalf("renewShardLeaseLoop() error = %v, want wraps %v", err, lease.ErrNotOwned)
 	}
@@ -973,12 +1005,172 @@ func TestRenewShardLeaseLoopReturnsContextDeadlineExceeded(t *testing.T) {
 	shardLease := &recordingRenewLease{}
 	c := newTestLeaseLoopConsumer(time.Hour, 30*time.Millisecond)
 
-	err := c.renewShardLeaseLoop(ctx, "shard-1", shardLease)
+	err := c.renewShardLeaseLoop(ctx, "shard-1", shardLease, newLeaseRenewTracker())
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("renewShardLeaseLoop() error = %v, want %v", err, context.DeadlineExceeded)
 	}
 	if shardLease.calls != 0 {
 		t.Fatalf("Renew calls = %d, want 0", shardLease.calls)
+	}
+}
+
+// hangingRenewLease ignores its context entirely: Renew blocks until unblock
+// is closed. It models a backend call stuck in a network black hole.
+type hangingRenewLease struct {
+	renewCalls   atomic.Int32
+	releaseCalls atomic.Int32
+	unblock      chan struct{}
+}
+
+func (l *hangingRenewLease) Renew(context.Context, time.Duration) error {
+	l.renewCalls.Add(1)
+	<-l.unblock
+	return nil
+}
+
+func (l *hangingRenewLease) Release(context.Context) error {
+	l.releaseCalls.Add(1)
+	return nil
+}
+
+// ctxWaitingRenewLease blocks until its (per-call) context is done and
+// returns its error — a hung but context-respecting backend.
+type ctxWaitingRenewLease struct {
+	calls atomic.Int32
+}
+
+func (l *ctxWaitingRenewLease) Renew(ctx context.Context, _ time.Duration) error {
+	l.calls.Add(1)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (l *ctxWaitingRenewLease) Release(context.Context) error {
+	return nil
+}
+
+func TestRenewShardLeaseLoopWithWatchdogFencesRenewHungIgnoringContext(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &hangingRenewLease{unblock: make(chan struct{})}
+	t.Cleanup(func() { close(shardLease.unblock) })
+	logHandler := newCapturingHandler()
+	c := newTestLeaseLoopConsumer(10*time.Millisecond, 40*time.Millisecond)
+	c.logger = slog.New(logHandler)
+
+	start := time.Now()
+	err := c.renewShardLeaseLoopWithWatchdog(context.Background(), "shard-1", shardLease)
+	elapsed := time.Since(start)
+
+	if err == nil || !strings.Contains(err.Error(), "validity expired") {
+		t.Fatalf("renewShardLeaseLoopWithWatchdog() error = %v, want lease-validity expiry", err)
+	}
+	if elapsed < 40*time.Millisecond {
+		t.Fatalf("watchdog fenced after %v, want >= the 40ms ttl", elapsed)
+	}
+	if calls := shardLease.renewCalls.Load(); calls != 1 {
+		t.Fatalf("Renew calls = %d, want 1 (the single hung attempt)", calls)
+	}
+	var warns []capturedRecord
+	for _, rec := range logHandler.snapshot() {
+		if rec.message == "shard lease validity expired; stopping worker" {
+			warns = append(warns, rec)
+		}
+	}
+	if len(warns) != 1 {
+		t.Fatalf("validity-expired warn logs = %d, want 1", len(warns))
+	}
+	if warns[0].level != slog.LevelWarn {
+		t.Fatalf("validity-expired log level = %v, want %v", warns[0].level, slog.LevelWarn)
+	}
+	if warns[0].attrs["shard"] != "shard-1" {
+		t.Fatalf("validity-expired log shard = %q, want shard-1", warns[0].attrs["shard"])
+	}
+	if warns[0].attrs["since_last_renew"] == "" {
+		t.Fatal("validity-expired log since_last_renew attribute missing")
+	}
+	if warns[0].attrs["ttl"] != (40 * time.Millisecond).String() {
+		t.Fatalf("validity-expired log ttl = %q, want %q", warns[0].attrs["ttl"], (40 * time.Millisecond).String())
+	}
+}
+
+func TestRenewShardLeaseLoopWithWatchdogBoundsCtxRespectingHangToTTLBudget(t *testing.T) {
+	t.Parallel()
+
+	// Each hung-but-context-respecting attempt fails at its per-call deadline
+	// (one heartbeat interval), follows the transient-retry path, and the
+	// loop's own TTL-budget check surfaces the causal error — the watchdog
+	// backstop stays out of it.
+	shardLease := &ctxWaitingRenewLease{}
+	reporter := &recordingReporter{}
+	c := newTestLeaseLoopConsumer(20*time.Millisecond, 70*time.Millisecond)
+	c.reporter = reporter
+
+	err := c.renewShardLeaseLoopWithWatchdog(context.Background(), "shard-1", shardLease)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("renewShardLeaseLoopWithWatchdog() error = %v, want wraps %v", err, context.DeadlineExceeded)
+	}
+	if err == nil || !strings.Contains(err.Error(), "not renewed within ttl") {
+		t.Fatalf("renewShardLeaseLoopWithWatchdog() error = %v, want ttl-exhaustion wrapping the deadline failure", err)
+	}
+	if failures := reporter.countersNamed(metricLeaseRenewalFailures); len(failures) < 2 {
+		t.Fatalf("lease_renewal_failures calls = %d, want >= 2 (bounded attempts retried)", len(failures))
+	}
+	if renewals := reporter.countersNamed(metricLeaseRenewals); len(renewals) != 0 {
+		t.Fatalf("lease_renewals calls = %d, want 0", len(renewals))
+	}
+}
+
+func TestRenewShardLeaseLoopWithWatchdogQuietWhileRenewalsSucceed(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingRenewLease{ch: make(chan renewCall, 1)}
+	logHandler := newCapturingHandler()
+	c := newTestLeaseLoopConsumer(time.Millisecond, 20*time.Millisecond)
+	c.logger = slog.New(logHandler)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.renewShardLeaseLoopWithWatchdog(ctx, "shard-1", shardLease) }()
+
+	// Several full TTL windows of successful renews must keep the watchdog
+	// re-arming instead of firing.
+	time.Sleep(3 * 20 * time.Millisecond)
+	cancel()
+	waitRenewLoopDone(t, done, nil)
+
+	for _, rec := range logHandler.snapshot() {
+		if rec.message == "shard lease validity expired; stopping worker" {
+			t.Fatal("watchdog fired while renewals were succeeding")
+		}
+	}
+}
+
+func TestRenewShardLeaseLoopWithWatchdogPassesThroughErrNotOwned(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingRenewLease{err: lease.ErrNotOwned}
+	c := newTestLeaseLoopConsumer(time.Millisecond, time.Hour)
+
+	err := c.renewShardLeaseLoopWithWatchdog(context.Background(), "shard-1", shardLease)
+	if !errors.Is(err, lease.ErrNotOwned) {
+		t.Fatalf("renewShardLeaseLoopWithWatchdog() error = %v, want wraps %v", err, lease.ErrNotOwned)
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Renew calls = %d, want 1 (no retry once the lease is lost)", shardLease.calls)
+	}
+}
+
+func TestRenewShardLeaseLoopWithWatchdogReturnsNilOnCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	shardLease := &recordingRenewLease{}
+	c := newTestLeaseLoopConsumer(time.Millisecond, time.Hour)
+
+	if err := c.renewShardLeaseLoopWithWatchdog(ctx, "shard-1", shardLease); err != nil {
+		t.Fatalf("renewShardLeaseLoopWithWatchdog() error = %v, want nil", err)
 	}
 }
 
@@ -1140,7 +1332,7 @@ func newTestClaimConsumer(manager *recordingClaimManager) *Consumer {
 func runRenewShardLeaseLoop(ctx context.Context, c *Consumer, shardID string, shardLease lease.Lease) <-chan error {
 	done := make(chan error, 1)
 	go func() {
-		done <- c.renewShardLeaseLoop(ctx, shardID, shardLease)
+		done <- c.renewShardLeaseLoop(ctx, shardID, shardLease, newLeaseRenewTracker())
 	}()
 	return done
 }

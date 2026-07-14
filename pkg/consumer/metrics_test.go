@@ -617,7 +617,7 @@ func TestRenewShardLeaseLoopCountsRenewals(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- c.renewShardLeaseLoop(ctx, "shard-1", shardLease) }()
+	go func() { done <- c.renewShardLeaseLoop(ctx, "shard-1", shardLease, newLeaseRenewTracker()) }()
 
 	select {
 	case <-shardLease.ch:
@@ -655,7 +655,7 @@ func TestRenewShardLeaseLoopCountsRenewalFailure(t *testing.T) {
 	c.tuning = tuningConfig{heartbeatInterval: time.Millisecond, heartbeatTTL: 30 * time.Millisecond}
 	shardLease := &recordingRenewLease{err: errors.New("renew boom")}
 
-	if err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease); err == nil {
+	if err := c.renewShardLeaseLoop(context.Background(), "shard-1", shardLease, newLeaseRenewTracker()); err == nil {
 		t.Fatal("renewShardLeaseLoop() error = nil, want renew error")
 	}
 
