@@ -121,6 +121,29 @@ func TestTuningValidate(t *testing.T) {
 			want: "heartbeat ttl must be > 0",
 		},
 		{
+			name: "heartbeat interval equals ttl",
+			edit: func(cfg *tuningConfig) {
+				cfg.heartbeatInterval = 10 * time.Second
+				cfg.heartbeatTTL = 10 * time.Second
+			},
+			want: "heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)",
+		},
+		{
+			name: "heartbeat interval exceeds ttl",
+			edit: func(cfg *tuningConfig) {
+				cfg.heartbeatInterval = 30 * time.Second
+				cfg.heartbeatTTL = 5 * time.Second
+			},
+			want: "heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)",
+		},
+		{
+			name: "heartbeat interval just below ttl",
+			edit: func(cfg *tuningConfig) {
+				cfg.heartbeatInterval = 10*time.Second - time.Millisecond
+				cfg.heartbeatTTL = 10 * time.Second
+			},
+		},
+		{
 			name: "shard lease release timeout",
 			edit: func(cfg *tuningConfig) { cfg.shardLeaseReleaseTimeout = 0 },
 			want: "shard lease release timeout must be > 0",

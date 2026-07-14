@@ -75,6 +75,12 @@ func (t tuningConfig) validate() error {
 	if t.heartbeatTTL <= 0 {
 		return errors.New("heartbeat ttl must be > 0")
 	}
+	// A renew tick must land well inside the TTL, or every lease expires
+	// before its renewal and peers systematically claim shards away from a
+	// live worker (dual ownership).
+	if t.heartbeatInterval >= t.heartbeatTTL {
+		return errors.New("heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)")
+	}
 	if t.shardLeaseReleaseTimeout <= 0 {
 		return errors.New("shard lease release timeout must be > 0")
 	}
