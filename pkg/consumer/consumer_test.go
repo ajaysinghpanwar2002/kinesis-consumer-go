@@ -133,6 +133,15 @@ func TestNewValidation(t *testing.T) {
 			opts:    []Option{WithLeaseManager(leaseMgr), WithFailurePolicy(FailurePolicySendToDLQ)},
 			want:    "dlq publisher is required when failure policy is send-to-dlq",
 		},
+		{
+			name:    "record handler and batch handler together",
+			cfg:     Config{StreamName: "stream"},
+			client:  client,
+			store:   store,
+			handler: handler,
+			opts:    []Option{WithLeaseManager(leaseMgr), WithBatchHandler(func(context.Context, []Record) error { return nil })},
+			want:    "provide either a record handler or WithBatchHandler, not both",
+		},
 	}
 
 	for _, tt := range tests {

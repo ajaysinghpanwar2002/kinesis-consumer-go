@@ -247,6 +247,9 @@ func resolveHandlers(handler HandlerFunc, opt options) (HandlerFunc, BatchHandle
 	if handler == nil && opt.batchHandler == nil {
 		return nil, nil, errors.New("handler is required (provide WithBatchHandler for batch processing)")
 	}
+	if handler != nil && opt.batchHandler != nil {
+		return nil, nil, errors.New("provide either a record handler or WithBatchHandler, not both")
+	}
 	return handler, opt.batchHandler, nil
 }
 
