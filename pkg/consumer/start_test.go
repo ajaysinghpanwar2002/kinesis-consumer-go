@@ -1327,14 +1327,14 @@ func TestStartReturnsContextDeadlineExceeded(t *testing.T) {
 	}
 }
 
-func newTestStartConsumer(client kinesisAPI, manager *recordingHeartbeatManager) *Consumer {
+func newTestStartConsumer(client KinesisAPI, manager *recordingHeartbeatManager) *Consumer {
 	c := newTestHeartbeatConsumer(manager)
 	c.client = client
 	c.store = &fakeCheckpointSaveStore{}
 	return c
 }
 
-func newTestStartConsumerWithLeaseManager(client kinesisAPI, manager lease.Manager) *Consumer {
+func newTestStartConsumerWithLeaseManager(client KinesisAPI, manager lease.Manager) *Consumer {
 	tuning := defaultTuning()
 	tuning.heartbeatInterval = 10 * time.Millisecond
 	tuning.heartbeatTTL = 30 * time.Millisecond

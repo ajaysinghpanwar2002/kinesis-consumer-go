@@ -19,7 +19,7 @@ import (
 // Consumer owns Kinesis shard consumption for one worker process.
 type Consumer struct {
 	cfg           Config
-	client        kinesisAPI
+	client        KinesisAPI
 	store         checkpoint.Store
 	handler       HandlerFunc
 	batchHandler  BatchHandlerFunc
@@ -180,8 +180,10 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 	return runCtx.Err()
 }
 
-// New validates consumer dependencies and returns a configured Consumer.
-func New(cfg Config, client *Client, store checkpoint.Store, handler HandlerFunc, opts ...Option) (*Consumer, error) {
+// New validates consumer dependencies and returns a configured Consumer. The
+// client is any KinesisAPI implementation (a *kinesis.Client, or a test
+// double / instrumented wrapper); it must be non-nil.
+func New(cfg Config, client KinesisAPI, store checkpoint.Store, handler HandlerFunc, opts ...Option) (*Consumer, error) {
 	if err := validateConstructorInputs(client, store); err != nil {
 		return nil, err
 	}
@@ -231,7 +233,7 @@ func New(cfg Config, client *Client, store checkpoint.Store, handler HandlerFunc
 	}, nil
 }
 
-func validateConstructorInputs(client *Client, store checkpoint.Store) error {
+func validateConstructorInputs(client KinesisAPI, store checkpoint.Store) error {
 	if client == nil {
 		return errors.New("kinesis client is required")
 	}

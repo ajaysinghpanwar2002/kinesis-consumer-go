@@ -70,7 +70,7 @@ func TestNewValidation(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     Config
-		client  *Client
+		client  KinesisAPI
 		store   checkpoint.Store
 		handler HandlerFunc
 		opts    []Option
@@ -250,6 +250,27 @@ func TestNewAllowsBatchHandlerWithoutRecordHandler(t *testing.T) {
 	}
 	if c.batchHandler == nil {
 		t.Fatalf("batchHandler = nil, want handler")
+	}
+}
+
+func TestNewAcceptsCustomKinesisAPI(t *testing.T) {
+	t.Parallel()
+
+	// A user-supplied implementation of KinesisAPI that is NOT a
+	// *kinesis.Client (here a test double) must be accepted and retained by
+	// New — the API-1 contract that unblocks doubles and instrumented
+	// wrappers.
+	var client KinesisAPI = &fakeKinesisClient{}
+	store := fakeCheckpointStore{}
+	handler := func(context.Context, Record) error { return nil }
+	leaseMgr := fakeLeaseManager{}
+
+	c, err := New(Config{StreamName: "stream"}, client, store, handler, WithLeaseManager(leaseMgr))
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil", err)
+	}
+	if c.client != client {
+		t.Fatal("custom KinesisAPI client was not retained")
 	}
 }
 

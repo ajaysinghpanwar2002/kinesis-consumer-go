@@ -34,12 +34,17 @@ so you can plan around the gaps.
 ## Public entry point
 
 ```go
-consumer.New(cfg consumer.Config, client *kinesis.Client, store checkpoint.Store, handler consumer.HandlerFunc, opts ...consumer.Option) (*consumer.Consumer, error)
+consumer.New(cfg consumer.Config, client consumer.KinesisAPI, store checkpoint.Store, handler consumer.HandlerFunc, opts ...consumer.Option) (*consumer.Consumer, error)
 ```
 
 `Start(ctx)` runs the consumer and blocks until `ctx` is cancelled (or a fatal
 error surfaces). The Kinesis client and checkpoint store are required; the
 handler may be nil only when a batch handler is supplied via `WithBatchHandler`.
+
+`KinesisAPI` is the three-method interface (`ListShards`, `GetShardIterator`,
+`GetRecords`) the consumer depends on. A `*kinesis.Client` satisfies it
+directly, so you normally pass `kinesis.NewFromConfig(...)`; supply your own
+implementation when you want a test double or an instrumented wrapper.
 
 ## Stream identity and start position
 
