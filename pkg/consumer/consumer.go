@@ -78,7 +78,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 		return err
 	}
 	if len(shards) == 0 {
-		return fmt.Errorf("no shards found for stream %s", c.streamKey())
+		return fmt.Errorf("%w for stream %s", ErrNoShards, c.streamKey())
 	}
 
 	shardMap := make(map[string]types.Shard, len(shards))

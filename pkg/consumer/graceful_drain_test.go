@@ -75,8 +75,8 @@ func TestDrainShardWorkersTimeoutForcesStopAndReturnsTimeout(t *testing.T) {
 	})
 
 	err := drainShardWorkers(workers, &workerWG, 10*time.Millisecond)
-	if !errors.Is(err, errGracefulDrainTimeout) {
-		t.Fatalf("drainShardWorkers() error = %v, want %v", err, errGracefulDrainTimeout)
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Fatalf("drainShardWorkers() error = %v, want %v", err, ErrDrainTimeout)
 	}
 	if err == nil || err.Error() != "graceful drain timed out after 10ms" {
 		t.Fatalf("drainShardWorkers() error = %v, want timeout message", err)
@@ -181,8 +181,8 @@ func TestDrainShardWorkersTimeoutAfterWorkerErrorJoinsBoth(t *testing.T) {
 	}()
 
 	err := drainShardWorkersOrError(workers, &wg, 20*time.Millisecond, workerErrCh)
-	if !errors.Is(err, errGracefulDrainTimeout) {
-		t.Fatalf("drainShardWorkersOrError() error = %v, want wraps %v", err, errGracefulDrainTimeout)
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Fatalf("drainShardWorkersOrError() error = %v, want wraps %v", err, ErrDrainTimeout)
 	}
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("drainShardWorkersOrError() error = %v, want also wraps %v", err, errBoom)
@@ -217,8 +217,8 @@ func TestWaitForShardDrainTimeoutCollectsErrorBufferedDuringForceStop(t *testing
 	done := make(chan struct{}) // the drain never finishes on its own
 
 	err := waitForShardDrain(workers, &wg, done, timeoutCh, 20*time.Millisecond, workerErrCh)
-	if !errors.Is(err, errGracefulDrainTimeout) {
-		t.Fatalf("waitForShardDrain() error = %v, want wraps %v", err, errGracefulDrainTimeout)
+	if !errors.Is(err, ErrDrainTimeout) {
+		t.Fatalf("waitForShardDrain() error = %v, want wraps %v", err, ErrDrainTimeout)
 	}
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("waitForShardDrain() error = %v, want also wraps %v", err, errBoom)

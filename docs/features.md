@@ -46,6 +46,12 @@ handler may be nil only when a batch handler is supplied via `WithBatchHandler`.
 directly, so you normally pass `kinesis.NewFromConfig(...)`; supply your own
 implementation when you want a test double or an instrumented wrapper.
 
+`Start` returns two exported sentinel errors you can branch on with
+`errors.Is`: `consumer.ErrNoShards` when the stream has no shards to consume,
+and `consumer.ErrDrainTimeout` when a `WithGracefulDrain` drain does not finish
+in time (the returned error still carries the stream name / elapsed timeout in
+its message).
+
 ## Stream identity and start position
 
 - **Identity:** set `Config.StreamName` or `Config.StreamARN` (one is required).

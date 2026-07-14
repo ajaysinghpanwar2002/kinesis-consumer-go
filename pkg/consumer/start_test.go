@@ -48,6 +48,9 @@ func TestStartReturnsErrorWhenNoShardsDiscovered(t *testing.T) {
 	if err == nil {
 		t.Fatal("Start() error = nil, want error")
 	}
+	if !errors.Is(err, ErrNoShards) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, ErrNoShards)
+	}
 	if err.Error() != "no shards found for stream stream" {
 		t.Fatalf("Start() error = %q, want %q", err.Error(), "no shards found for stream stream")
 	}
@@ -737,7 +740,7 @@ func TestStartGracefulDrainTimeoutForceStopsWorkers(t *testing.T) {
 	<-workerStarted
 	cancel()
 
-	waitStartDone(t, done, errGracefulDrainTimeout)
+	waitStartDone(t, done, ErrDrainTimeout)
 	select {
 	case <-workerCtxCanceled:
 	case <-time.After(time.Second):

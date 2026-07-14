@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-var errGracefulDrainTimeout = errors.New("graceful drain timed out")
-
 func drainShardWorkers(
 	workers *shardWorkerSet,
 	workerWG *sync.WaitGroup,
@@ -107,7 +105,7 @@ func waitForShardDrain(
 				// arbitrarily — don't drop a worker error already buffered.
 				firstErr = pendingShardDrainError(workerErrCh)
 			}
-			timeoutErr := fmt.Errorf("%w after %s", errGracefulDrainTimeout, timeoutAfter)
+			timeoutErr := fmt.Errorf("%w after %s", ErrDrainTimeout, timeoutAfter)
 			if firstErr != nil {
 				return errors.Join(firstErr, timeoutErr)
 			}
