@@ -697,4 +697,179 @@ func TestProcessShardRecordsPassReDerivesAfterExpiredIterator(t *testing.T) {
 	if len(handled) != 1 || handled[0] != "sequence-1" {
 		t.Fatalf("handled records = %v, want [sequence-1] (record read after recovery)", handled)
 	}
+	// No progress was pending when the iterator expired, so the only save is
+	// the shard-completion checkpoint — no expiry flush.
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1 (completion only)", len(store.saveCalls))
+	}
+	if got := store.saveCalls[0].sequenceNumber; got != shardCompletionValue("sequence-1") {
+		t.Fatalf("saved checkpoint = %q, want %q", got, shardCompletionValue("sequence-1"))
+	}
+}
+
+// readThroughCheckpointSaveStore makes Save visible to subsequent Get calls,
+// so re-derivation observes the flushed checkpoint like a real store.
+type readThroughCheckpointSaveStore struct {
+	fakeCheckpointSaveStore
+}
+
+func (s *readThroughCheckpointSaveStore) Save(ctx context.Context, streamName, shardID, sequenceNumber string) error {
+	if err := s.fakeCheckpointSaveStore.Save(ctx, streamName, shardID, sequenceNumber); err != nil {
+		return err
+	}
+	s.checkpoint = sequenceNumber
+	return nil
+}
+
+func TestProcessShardRecordsPassExpiredIteratorFlushesUnsavedProgress(t *testing.T) {
+	t.Parallel()
+
+	// The iterator expires mid-catch-up with records processed but not yet
+	// checkpointed. Re-derivation reads only the *stored* checkpoint, so the pass
+	// must flush lastSeq first — with StartLatest (the default here) and no
+	// checkpoint yet, a re-derived LATEST iterator would re-anchor to the shard
+	// tip and silently skip everything since the last processed page. The flush
+	// must instead drive an AFTER_SEQUENCE_NUMBER(lastSeq) re-derivation and the
+	// next record must be processed — no gap.
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("fresh-iterator"),
+		},
+		getRecordsErrs: []error{
+			nil,                               // page 1: succeeds
+			&types.ExpiredIteratorException{}, // page 2: held iterator expired
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records: []types.Record{
+					{SequenceNumber: aws.String("sequence-1")},
+					{SequenceNumber: aws.String("sequence-2")},
+				},
+				NextShardIterator: aws.String("next-iterator"),
+			},
+			// After the flush and re-derive: the record right after the
+			// flushed checkpoint.
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-3")}},
+				NextShardIterator: aws.String("post-iterator"),
+			},
+			// Caught up. The caught-up flush saves sequence-3 (pending since
+			// the expiry flush reset the count to 0).
+			{NextShardIterator: aws.String("tip-iterator")},
+		},
+	}
+	store := &readThroughCheckpointSaveStore{}
+	var handled []string
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			handled = append(handled, aws.ToString(record.SequenceNumber))
+			return nil
+		},
+	}
+
+	lastSeq, count, nextIterator, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "held-iterator")
+	if err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-3" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-3")
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 (flushed)", count)
+	}
+	if nextIterator != "tip-iterator" {
+		t.Fatalf("nextIterator = %q, want %q", nextIterator, "tip-iterator")
+	}
+	// Two saves: the expiry flush with the in-memory progress, then the
+	// caught-up flush for the post-recovery record.
+	if len(store.saveCalls) != 2 {
+		t.Fatalf("Save calls = %d, want 2 (expiry flush, caught-up flush)", len(store.saveCalls))
+	}
+	if got := store.saveCalls[0].sequenceNumber; got != "sequence-2" {
+		t.Fatalf("expiry-flushed checkpoint = %q, want %q", got, "sequence-2")
+	}
+	if got := store.saveCalls[1].sequenceNumber; got != "sequence-3" {
+		t.Fatalf("caught-up checkpoint = %q, want %q", got, "sequence-3")
+	}
+	// Re-derived exactly once, from the flushed checkpoint — not LATEST.
+	if len(client.getShardIteratorCalls) != 1 {
+		t.Fatalf("GetShardIterator calls = %d, want 1 (re-derive after expiry)", len(client.getShardIteratorCalls))
+	}
+	if got := client.getShardIteratorCalls[0].ShardIteratorType; got != types.ShardIteratorTypeAfterSequenceNumber {
+		t.Fatalf("re-derive iterator type = %q, want %q", got, types.ShardIteratorTypeAfterSequenceNumber)
+	}
+	if got := aws.ToString(client.getShardIteratorCalls[0].StartingSequenceNumber); got != "sequence-2" {
+		t.Fatalf("re-derive StartingSequenceNumber = %q, want %q", got, "sequence-2")
+	}
+	// Reads: page 1 on the held iterator, the expired read on its successor,
+	// the post-recovery read on the re-derived iterator, then the caught-up read.
+	if len(client.getRecordsCalls) != 4 {
+		t.Fatalf("GetRecords calls = %d, want 4", len(client.getRecordsCalls))
+	}
+	if got := aws.ToString(client.getRecordsCalls[1].ShardIterator); got != "next-iterator" {
+		t.Fatalf("expired read used %q, want %q", got, "next-iterator")
+	}
+	if got := aws.ToString(client.getRecordsCalls[2].ShardIterator); got != "fresh-iterator" {
+		t.Fatalf("post-recovery read used %q, want %q", got, "fresh-iterator")
+	}
+	// The post-flush record was processed — recovery continued with no gap.
+	if len(handled) != 3 || handled[2] != "sequence-3" {
+		t.Fatalf("handled records = %v, want [sequence-1 sequence-2 sequence-3]", handled)
+	}
+}
+
+func TestProcessShardRecordsPassExpiredIteratorFlushSaveFailureReturnsError(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	client := &fakeKinesisClient{
+		getRecordsErrs: []error{
+			nil,
+			&types.ExpiredIteratorException{},
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+				NextShardIterator: aws.String("next-iterator"),
+			},
+		},
+	}
+	store := &fakeCheckpointSaveStore{saveErr: errBoom}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+
+	lastSeq, count, nextIterator, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "held-iterator")
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errBoom)
+	}
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1 (flush failed, progress still pending)", count)
+	}
+	if nextIterator != "" {
+		t.Fatalf("nextIterator = %q, want empty on error", nextIterator)
+	}
+	if len(client.getShardIteratorCalls) != 0 {
+		t.Fatalf("GetShardIterator calls = %d, want 0 (failed before re-derive)", len(client.getShardIteratorCalls))
+	}
 }

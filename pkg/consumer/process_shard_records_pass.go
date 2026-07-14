@@ -68,7 +68,18 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 				// The held iterator outlived its ~5-minute TTL (e.g. a large
 				// pollInterval or a slow handler stretched the gap between reads).
 				// Drop it and re-derive from the stored checkpoint on the next
-				// iteration instead of failing the shard.
+				// iteration instead of failing the shard. Re-derivation reads only
+				// the *stored* checkpoint, so flush unsaved in-memory progress
+				// first: with StartLatest and no checkpoint yet, a re-derived
+				// LATEST iterator would re-anchor to the current tip and silently
+				// skip everything since the last processed page (LIB-2); with a
+				// checkpoint, stale progress replays needlessly.
+				if count > 0 && lastSeq != "" && ctx.Err() == nil {
+					if err := c.saveShardCheckpoint(ctx, shardID, lastSeq); err != nil {
+						return lastSeq, count, "", fmt.Errorf("process shard records pass expired-iterator checkpoint %s: %w", shardID, err)
+					}
+					count = 0
+				}
 				iterator = ""
 				continue
 			}
