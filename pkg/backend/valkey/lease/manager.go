@@ -215,22 +215,58 @@ func (m *Manager) workerKey(streamName, owner string) string {
 	return backend.WorkerKey(m.workPrefix, streamName, owner)
 }
 
-// scanKeys returns all keys matching pattern by iterating SCAN cursors.
+// scanKeys returns all keys matching pattern across every node the client
+// knows about, de-duplicated.
+//
+// A keyless SCAN issued to a cluster client is routed to a single arbitrary
+// node: valkey-go picks the first connection it iterates for a command with no
+// key (the InitSlot branch of clusterClient._pick), so a cluster SCAN only
+// ever walks that one node's slice of the keyspace. Lease and worker keys are
+// spread across all primaries by slot, so under WithCluster() a single-node
+// SCAN makes List/Workers return per-call-varying subsets — phantom dead
+// workers, phantom unowned shards, nondeterministic claim churn. To see the
+// whole keyspace we fan the SCAN out across each node returned by Nodes() and
+// union the results.
+//
+// In standalone mode Nodes() returns just the one client, so this reduces to a
+// single cursor walk. Keys are de-duplicated because a cluster's Nodes() also
+// includes replicas, which reply with the same keys as their primary; the
+// primary is always in the set, so unioning never misses a key, and a lagging
+// replica can at worst surface a slightly stale key (within the
+// eventual-consistency tolerance List/Workers already carry).
 func (m *Manager) scanKeys(ctx context.Context, pattern string) ([]string, error) {
-	var (
-		keys   []string
-		cursor uint64
-	)
+	var keys []string
+	seen := make(map[string]struct{})
+	for _, node := range m.client.Nodes() {
+		if err := scanNodeKeys(ctx, node, pattern, func(key string) {
+			if _, ok := seen[key]; ok {
+				return
+			}
+			seen[key] = struct{}{}
+			keys = append(keys, key)
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return keys, nil
+}
+
+// scanNodeKeys walks the SCAN cursor on a single node, invoking emit for each
+// key returned.
+func scanNodeKeys(ctx context.Context, node valkey.Client, pattern string, emit func(string)) error {
+	var cursor uint64
 	for {
-		resp := m.client.Do(ctx, m.client.B().Scan().Cursor(cursor).Match(pattern).Count(100).Build())
+		resp := node.Do(ctx, node.B().Scan().Cursor(cursor).Match(pattern).Count(100).Build())
 		entry, err := resp.AsScanEntry()
 		if err != nil {
-			return nil, fmt.Errorf("scan %s: %w", pattern, err)
+			return fmt.Errorf("scan %s: %w", pattern, err)
 		}
-		keys = append(keys, entry.Elements...)
+		for _, key := range entry.Elements {
+			emit(key)
+		}
 		cursor = entry.Cursor
 		if cursor == 0 {
-			return keys, nil
+			return nil
 		}
 	}
 }

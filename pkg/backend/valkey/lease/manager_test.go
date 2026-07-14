@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/pratilipi/kinesis-consumer-go/internal/backend"
 	consumerlease "github.com/pratilipi/kinesis-consumer-go/pkg/lease"
@@ -267,6 +268,154 @@ func TestManagerLeaseExpires(t *testing.T) {
 	}
 	if _, ok := owners["shard-1"]; ok {
 		t.Fatalf("shard-1 still present after TTL expiry")
+	}
+}
+
+// multiNodeClient wraps a real valkey.Client but reports a fixed set of nodes
+// from Nodes(). It lets tests exercise scanKeys' cross-node fan-out without a
+// real cluster (miniredis is standalone-only, and valkey-go@v1.0.65 ships no
+// mock package). Every node in the map is itself a real client connected to
+// its own miniredis, so the per-node SCAN cursor walk and the dedup run
+// against real data.
+type multiNodeClient struct {
+	valkey.Client
+	nodes map[string]valkey.Client
+}
+
+func (c *multiNodeClient) Nodes() map[string]valkey.Client {
+	return c.nodes
+}
+
+// newRawClient opens a standalone client to addr matching how NewManager
+// builds its client (single connection, no client-side cache).
+func newRawClient(t *testing.T, addr string) valkey.Client {
+	t.Helper()
+
+	c, err := valkey.NewClient(valkey.ClientOption{
+		InitAddress:       []string{addr},
+		ForceSingleClient: true,
+		DisableCache:      true,
+	})
+	if err != nil {
+		t.Fatalf("valkey.NewClient(%q): %v", addr, err)
+	}
+	t.Cleanup(c.Close)
+	return c
+}
+
+// newMultiNodeManager builds a Manager whose client reports n distinct nodes,
+// each backed by its own miniredis server, and returns the manager alongside
+// those servers so tests can seed keys per node.
+func newMultiNodeManager(t *testing.T, n int) (*Manager, []*miniredis.Miniredis) {
+	t.Helper()
+
+	servers := make([]*miniredis.Miniredis, n)
+	nodes := make(map[string]valkey.Client, n)
+	var base valkey.Client
+	for i := range servers {
+		server, err := miniredis.Run()
+		if err != nil {
+			t.Fatalf("miniredis start: %v", err)
+		}
+		t.Cleanup(server.Close)
+		servers[i] = server
+
+		client := newRawClient(t, server.Addr())
+		if base == nil {
+			base = client
+		}
+		nodes[server.Addr()] = client
+	}
+
+	mgr := &Manager{
+		client:     &multiNodeClient{Client: base, nodes: nodes},
+		keyPrefix:  "lease-test",
+		workPrefix: "lease-test-worker",
+		slots:      backend.NewSlotTracker(0),
+	}
+	return mgr, servers
+}
+
+func TestScanKeysFansOutAcrossNodes(t *testing.T) {
+	t.Parallel()
+
+	mgr, servers := newMultiNodeManager(t, 2)
+	ctx := context.Background()
+
+	key1 := backend.LeaseKey("lease-test", "stream", "shard-1")
+	key2 := backend.LeaseKey("lease-test", "stream", "shard-2")
+	if err := servers[0].Set(key1, "owner-a"); err != nil {
+		t.Fatalf("seed node 0: %v", err)
+	}
+	if err := servers[1].Set(key2, "owner-b"); err != nil {
+		t.Fatalf("seed node 1: %v", err)
+	}
+
+	keys, err := mgr.scanKeys(ctx, "lease-test:stream:*")
+	if err != nil {
+		t.Fatalf("scanKeys error: %v", err)
+	}
+	slices.Sort(keys)
+	want := []string{key1, key2}
+	slices.Sort(want)
+	if !slices.Equal(keys, want) {
+		t.Fatalf("scanKeys = %v, want the union across both nodes %v", keys, want)
+	}
+}
+
+func TestScanKeysDeduplicatesAcrossNodes(t *testing.T) {
+	t.Parallel()
+
+	mgr, servers := newMultiNodeManager(t, 2)
+	ctx := context.Background()
+
+	// shared mimics a key visible on both a primary and its replica; unique
+	// lives on only one node.
+	shared := backend.LeaseKey("lease-test", "stream", "shard-1")
+	unique := backend.LeaseKey("lease-test", "stream", "shard-2")
+	if err := servers[0].Set(shared, "owner-a"); err != nil {
+		t.Fatalf("seed node 0 shared: %v", err)
+	}
+	if err := servers[1].Set(shared, "owner-a"); err != nil {
+		t.Fatalf("seed node 1 shared: %v", err)
+	}
+	if err := servers[1].Set(unique, "owner-b"); err != nil {
+		t.Fatalf("seed node 1 unique: %v", err)
+	}
+
+	keys, err := mgr.scanKeys(ctx, "lease-test:stream:*")
+	if err != nil {
+		t.Fatalf("scanKeys error: %v", err)
+	}
+	slices.Sort(keys)
+	want := []string{shared, unique}
+	slices.Sort(want)
+	if !slices.Equal(keys, want) {
+		t.Fatalf("scanKeys = %v, want deduplicated union %v", keys, want)
+	}
+}
+
+func TestWorkersFansOutAcrossNodes(t *testing.T) {
+	t.Parallel()
+
+	mgr, servers := newMultiNodeManager(t, 2)
+	ctx := context.Background()
+
+	if err := servers[0].Set(backend.WorkerKey("lease-test-worker", "stream", "worker-a"), "worker-a"); err != nil {
+		t.Fatalf("seed node 0: %v", err)
+	}
+	if err := servers[1].Set(backend.WorkerKey("lease-test-worker", "stream", "worker-b"), "worker-b"); err != nil {
+		t.Fatalf("seed node 1: %v", err)
+	}
+
+	owners, err := mgr.Workers(ctx, "stream")
+	if err != nil {
+		t.Fatalf("Workers error: %v", err)
+	}
+	slices.Sort(owners)
+	want := []string{"worker-a", "worker-b"}
+	if !slices.Equal(owners, want) {
+		t.Fatalf("workers = %v, want owners from both nodes %v", owners, want)
 	}
 }
 
