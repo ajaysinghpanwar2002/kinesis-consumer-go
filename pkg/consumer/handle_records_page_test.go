@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -635,7 +636,7 @@ func TestHandleRecordsPageContextCancellationBypassesFailurePolicy(t *testing.T)
 	}
 }
 
-func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) {
+func TestHandleRecordsPageHandlerContextErrorsFollowFailurePolicy(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -644,6 +645,8 @@ func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) 
 	}{
 		{name: "canceled", err: context.Canceled},
 		{name: "deadline", err: context.DeadlineExceeded},
+		{name: "wrapped canceled", err: fmt.Errorf("call upstream: %w", context.Canceled)},
+		{name: "wrapped deadline", err: fmt.Errorf("call upstream: %w", context.DeadlineExceeded)},
 	}
 	for _, tt := range tests {
 		t.Run("record "+tt.name, func(t *testing.T) {
@@ -669,14 +672,17 @@ func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) 
 			}
 
 			err := c.handleRecordsPage(context.Background(), "shard-1", out)
-			if !errors.Is(err, tt.err) {
-				t.Fatalf("handleRecordsPage() error = %v, want %v", err, tt.err)
+			if err != nil {
+				t.Fatalf("handleRecordsPage() error = %v, want nil (failure policy applied)", err)
 			}
-			if attempts != 1 {
-				t.Fatalf("attempts = %d, want 1", attempts)
+			if attempts != 3 {
+				t.Fatalf("attempts = %d, want 3 (retried like any handler error)", attempts)
 			}
-			if len(publisher.records) != 0 {
-				t.Fatalf("published records = %d, want 0", len(publisher.records))
+			if len(publisher.records) != 1 {
+				t.Fatalf("published records = %d, want 1", len(publisher.records))
+			}
+			if publisher.records[0].Error != tt.err.Error() {
+				t.Fatalf("poison record error = %q, want %q", publisher.records[0].Error, tt.err.Error())
 			}
 		})
 
@@ -703,16 +709,44 @@ func TestHandleRecordsPageHandlerContextErrorsBypassFailurePolicy(t *testing.T) 
 			}
 
 			err := c.handleRecordsPage(context.Background(), "shard-1", out)
-			if !errors.Is(err, tt.err) {
-				t.Fatalf("handleRecordsPage() error = %v, want %v", err, tt.err)
+			if err != nil {
+				t.Fatalf("handleRecordsPage() error = %v, want nil (failure policy applied)", err)
 			}
-			if attempts != 1 {
-				t.Fatalf("attempts = %d, want 1", attempts)
+			if attempts != 3 {
+				t.Fatalf("attempts = %d, want 3 (retried like any handler error)", attempts)
 			}
-			if len(publisher.records) != 0 {
-				t.Fatalf("published records = %d, want 0", len(publisher.records))
+			if len(publisher.records) != 1 {
+				t.Fatalf("published records = %d, want 1", len(publisher.records))
 			}
 		})
+	}
+}
+
+func TestHandleRecordsPageHandlerDeadlineErrorSkippedUnderSkipPolicy(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	c := &Consumer{
+		logger:        slog.New(slog.DiscardHandler),
+		reporter:      metrics.Nop{},
+		failurePolicy: FailurePolicySkip,
+		tuning:        tuningConfig{retryMaxAttempts: 2},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			attempts++
+			return fmt.Errorf("db query: %w", context.DeadlineExceeded)
+		},
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	if err := c.handleRecordsPage(context.Background(), "shard-1", out); err != nil {
+		t.Fatalf("handleRecordsPage() error = %v, want nil (record skipped)", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
 	}
 }
 

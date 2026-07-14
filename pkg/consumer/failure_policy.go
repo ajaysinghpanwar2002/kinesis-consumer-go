@@ -94,7 +94,7 @@ func (c *Consumer) handleRecordWithRetry(ctx context.Context, shardID string, re
 			c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKindRecord}))
 		return nil
 	}
-	if terminalErr, ok := terminalContextError(ctx, err); ok {
+	if terminalErr, ok := terminalContextError(ctx); ok {
 		return terminalErr
 	}
 
@@ -118,7 +118,7 @@ func (c *Consumer) handleBatchWithRetry(ctx context.Context, shardID string, rec
 			c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKindBatch}))
 		return nil
 	}
-	if terminalErr, ok := terminalContextError(ctx, err); ok {
+	if terminalErr, ok := terminalContextError(ctx); ok {
 		return terminalErr
 	}
 
@@ -126,12 +126,14 @@ func (c *Consumer) handleBatchWithRetry(ctx context.Context, shardID string, rec
 	return c.applyFailurePolicy(ctx, shardID, handlerKindBatch, records, attempts, err, failFastErr)
 }
 
-func terminalContextError(ctx context.Context, err error) (error, bool) {
+// terminalContextError reports whether the consumer's own shard context is
+// done. Only that is terminal: a handler *returning* an error that matches
+// context.Canceled or context.DeadlineExceeded (e.g. from an internal HTTP or
+// DB timeout) is an ordinary handler failure and must follow the
+// retry → failure-policy path, not stop the consumer.
+func terminalContextError(ctx context.Context) (error, bool) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr, true
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err, true
 	}
 	return nil, false
 }
@@ -150,7 +152,7 @@ func (c *Consumer) retryHandler(ctx context.Context, shardID, handlerKind string
 			c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKind}))
 		if err != nil {
 			lastErr = err
-			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if ctx.Err() != nil {
 				return attempt, lastErr
 			}
 			if attempt == maxAttempts {

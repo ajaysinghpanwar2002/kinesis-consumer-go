@@ -37,10 +37,16 @@ Between failed attempts, the consumer waits using linear backoff:
 sleep = attempt * backoff
 ```
 
-Context cancellation and deadlines are terminal. If the handler returns
-`context.Canceled` or `context.DeadlineExceeded`, or if the handler context is
-already done, the consumer stops immediately and does not apply the failure
-policy.
+Only consumer-side context cancellation is terminal. If the shard context the
+consumer passed to the handler is done (consumer shutdown, lease loss, or a
+concurrent-page abort), the consumer stops immediately and does not apply the
+failure policy.
+
+A handler that merely *returns* an error matching `context.Canceled` or
+`context.DeadlineExceeded` — for example an `http.Client` timeout or a
+database query deadline inside the handler — is treated like any other handler
+failure: it is retried and, if retries are exhausted, the failure policy
+applies. It does not stop the consumer.
 
 ## Failure Policies
 
