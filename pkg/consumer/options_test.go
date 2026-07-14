@@ -170,6 +170,11 @@ func TestOptionValidation(t *testing.T) {
 			want: "rebalance maxMoves must be >= 1",
 		},
 		{
+			name: "idle time between reads",
+			opt:  WithIdleTimeBetweenReads(-1),
+			want: "idle time between reads cannot be negative",
+		},
+		{
 			name: "heartbeat interval",
 			opt:  WithHeartbeat(0, time.Second),
 			want: "heartbeat interval must be > 0",
@@ -241,6 +246,7 @@ func TestOptionsApplyValues(t *testing.T) {
 		WithLeaseManager(leaseMgr),
 		WithRetry(2, 3*time.Second),
 		WithPolling(4*time.Second, 5*time.Second),
+		WithIdleTimeBetweenReads(16 * time.Millisecond),
 		WithBatching(6, 7),
 		WithShardConcurrency(8),
 		WithRebalance(9*time.Second, 10*time.Second, 11*time.Second, 12),
@@ -316,6 +322,9 @@ func TestOptionsApplyValues(t *testing.T) {
 	}
 	if cfg.tuning.heartbeatTTL != 14*time.Second {
 		t.Fatalf("heartbeatTTL = %v, want %v", cfg.tuning.heartbeatTTL, 14*time.Second)
+	}
+	if cfg.tuning.idleTimeBetweenReads != 16*time.Millisecond {
+		t.Fatalf("idleTimeBetweenReads = %v, want %v", cfg.tuning.idleTimeBetweenReads, 16*time.Millisecond)
 	}
 }
 

@@ -9,6 +9,7 @@ type tuningConfig struct {
 	shardConcurrency         int
 	batchSize                int32
 	pollInterval             time.Duration
+	idleTimeBetweenReads     time.Duration
 	shardSyncInterval        time.Duration
 	retryMaxAttempts         int
 	retryBackoff             time.Duration
@@ -27,6 +28,7 @@ func defaultTuning() tuningConfig {
 		shardConcurrency:         1,
 		batchSize:                100,
 		pollInterval:             time.Second,
+		idleTimeBetweenReads:     200 * time.Millisecond,
 		shardSyncInterval:        time.Minute,
 		retryMaxAttempts:         3,
 		retryBackoff:             time.Second,
@@ -50,6 +52,9 @@ func (t tuningConfig) validate() error {
 	}
 	if t.pollInterval <= 0 {
 		return errors.New("pollInterval must be > 0")
+	}
+	if t.idleTimeBetweenReads < 0 {
+		return errors.New("idle time between reads cannot be negative")
 	}
 	if t.shardSyncInterval < time.Second {
 		return errors.New("shardSyncInterval must be >= 1s")

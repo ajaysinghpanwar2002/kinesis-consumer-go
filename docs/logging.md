@@ -82,6 +82,7 @@ is visible through the move events plus the configured cooldown period.
 
 | Message | Level | Attributes | When |
 | --- | --- | --- | --- |
+| `get records failed; backing off` | Warn | `shard`, `consecutive_failures`, `backoff`, `error` | A retryable GetRecords failure (throttling, 5xx, network) — the pass backs off in-place (500ms doubling to a 10s cap) and retries the same iterator instead of stopping the consumer. |
 | `records skipped after handler failure` | Warn | `shard`, `handler`, `records`, `attempts`, `error` | The `skip` failure policy dropped a failed record/page after retries were exhausted. This is the only trace of dropped data. |
 | `poison records published to dlq` | Warn | `shard`, `handler`, `records`, `attempts`, `error` | The `send-to-dlq` policy published every poison record in the failed group. |
 | `shard checkpoint saved` | Debug | `shard`, `sequence` | Any successful checkpoint save: periodic (`checkpointEvery`), caught-up flush, or drain. |
@@ -123,5 +124,8 @@ can swallow the release error entirely.
   - `poison records published to dlq` — poison inflow; watch the DLQ.
   - `shard worker stopped` (Warn form) and `shard lease release failed` —
     repeated occurrences indicate a failing backend or handler.
+  - `get records failed; backing off` — sustained occurrences mean the
+    consumer is throttled or Kinesis is degraded; check `WithBatching`,
+    `WithIdleTimeBetweenReads`, and competing consumers on the stream.
 - All events carry machine-parseable attributes (`shard`, `stream`, `owner`,
   `donor`, counts, `error`), so JSON handlers can index them directly.

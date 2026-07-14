@@ -4,11 +4,64 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+	"github.com/aws/smithy-go"
 )
+
+// Backoff for retryable GetRecords errors (throttling, server faults, network
+// blips): capped exponential, reset by the next successful read. Retries are
+// unbounded by design — throttling is an operating condition, not a consumer
+// failure — and each retry re-checks ctx/drain at the top of the pass loop.
+const (
+	getRecordsBackoffBase = 500 * time.Millisecond
+	getRecordsBackoffMax  = 10 * time.Second
+)
+
+func getRecordsBackoff(failures int) time.Duration {
+	if failures < 1 {
+		return 0
+	}
+	backoff := getRecordsBackoffBase
+	for i := 1; i < failures; i++ {
+		backoff *= 2
+		if backoff >= getRecordsBackoffMax {
+			return getRecordsBackoffMax
+		}
+	}
+	return backoff
+}
+
+// retryableGetRecordsError classifies GetRecords errors the pass survives by
+// backing off in-place: Kinesis throttling, server (5xx) faults, and network
+// errors. Client faults (validation, auth, missing resources) stay fatal.
+// Callers must gate on ctx.Err() == nil — context.DeadlineExceeded satisfies
+// net.Error and must not be spun on when the consumer context itself is dead.
+func retryableGetRecordsError(err error) bool {
+	var throughputExceeded *types.ProvisionedThroughputExceededException
+	var limitExceeded *types.LimitExceededException
+	var kmsThrottled *types.KMSThrottlingException
+	if errors.As(err, &throughputExceeded) || errors.As(err, &limitExceeded) || errors.As(err, &kmsThrottled) {
+		return true
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.ErrorFault() == smithy.FaultServer {
+			return true
+		}
+		switch apiErr.ErrorCode() {
+		case "ThrottlingException", "InternalFailure", "ServiceUnavailable", "RequestTimeout":
+			return true
+		}
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
 
 // processShardRecordsPass reads and processes records from a shard one page at a
 // time until it catches up to the tip, the shard closes, the consumer starts
@@ -32,6 +85,8 @@ import (
 func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
 	lastSeq := ""
 	count := processedSinceCheckpoint
+	readFailures := 0
+	var lastReadAt time.Time
 
 	for {
 		select {
@@ -57,8 +112,21 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			iterator = derived
 		}
 
+		// Pace successive reads: the Kinesis limit is 5 reads/sec/shard, and a
+		// catch-up loop with zero delay between non-empty pages manufactures
+		// the throttling that would otherwise kill the pass.
+		if wait := c.tuning.idleTimeBetweenReads - time.Since(lastReadAt); !lastReadAt.IsZero() && wait > 0 {
+			if err := c.sleep(ctx, wait); err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return lastSeq, count, iterator, nil
+				}
+				return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
+			}
+		}
+
 		getRecordsStart := time.Now()
 		out, err := c.getRecords(ctx, iterator)
+		lastReadAt = time.Now()
 		if err != nil {
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return lastSeq, count, iterator, nil
@@ -83,8 +151,29 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 				iterator = ""
 				continue
 			}
+			if ctx.Err() == nil && retryableGetRecordsError(err) {
+				// Throttling, a server fault, or a network blip: survive it
+				// in-place instead of failing the shard (which would stop the
+				// whole consumer). The same iterator stays valid for the retry.
+				readFailures++
+				backoff := getRecordsBackoff(readFailures)
+				c.logger.Warn("get records failed; backing off",
+					slog.String("shard", shardID),
+					slog.Int("consecutive_failures", readFailures),
+					slog.Duration("backoff", backoff),
+					slog.Any("error", err),
+				)
+				if err := c.sleep(ctx, backoff); err != nil {
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return lastSeq, count, iterator, nil
+					}
+					return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
+				}
+				continue
+			}
 			return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 		}
+		readFailures = 0
 		c.reporter.Timing(metricGetRecordsDuration, time.Since(getRecordsStart), c.shardTags(shardID))
 		c.reporter.Counter(metricPagesFetched, 1, c.shardTags(shardID))
 		if out.MillisBehindLatest != nil {

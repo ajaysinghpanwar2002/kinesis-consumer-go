@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/pratilipi/kinesis-consumer-go/pkg/metrics"
 )
@@ -871,5 +874,347 @@ func TestProcessShardRecordsPassExpiredIteratorFlushSaveFailureReturnsError(t *t
 	}
 	if len(client.getShardIteratorCalls) != 0 {
 		t.Fatalf("GetShardIterator calls = %d, want 0 (failed before re-derive)", len(client.getShardIteratorCalls))
+	}
+}
+
+func TestGetRecordsBackoff(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{failures: 0, want: 0},
+		{failures: 1, want: 500 * time.Millisecond},
+		{failures: 2, want: time.Second},
+		{failures: 3, want: 2 * time.Second},
+		{failures: 5, want: 8 * time.Second},
+		{failures: 6, want: 10 * time.Second},
+		{failures: 100, want: 10 * time.Second},
+	}
+	for _, tt := range tests {
+		if got := getRecordsBackoff(tt.failures); got != tt.want {
+			t.Fatalf("getRecordsBackoff(%d) = %v, want %v", tt.failures, got, tt.want)
+		}
+	}
+}
+
+func TestProcessShardRecordsPassRetriesRetryableGetRecordsErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "provisioned throughput exceeded", err: &types.ProvisionedThroughputExceededException{}},
+		{name: "limit exceeded", err: &types.LimitExceededException{}},
+		{name: "kms throttling", err: &types.KMSThrottlingException{}},
+		{name: "server fault", err: &smithy.GenericAPIError{Code: "InternalFailure", Fault: smithy.FaultServer}},
+		{name: "network error", err: &net.DNSError{Err: "no such host", IsTimeout: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &fakeKinesisClient{
+				getRecordsErrs: []error{tt.err}, // first read fails, second succeeds
+				getRecordsOuts: []*kinesis.GetRecordsOutput{
+					{
+						Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+						NextShardIterator: aws.String("next-iterator"),
+					},
+					{NextShardIterator: aws.String("tip-iterator")}, // caught up
+				},
+			}
+			store := &fakeCheckpointSaveStore{}
+			logHandler := newCapturingHandler()
+			var sleeps []time.Duration
+			var handled []string
+			c := &Consumer{
+				logger:   slog.New(logHandler),
+				reporter: metrics.Nop{},
+				cfg:      Config{StreamName: "stream"},
+				client:   client,
+				store:    store,
+				tuning:   tuningConfig{checkpointEvery: 10},
+				sleepFn: func(ctx context.Context, d time.Duration) error {
+					_ = ctx
+					sleeps = append(sleeps, d)
+					return nil
+				},
+				handler: func(ctx context.Context, record Record) error {
+					_ = ctx
+					handled = append(handled, aws.ToString(record.SequenceNumber))
+					return nil
+				},
+			}
+
+			lastSeq, count, nextIterator, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "held-iterator")
+			if err != nil {
+				t.Fatalf("processShardRecordsPass() error = %v, want nil (survived retryable error)", err)
+			}
+			if lastSeq != "sequence-1" {
+				t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+			}
+			if count != 0 {
+				t.Fatalf("count = %d, want 0 (caught-up flush)", count)
+			}
+			if nextIterator != "tip-iterator" {
+				t.Fatalf("nextIterator = %q, want %q", nextIterator, "tip-iterator")
+			}
+			if len(handled) != 1 || handled[0] != "sequence-1" {
+				t.Fatalf("handled records = %v, want [sequence-1]", handled)
+			}
+			// One backoff sleep at the base duration, then the retry succeeded.
+			if len(sleeps) != 1 || sleeps[0] != 500*time.Millisecond {
+				t.Fatalf("backoff sleeps = %v, want [500ms]", sleeps)
+			}
+			// The retry reused the same iterator — no re-derivation.
+			if len(client.getRecordsCalls) != 3 {
+				t.Fatalf("GetRecords calls = %d, want 3 (fail, retry, caught-up)", len(client.getRecordsCalls))
+			}
+			if got := aws.ToString(client.getRecordsCalls[1].ShardIterator); got != "held-iterator" {
+				t.Fatalf("retry used iterator %q, want %q", got, "held-iterator")
+			}
+			if len(client.getShardIteratorCalls) != 0 {
+				t.Fatalf("GetShardIterator calls = %d, want 0 (no re-derive on retryable errors)", len(client.getShardIteratorCalls))
+			}
+			var warns []capturedRecord
+			for _, rec := range logHandler.snapshot() {
+				if rec.message == "get records failed; backing off" {
+					warns = append(warns, rec)
+				}
+			}
+			if len(warns) != 1 {
+				t.Fatalf("backoff warn logs = %d, want 1", len(warns))
+			}
+			if warns[0].level != slog.LevelWarn {
+				t.Fatalf("backoff log level = %v, want %v", warns[0].level, slog.LevelWarn)
+			}
+			if warns[0].attrs["shard"] != "shard-1" {
+				t.Fatalf("backoff log shard = %q, want shard-1", warns[0].attrs["shard"])
+			}
+			if warns[0].attrs["consecutive_failures"] != "1" {
+				t.Fatalf("backoff log consecutive_failures = %q, want 1", warns[0].attrs["consecutive_failures"])
+			}
+		})
+	}
+}
+
+func TestProcessShardRecordsPassBackoffGrowsAndResetsOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	throttle := func() error { return &types.ProvisionedThroughputExceededException{} }
+	client := &fakeKinesisClient{
+		getRecordsErrs: []error{
+			throttle(), // read 1: fail (backoff 500ms)
+			throttle(), // read 2: fail (backoff 1s)
+			nil,        // read 3: success — resets the backoff
+			throttle(), // read 4: fail (backoff back at 500ms)
+			nil,        // read 5: success (caught up)
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+				NextShardIterator: aws.String("next-iterator"),
+			},
+			{NextShardIterator: aws.String("tip-iterator")},
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	var sleeps []time.Duration
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			sleeps = append(sleeps, d)
+			return nil
+		},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+
+	_, _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "held-iterator")
+	if err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	}
+	want := []time.Duration{500 * time.Millisecond, time.Second, 500 * time.Millisecond}
+	if len(sleeps) != len(want) {
+		t.Fatalf("backoff sleeps = %v, want %v", sleeps, want)
+	}
+	for i := range want {
+		if sleeps[i] != want[i] {
+			t.Fatalf("backoff sleeps = %v, want %v", sleeps, want)
+		}
+	}
+}
+
+func TestProcessShardRecordsPassNonRetryableGetRecordsErrorFails(t *testing.T) {
+	t.Parallel()
+
+	clientFault := &smithy.GenericAPIError{Code: "InvalidArgumentException", Fault: smithy.FaultClient}
+	client := &fakeKinesisClient{getRecordsErr: clientFault}
+	var sleeps []time.Duration
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		tuning:   tuningConfig{checkpointEvery: 10},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			sleeps = append(sleeps, d)
+			return nil
+		},
+	}
+
+	_, _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "held-iterator")
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps the client fault", err)
+	}
+	if len(sleeps) != 0 {
+		t.Fatalf("sleeps = %v, want none (client faults are fatal)", sleeps)
+	}
+	if len(client.getRecordsCalls) != 1 {
+		t.Fatalf("GetRecords calls = %d, want 1 (no retry)", len(client.getRecordsCalls))
+	}
+}
+
+func TestProcessShardRecordsPassBackoffCanceledDuringSleepReturnsIterator(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &fakeKinesisClient{
+		getRecordsErrs: []error{&types.ProvisionedThroughputExceededException{}},
+	}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		tuning:   tuningConfig{checkpointEvery: 10},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = d
+			cancel()
+			return context.Canceled
+		},
+	}
+
+	lastSeq, count, nextIterator, err := c.processShardRecordsPass(ctx, "shard-1", 0, "held-iterator")
+	if err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil (shutdown during backoff)", err)
+	}
+	if lastSeq != "" || count != 0 {
+		t.Fatalf("lastSeq, count = %q, %d, want empty, 0", lastSeq, count)
+	}
+	if nextIterator != "held-iterator" {
+		t.Fatalf("nextIterator = %q, want the held iterator preserved", nextIterator)
+	}
+}
+
+func TestProcessShardRecordsPassPacesReads(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+				NextShardIterator: aws.String("iterator-2"),
+			},
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-2")}},
+				NextShardIterator: aws.String("iterator-3"),
+			},
+			{NextShardIterator: aws.String("tip-iterator")},
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	var sleeps []time.Duration
+	idle := 100 * time.Millisecond
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10, idleTimeBetweenReads: idle},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			sleeps = append(sleeps, d)
+			return nil
+		},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+
+	_, _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "iterator-1")
+	if err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	}
+	// Three reads, and a pacing sleep before every read but the first.
+	if len(client.getRecordsCalls) != 3 {
+		t.Fatalf("GetRecords calls = %d, want 3", len(client.getRecordsCalls))
+	}
+	if len(sleeps) != 2 {
+		t.Fatalf("pacing sleeps = %v, want 2 (before reads 2 and 3, none before the first)", sleeps)
+	}
+	for i, d := range sleeps {
+		if d <= 0 || d > idle {
+			t.Fatalf("pacing sleep %d = %v, want in (0, %v] (remainder of the idle floor)", i, d, idle)
+		}
+	}
+}
+
+func TestProcessShardRecordsPassZeroIdleTimeDisablesPacing(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+				NextShardIterator: aws.String("iterator-2"),
+			},
+			{NextShardIterator: aws.String("tip-iterator")},
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	var sleeps []time.Duration
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
+		sleepFn: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			sleeps = append(sleeps, d)
+			return nil
+		},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+
+	if _, _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "iterator-1"); err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	}
+	if len(sleeps) != 0 {
+		t.Fatalf("sleeps = %v, want none (pacing disabled at 0)", sleeps)
 	}
 }

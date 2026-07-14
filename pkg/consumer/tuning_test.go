@@ -19,6 +19,9 @@ func TestDefaultTuning(t *testing.T) {
 	if cfg.pollInterval != time.Second {
 		t.Fatalf("pollInterval = %v, want %v", cfg.pollInterval, time.Second)
 	}
+	if cfg.idleTimeBetweenReads != 200*time.Millisecond {
+		t.Fatalf("idleTimeBetweenReads = %v, want %v", cfg.idleTimeBetweenReads, 200*time.Millisecond)
+	}
 	if cfg.shardSyncInterval != time.Minute {
 		t.Fatalf("shardSyncInterval = %v, want %v", cfg.shardSyncInterval, time.Minute)
 	}
@@ -79,6 +82,15 @@ func TestTuningValidate(t *testing.T) {
 			name: "poll interval",
 			edit: func(cfg *tuningConfig) { cfg.pollInterval = 0 },
 			want: "pollInterval must be > 0",
+		},
+		{
+			name: "negative idle time between reads",
+			edit: func(cfg *tuningConfig) { cfg.idleTimeBetweenReads = -1 },
+			want: "idle time between reads cannot be negative",
+		},
+		{
+			name: "zero idle time between reads is valid",
+			edit: func(cfg *tuningConfig) { cfg.idleTimeBetweenReads = 0 },
 		},
 		{
 			name: "shard sync interval",

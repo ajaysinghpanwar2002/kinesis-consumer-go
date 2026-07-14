@@ -164,6 +164,20 @@ func WithRebalance(minInterval, jitter, cooldown time.Duration, maxMoves int) Op
 	}
 }
 
+// WithIdleTimeBetweenReads sets the minimum delay between successive
+// GetRecords calls on one shard (the KCL idleTimeBetweenReadsInMillis
+// equivalent). It paces catch-up reads under the Kinesis 5 reads/sec/shard
+// limit; 0 disables pacing.
+func WithIdleTimeBetweenReads(d time.Duration) Option {
+	return func(cfg *options) error {
+		if d < 0 {
+			return errors.New("idle time between reads cannot be negative")
+		}
+		cfg.tuning.idleTimeBetweenReads = d
+		return nil
+	}
+}
+
 // WithHeartbeat configures the worker heartbeat interval and TTL.
 func WithHeartbeat(interval, ttl time.Duration) Option {
 	return func(cfg *options) error {
