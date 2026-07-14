@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -816,9 +817,11 @@ func TestStartGracefulDrainStillForceStopsWorkersOnFatalError(t *testing.T) {
 	}
 }
 
-func TestStartGracefulDrainForceStopsWorkersOnErrorDuringDrain(t *testing.T) {
+func TestStartGracefulDrainLetsHealthyWorkersFinishAfterErrorDuringDrain(t *testing.T) {
 	t.Parallel()
 
+	// One worker failing mid-drain must not force-stop the others: they finish
+	// their drain (checkpoint + release) and the error surfaces afterwards.
 	errBoom := errors.New("boom")
 	shardLeaseA := &recordingReleaseLease{}
 	shardLeaseB := &recordingReleaseLease{}
@@ -846,7 +849,8 @@ func TestStartGracefulDrainForceStopsWorkersOnErrorDuringDrain(t *testing.T) {
 	shardAStarted := make(chan struct{})
 	shardBStarted := make(chan struct{})
 	returnShardError := make(chan struct{})
-	shardBStopped := make(chan struct{})
+	finishShardB := make(chan struct{})
+	var shardBForceStopped atomic.Bool
 	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
 		switch shardID {
 		case "shard-a":
@@ -855,8 +859,11 @@ func TestStartGracefulDrainForceStopsWorkersOnErrorDuringDrain(t *testing.T) {
 			return "", 0, errBoom
 		case "shard-b":
 			close(shardBStarted)
-			<-ctx.Done()
-			close(shardBStopped)
+			select {
+			case <-ctx.Done():
+				shardBForceStopped.Store(true)
+			case <-finishShardB:
+			}
 			return "", 0, nil
 		default:
 			return "", 0, errors.New("unexpected shard")
@@ -874,18 +881,183 @@ func TestStartGracefulDrainForceStopsWorkersOnErrorDuringDrain(t *testing.T) {
 
 	assertStartStillRunning(t, done)
 	close(returnShardError)
+	// shard-a has errored; the drain must keep waiting for shard-b.
+	assertStartStillRunning(t, done)
 
+	close(finishShardB)
 	waitStartDone(t, done, errBoom)
-	select {
-	case <-shardBStopped:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for remaining worker to be force-stopped")
+	if shardBForceStopped.Load() {
+		t.Fatal("healthy worker was force-stopped instead of finishing its drain")
 	}
 	if shardLeaseA.calls != 1 {
 		t.Fatalf("shard-a Release calls = %d, want 1", shardLeaseA.calls)
 	}
 	if shardLeaseB.calls != 1 {
 		t.Fatalf("shard-b Release calls = %d, want 1", shardLeaseB.calls)
+	}
+}
+
+// drainTakeoverLease renews cleanly until the test flips lost, then fails
+// ErrNotOwned — modeling a peer claiming the lease mid-drain.
+type drainTakeoverLease struct {
+	lost           atomic.Bool
+	notOwnedRenews atomic.Int32
+	releaseCalls   atomic.Int32
+}
+
+func (l *drainTakeoverLease) Renew(context.Context, time.Duration) error {
+	if l.lost.Load() {
+		l.notOwnedRenews.Add(1)
+		return lease.ErrNotOwned
+	}
+	return nil
+}
+
+func (l *drainTakeoverLease) Release(context.Context) error {
+	l.releaseCalls.Add(1)
+	return nil
+}
+
+func TestStartGracefulDrainSurvivesPeerClaimDuringDrain(t *testing.T) {
+	t.Parallel()
+
+	// SHUT-1 acceptance: a drain outliving the heartbeat TTL loses one shard to
+	// a peer (renew fails ErrNotOwned). That shard counts as drained; the other
+	// shard finishes cleanly; Start returns nil on a clean Ctrl-C.
+	lostLease := &drainTakeoverLease{}
+	healthyLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 2),
+		results: []acquireResult{
+			{lease: lostLease, acquired: true},
+			{lease: healthyLease, acquired: true},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-a")},
+					{ShardId: aws.String("shard-b")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.gracefulDrain = true
+	c.drainTimeout = 5 * time.Second
+	c.tuning.heartbeatInterval = time.Millisecond
+
+	started := make(chan struct{}, 2)
+	finishHealthy := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		started <- struct{}{}
+		select {
+		case <-ctx.Done():
+		case <-finishHealthy:
+		}
+		return "", 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager)
+	_ = waitAcquireCall(t, manager)
+	<-started
+	<-started
+	cancel()
+
+	// Flip the takeover only once the drain has actually begun, so the
+	// ErrNotOwned is seen while draining.
+	waitForTrue(t, c.isDraining, "drain to begin")
+	lostLease.lost.Store(true)
+	waitForTrue(t, func() bool { return lostLease.notOwnedRenews.Load() >= 1 }, "peer takeover to be observed")
+
+	close(finishHealthy)
+	waitStartDone(t, done, nil)
+
+	if calls := lostLease.releaseCalls.Load(); calls != 0 {
+		t.Fatalf("lost lease Release calls = %d, want 0 (peer owns it)", calls)
+	}
+	if healthyLease.calls != 1 {
+		t.Fatalf("healthy lease Release calls = %d, want 1", healthyLease.calls)
+	}
+}
+
+// heartbeatCountingAcquireManager counts Heartbeat sends so tests can observe
+// worker-liveness continuing across a drain.
+type heartbeatCountingAcquireManager struct {
+	*recordingAcquireManager
+	heartbeats atomic.Int32
+}
+
+func (m *heartbeatCountingAcquireManager) Heartbeat(context.Context, string, string, time.Duration) error {
+	m.heartbeats.Add(1)
+	return nil
+}
+
+func TestStartGracefulDrainKeepsHeartbeatingDuringDrain(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	manager := &heartbeatCountingAcquireManager{
+		recordingAcquireManager: &recordingAcquireManager{
+			result:   shardLease,
+			acquired: true,
+			callCh:   make(chan acquireCall, 1),
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.gracefulDrain = true
+	c.drainTimeout = 5 * time.Second
+	c.tuning.heartbeatInterval = time.Millisecond
+
+	workerStarted := make(chan struct{})
+	finishWorker := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = ctx
+		_ = shardID
+		close(workerStarted)
+		<-finishWorker
+		return "", 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager.recordingAcquireManager)
+	<-workerStarted
+	cancel()
+	waitForTrue(t, c.isDraining, "drain to begin")
+
+	// Worker liveness must keep being published while the drain runs, or peers
+	// drop this worker from their snapshots after heartbeatTTL and claim its
+	// shards mid-drain.
+	base := manager.heartbeats.Load()
+	waitForTrue(t, func() bool { return manager.heartbeats.Load() >= base+3 }, "heartbeats during drain")
+
+	close(finishWorker)
+	waitStartDone(t, done, nil)
+}
+
+func waitForTrue(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

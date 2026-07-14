@@ -56,13 +56,20 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// The worker-liveness heartbeat gets its own lifetime, ending only when
+	// Start returns — NOT when runCtx is cancelled. During a graceful drain
+	// (which begins after runCtx is done) workers are still checkpointing and
+	// renewing; if the heartbeat died with runCtx, peers would drop this
+	// worker from their rebalance snapshots after heartbeatTTL and claim its
+	// shards away mid-drain.
+	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
 	heartbeatDone := make(chan struct{})
 	go func() {
 		defer close(heartbeatDone)
-		c.workerHeartbeatLoop(runCtx)
+		c.workerHeartbeatLoop(heartbeatCtx)
 	}()
 	defer func() {
-		cancel()
+		stopHeartbeat()
 		<-heartbeatDone
 	}()
 

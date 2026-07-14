@@ -129,3 +129,98 @@ func TestConsumerDrainShardWorkersSetsDrainStateOnlyWhileWaiting(t *testing.T) {
 		t.Fatal("isDraining() = true after drain returned, want false")
 	}
 }
+
+func TestDrainShardWorkersReturnsWorkerErrorAfterHealthyWorkersFinish(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	var wg sync.WaitGroup
+	workerErrCh := make(chan error, 2)
+	healthyFinished := make(chan struct{})
+
+	wg.Add(2)
+	go func() { // failing worker: errors and exits immediately
+		defer wg.Done()
+		workerErrCh <- errBoom
+	}()
+	go func() { // healthy worker: still draining when the error arrives
+		defer wg.Done()
+		time.Sleep(30 * time.Millisecond)
+		close(healthyFinished)
+	}()
+
+	err := drainShardWorkersOrError(nil, &wg, time.Second, workerErrCh)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("drainShardWorkersOrError() error = %v, want wraps %v", err, errBoom)
+	}
+	select {
+	case <-healthyFinished:
+	default:
+		t.Fatal("drain returned before the healthy worker finished")
+	}
+}
+
+func TestDrainShardWorkersTimeoutAfterWorkerErrorJoinsBoth(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	var wg sync.WaitGroup
+	workers := newShardWorkerSet()
+	workerErrCh := make(chan error, 2)
+
+	stopSlow := make(chan struct{})
+	workers.add("slow-shard", func() { close(stopSlow) })
+	wg.Add(2)
+	go func() { // failing worker
+		defer wg.Done()
+		workerErrCh <- errBoom
+	}()
+	go func() { // worker that never finishes on its own: only stopAll ends it
+		defer wg.Done()
+		<-stopSlow
+	}()
+
+	err := drainShardWorkersOrError(workers, &wg, 20*time.Millisecond, workerErrCh)
+	if !errors.Is(err, errGracefulDrainTimeout) {
+		t.Fatalf("drainShardWorkersOrError() error = %v, want wraps %v", err, errGracefulDrainTimeout)
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("drainShardWorkersOrError() error = %v, want also wraps %v", err, errBoom)
+	}
+}
+
+func TestWaitForShardDrainTimeoutCollectsErrorBufferedDuringForceStop(t *testing.T) {
+	t.Parallel()
+
+	// Deterministic timeout-first coverage: workerErrCh is empty when the
+	// select runs (only the timeout branch is ready), and the worker error
+	// appears only when the force-stop makes the worker report its failure.
+	// The timeout branch must still pick it up and join it with the timeout
+	// error instead of dropping it.
+	errBoom := errors.New("boom")
+	var wg sync.WaitGroup
+	workers := newShardWorkerSet()
+	workerErrCh := make(chan error, 1)
+	stop := make(chan struct{})
+	workers.add("slow-shard", func() {
+		workerErrCh <- errBoom // the force-stopped worker reports its failure
+		close(stop)
+	})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-stop
+	}()
+
+	timeoutCh := make(chan time.Time, 1)
+	timeoutCh <- time.Now()     // only the timeout branch is selectable
+	done := make(chan struct{}) // the drain never finishes on its own
+
+	err := waitForShardDrain(workers, &wg, done, timeoutCh, 20*time.Millisecond, workerErrCh)
+	if !errors.Is(err, errGracefulDrainTimeout) {
+		t.Fatalf("waitForShardDrain() error = %v, want wraps %v", err, errGracefulDrainTimeout)
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("waitForShardDrain() error = %v, want also wraps %v", err, errBoom)
+	}
+}

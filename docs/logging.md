@@ -58,14 +58,17 @@ nothing per record, per poll, or per rebalance tick.
 | `shard worker stopped` | Warn | `shard`, `error` | The worker returned an error: a processing failure, a lease-renewal failure, or — when nothing else failed first — a lease-release failure. |
 | `shard lease acquired` | Debug | `shard`, `owner` | Initial/refresh acquisition succeeded (`acquireShardLeases`). |
 | `shard lease released` | Debug | `shard` | The bounded release at worker exit succeeded. |
+| `shard lease lost during drain; treating shard as drained` | Info | `shard` | During graceful drain, the lease renew returned `ErrNotOwned` — a peer claimed the shard. The worker stops cleanly (the peer resumes from the last checkpoint), no release is attempted, and the drain continues for the other shards. |
 | `shard lease release failed` | Warn | `shard`, `error` | The bounded release failed or timed out. Logged here because the caller discards the release error when the worker already failed, so this Warn can be the only record of it. |
-| `shard lease renew failed; will retry` | Warn | `shard`, `since_last_renew`, `ttl`, `error` | A transient renew failure. The loop retries on subsequent heartbeat ticks while the TTL budget since the last successful renew lasts. `ErrNotOwned` and budget exhaustion are not retried — they stop the worker and surface through the worker-stop Warn. |
+| `shard lease renew failed; will retry` | Warn | `shard`, `since_last_renew`, `ttl`, `error` | A transient renew failure. The loop retries on subsequent heartbeat ticks while the TTL budget since the last successful renew lasts. `ErrNotOwned` and budget exhaustion are not retried; outside graceful drain they stop the worker and surface through the worker-stop Warn, while during drain `ErrNotOwned` becomes the clean per-shard completion logged by the Info event above. |
 | `worker heartbeat failed` | Warn | `owner`, `error` | A worker-liveness heartbeat send failed (live context). Sustained failures make peers treat this worker as dead and steadily claim its shards away — this Warn is the victim's only diagnostic. |
 
-Terminal lease-renewal failures (`ErrNotOwned`, TTL-budget exhaustion) are not
-logged separately: `runShardWorker` returns them, and the worker-stop Warn is
-the aggregation point. Only the retried transient failures log in place, since
-they would otherwise be invisible.
+Outside graceful drain, terminal lease-renewal failures (`ErrNotOwned`,
+TTL-budget exhaustion) are not logged separately: `runShardWorker` returns
+them, and the worker-stop Warn is the aggregation point. Only the retried
+transient failures log in place, since they would otherwise be invisible.
+During graceful drain, `ErrNotOwned` is not a failure at all — it logs the
+Info event above and the worker stops cleanly.
 
 ### Rebalancing
 

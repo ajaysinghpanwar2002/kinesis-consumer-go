@@ -77,36 +77,41 @@ func waitForShardDrain(
 	timeoutAfter time.Duration,
 	workerErrCh <-chan error,
 ) error {
+	// One worker's failure must not abort the other shards' drain: force-
+	// stopping them here would discard their drain checkpoints. Remember the
+	// first error, let the healthy workers finish (the timeout still bounds
+	// the wait), and surface it once the drain completes.
+	var firstErr error
 	for {
 		select {
 		case <-done:
-			if err := pendingShardDrainError(workerErrCh); err != nil {
-				if workers != nil {
-					workers.stopAll()
-				}
-				workerWG.Wait()
-				return err
+			if firstErr == nil {
+				firstErr = pendingShardDrainError(workerErrCh)
 			}
-			return nil
+			return firstErr
 		case err, ok := <-workerErrCh:
 			if !ok {
 				workerErrCh = nil
 				continue
 			}
-			if err == nil {
-				continue
+			if err != nil && firstErr == nil {
+				firstErr = err
 			}
-			if workers != nil {
-				workers.stopAll()
-			}
-			workerWG.Wait()
-			return err
 		case <-timeout:
 			if workers != nil {
 				workers.stopAll()
 			}
 			workerWG.Wait()
-			return fmt.Errorf("%w after %s", errGracefulDrainTimeout, timeoutAfter)
+			if firstErr == nil {
+				// Both channels can be ready at once and select picks
+				// arbitrarily — don't drop a worker error already buffered.
+				firstErr = pendingShardDrainError(workerErrCh)
+			}
+			timeoutErr := fmt.Errorf("%w after %s", errGracefulDrainTimeout, timeoutAfter)
+			if firstErr != nil {
+				return errors.Join(firstErr, timeoutErr)
+			}
+			return timeoutErr
 		}
 	}
 }
