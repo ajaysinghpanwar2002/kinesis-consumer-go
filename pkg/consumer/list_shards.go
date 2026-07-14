@@ -54,14 +54,15 @@ func (c *Consumer) listShards(ctx context.Context) ([]types.Shard, error) {
 	var nextToken *string
 
 	for {
+		// A NextToken already identifies the stream; the API rejects requests
+		// that combine it with StreamName, so token pages send only the token.
 		input := &kinesis.ListShardsInput{}
-		if c.cfg.StreamARN != "" {
+		if nextToken != nil {
+			input.NextToken = nextToken
+		} else if c.cfg.StreamARN != "" {
 			input.StreamARN = aws.String(c.cfg.StreamARN)
 		} else {
 			input.StreamName = aws.String(c.cfg.StreamName)
-		}
-		if nextToken != nil {
-			input.NextToken = nextToken
 		}
 
 		out, err := c.client.ListShards(ctx, input)

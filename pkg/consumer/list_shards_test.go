@@ -169,6 +169,60 @@ func TestListShardsPaginationSkipsNilShardIDs(t *testing.T) {
 	if aws.ToString(client.calls[1].NextToken) != "next" {
 		t.Fatalf("second NextToken = %q, want next", aws.ToString(client.calls[1].NextToken))
 	}
+	if client.calls[1].StreamName != nil {
+		t.Fatalf("second StreamName = %q, want nil (forbidden with NextToken)", aws.ToString(client.calls[1].StreamName))
+	}
+	if client.calls[1].StreamARN != nil {
+		t.Fatalf("second StreamARN = %q, want nil", aws.ToString(client.calls[1].StreamARN))
+	}
+}
+
+func TestListShardsPaginationWithStreamARNSendsOnlyNextToken(t *testing.T) {
+	t.Parallel()
+
+	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
+
+	client := &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{
+				Shards:    []types.Shard{{ShardId: aws.String("shard-1")}},
+				NextToken: aws.String("next"),
+			},
+			{
+				Shards: []types.Shard{{ShardId: aws.String("shard-2")}},
+			},
+		},
+	}
+	c := &Consumer{
+		cfg:    Config{StreamARN: streamARN},
+		client: client,
+	}
+
+	shards, err := c.listShards(context.Background())
+	if err != nil {
+		t.Fatalf("listShards() error = %v, want nil", err)
+	}
+	if len(shards) != 2 {
+		t.Fatalf("len(shards) = %d, want 2", len(shards))
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("ListShards calls = %d, want 2", len(client.calls))
+	}
+	if aws.ToString(client.calls[0].StreamARN) != streamARN {
+		t.Fatalf("first StreamARN = %q, want %q", aws.ToString(client.calls[0].StreamARN), streamARN)
+	}
+	if client.calls[0].NextToken != nil {
+		t.Fatalf("first NextToken = %q, want nil", aws.ToString(client.calls[0].NextToken))
+	}
+	if aws.ToString(client.calls[1].NextToken) != "next" {
+		t.Fatalf("second NextToken = %q, want next", aws.ToString(client.calls[1].NextToken))
+	}
+	if client.calls[1].StreamARN != nil {
+		t.Fatalf("second StreamARN = %q, want nil", aws.ToString(client.calls[1].StreamARN))
+	}
+	if client.calls[1].StreamName != nil {
+		t.Fatalf("second StreamName = %q, want nil", aws.ToString(client.calls[1].StreamName))
+	}
 }
 
 func TestListShardsUsesStreamARN(t *testing.T) {
