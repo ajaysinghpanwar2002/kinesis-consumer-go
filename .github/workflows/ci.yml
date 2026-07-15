@@ -1,8 +1,10 @@
-# Unit gate: formatting, vet, compilation, and the unit test suite across every
-# module in the workspace. Deliberately infra-free — it mirrors the pre-commit
-# hook (make fmt-check + vet + build + test) and never runs the integration
-# suite, which needs LocalStack + Valkey. The integration gate is a separate
-# workflow (CI-2).
+# Unit gate: formatting, vet, static analysis, compilation, and the unit test
+# suite across every module in the workspace, plus a compile-check of the
+# integration suite. Deliberately infra-free — it never runs the integration
+# suite itself, which needs LocalStack + Valkey (that is the separate
+# integration workflow). It extends the pre-commit hook (make fmt-check + vet +
+# build + test): CI additionally runs `make lint` (staticcheck) and
+# `make integration-build`, which the fast local hook leaves out.
 name: CI
 
 on:
@@ -56,8 +58,14 @@ jobs:
       - name: go vet
         run: make vet
 
+      - name: staticcheck
+        run: make lint
+
       - name: build
         run: make build
+
+      - name: integration compile check
+        run: make integration-build
 
       - name: unit tests
         run: make test

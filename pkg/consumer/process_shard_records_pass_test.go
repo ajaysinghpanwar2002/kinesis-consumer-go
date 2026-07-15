@@ -224,8 +224,7 @@ func TestProcessShardRecordsPassProcessesEachPageBeforeFetchingNext(t *testing.T
 	// stays bounded to one page. The buffered (old) design would fetch all pages
 	// first and handle them afterward, producing [fetch fetch handle:...].
 	var order []string
-	var client *fakeKinesisClient
-	client = &fakeKinesisClient{
+	client := &fakeKinesisClient{
 		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
 			ShardIterator: aws.String("iterator-1"),
 		},
@@ -238,7 +237,6 @@ func TestProcessShardRecordsPassProcessesEachPageBeforeFetchingNext(t *testing.T
 		},
 		afterGetRecords: func() { order = append(order, "fetch") },
 	}
-	_ = client
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
 		logger:   slog.New(slog.DiscardHandler),

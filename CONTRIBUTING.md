@@ -15,7 +15,17 @@ Install the shared git hooks once after cloning:
 make hooks   # sets core.hooksPath=.githooks
 ```
 
-- `pre-commit`: `make fmt-check` + `make vet` + `make build` + `make test` (the full gate).
+- `pre-commit`: `make fmt-check` + `make vet` + `make build` + `make test` — the fast, offline local gate.
 - `pre-push`: `make test` again as a final safety net across all modules.
 
-Useful targets: `make test`, `make build`, `make vet`, `make fmt-check`, `make tidy`.
+CI (the unit workflow) runs the same gate plus two heavier checks the local
+hook leaves out: `make lint` (staticcheck across every module) and
+`make integration-build` (compile-check of the tagged integration suite). Run
+them locally before opening a PR if you want to match CI:
+
+```bash
+make lint               # staticcheck; fetches a pinned linter on first run
+make integration-build  # compiles test/integration without any infrastructure
+```
+
+Useful targets: `make test`, `make build`, `make vet`, `make fmt-check`, `make lint`, `make integration-build`, `make tidy`.

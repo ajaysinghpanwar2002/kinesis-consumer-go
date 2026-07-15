@@ -11,6 +11,13 @@ DOCKER_GO_VERSION ?= 1.26
 MODULES ?= . pkg/backend/valkey examples/valkey
 HOOKS_DIR ?= .githooks
 
+# staticcheck is run through `go run @pinned` rather than a prebuilt binary so
+# the analyzer is compiled with THIS repo's Go toolchain. A staticcheck binary
+# built with an older Go refuses to analyze a newer module (e.g. one built with
+# go1.24 cannot lint a `go 1.26` module), so pinning the source version keeps
+# local and CI linting reproducible and toolchain-compatible.
+STATICCHECK ?= $(GO) run honnef.co/go/tools/cmd/staticcheck@2025.1.1
+
 .DEFAULT_GOAL := test
 
 # Run the unit test suite across every module in the workspace.
@@ -37,6 +44,18 @@ vet:
 		echo "==> go vet $$m/..."; \
 		( cd "$$m" && $(GO) vet ./... ); \
 	done
+
+# Static analysis across every module with staticcheck. test/integration is
+# linted with its `integration` build tag so the tagged suite is analyzed too.
+# Infra-free: staticcheck compiles but does not run the code.
+.PHONY: lint
+lint:
+	@set -e; for m in $(MODULES); do \
+		echo "==> staticcheck $$m/..."; \
+		( cd "$$m" && $(STATICCHECK) ./... ); \
+	done
+	@echo "==> staticcheck $(INTEGRATION_DIR)/... (-tags integration)"
+	@( cd $(INTEGRATION_DIR) && $(STATICCHECK) -tags integration ./... )
 
 # Fail if any Go file is not gofmt-clean. gofmt is file-based, so one pass at the
 # repo root covers every module.
