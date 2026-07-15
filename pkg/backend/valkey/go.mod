@@ -1,6 +1,6 @@
 module github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey
 
-go 1.26.3
+go 1.26
 
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0

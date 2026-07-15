@@ -1,6 +1,6 @@
 module github.com/ajaysinghpanwar2002/kinesis-consumer-go/examples/valkey
 
-go 1.26.3
+go 1.26
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.37.1

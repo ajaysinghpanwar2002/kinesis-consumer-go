@@ -3,7 +3,7 @@ GOCACHE ?= /private/tmp/kinesis-consumer-go-build-cache
 export GOCACHE
 DOCKER ?= docker
 DOCKER_IMAGE ?= kinesis-consumer-go-dev
-DOCKER_GO_VERSION ?= 1.26.3
+DOCKER_GO_VERSION ?= 1.26
 
 # All Go modules in the workspace. `go test`/`go build ./...` do not cross module
 # boundaries, so each module must be run explicitly or the Valkey backend and the

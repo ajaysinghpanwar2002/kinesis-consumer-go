@@ -38,7 +38,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # Single source of truth for the Go version (currently 1.26.3); stays
+          # Single source of truth for the Go version (currently 1.26); stays
           # in lockstep with the module rather than a hardcoded literal here.
           go-version-file: go.mod
           # This is a multi-module workspace, so cache off every module's go.sum
