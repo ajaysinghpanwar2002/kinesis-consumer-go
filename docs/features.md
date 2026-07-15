@@ -276,3 +276,25 @@ Kept honest so the docs are a reliable contract:
 - **Additional backends:** only Valkey is built in. DynamoDB and Redis are
   planned behind the same `checkpoint.Store` / `lease.Manager` interfaces but are
   not implemented.
+- **KPL aggregated-record deaggregation — a correctness trap, read this if you
+  use the KPL.** Records produced by the Kinesis Producer Library (KPL) with
+  aggregation enabled are **not** deaggregated. The handler receives the raw
+  Kinesis record — a single opaque protobuf blob that packs many user records —
+  and never sees the individual records inside it. Worse, because checkpointing
+  advances past every successfully processed page (see
+  [Checkpointing](#checkpointing)), the consumer silently checkpoints past that
+  data as if it had been delivered, so the packed records are effectively lost
+  with no error. If your producers use KPL aggregation, either disable
+  aggregation on the producer or deaggregate inside your handler before
+  processing; do not rely on this library to unpack them.
+- **Enhanced fan-out (`SubscribeToShard`):** not implemented. The consumer
+  reads exclusively by polling `GetRecords`; there is no push-based HTTP/2
+  subscription giving each consumer a dedicated per-shard throughput pipe.
+- **Polling throughput ceiling:** because reads are polling-only, every
+  consumer of a shard shares that shard's read budget — 2 MB/s and 5
+  `GetRecords` calls/s — so co-located consumers on the same stream contend for
+  it, and delivery latency is bounded below by the poll interval
+  (`WithPolling`, default 1s). Enhanced fan-out's dedicated 2 MB/s-per-consumer
+  pipe and lower push latency are not available. Tune `WithPolling` and
+  `WithBatching` for your latency/throughput needs, and avoid piling many
+  independent consumers onto one stream.

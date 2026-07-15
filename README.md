@@ -122,6 +122,9 @@ full ledger — every row maps to a real test you can read and run.
 | Coordination store | DynamoDB (default) | DynamoDB (default) | Valkey built-in; pluggable interface (DynamoDB/Redis planned) |
 | Packaging | Java deps | Java jars + wrapper | Core + optional modules |
 | Language support | Java | Any via daemon | Go |
+| Read path | Polling + enhanced fan-out | Polling + enhanced fan-out | Polling `GetRecords` only (shared 2 MB/s per shard; no `SubscribeToShard`) |
+| KPL deaggregation | Built in | Built in (via daemon) | Not supported — raw records only; KPL-aggregated streams need a non-aggregating producer or handler-side deaggregation (see [docs/features.md](docs/features.md#not-yet-built)) |
+| Delivery / shard exclusivity | At-least-once; brief dual-processing on lease handoff | At-least-once; brief dual-processing on lease handoff | At-least-once; bounded dual-processing windows on rebalance/failover (see [docs/features.md](docs/features.md#ownership-transfer-windows)) |
 
 Community Go alternatives exist, but most are either lightweight consumers or wrappers around the Java KCL. This project targets a native Go experience with KCL-like coordination, without the daemon.
 
