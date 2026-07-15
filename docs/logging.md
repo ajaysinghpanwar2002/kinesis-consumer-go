@@ -15,7 +15,7 @@ logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
     Level: slog.LevelInfo,
 }))
 
-c, err := consumer.New(cfg, handler,
+c, err := consumer.New(cfg, client, store, handler,
     consumer.WithLogger(logger),
 )
 ```

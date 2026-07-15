@@ -60,10 +60,12 @@ go get github.com/ajaysinghpanwar2002/kinesis-consumer-go
 
 ## Development
 
-The repository is a Go workspace with three modules (the core library, the
-Valkey backend under `pkg/backend/valkey`, and `examples/valkey`). Because
-`go test ./...` does not cross module boundaries, the `make` targets iterate all
-modules so nothing is silently skipped.
+The repository is a Go workspace with four modules: the core library, the
+Valkey backend under `pkg/backend/valkey`, the example under `examples/valkey`,
+and the integration suite under `test/integration`. Because `go test ./...`
+does not cross module boundaries, the unit `make` targets iterate the first
+three so nothing is silently skipped; the infra-backed `test/integration` suite
+runs separately via `make integration`.
 
 Run the unit test suite across all modules:
 

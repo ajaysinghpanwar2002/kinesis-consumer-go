@@ -7,6 +7,10 @@
 // explicit WithLeaseManager call. Run more than one copy of this program against
 // the same stream and Valkey to watch shards spread across the workers.
 //
+// It also wires the two observability options the library leads with: a
+// log/slog logger via WithLogger (always) and, when -statsd-addr is set, a
+// statsd metrics reporter via WithMetrics.
+//
 // This program needs a real (or LocalStack) Kinesis endpoint and a reachable
 // Valkey/Redis server, so it is not part of the automated test suite; it is
 // verified only by compilation against the current library API.
@@ -16,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"time"
@@ -25,6 +30,7 @@ import (
 
 	valkeycheckpoint "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/checkpoint"
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
+	metricstatsd "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics/statsd"
 )
 
 func main() {
@@ -49,6 +55,8 @@ func main() {
 		retryAttempts    = flag.Int("retry-attempts", 3, "Handler retry attempts before applying the failure policy")
 		retryBackoff     = flag.Duration("retry-backoff", time.Second, "Backoff between handler retries")
 		drainTimeout     = flag.Duration("drain-timeout", 30*time.Second, "Graceful drain timeout on shutdown (0 waits indefinitely)")
+
+		statsdAddr = flag.String("statsd-addr", "", "statsd/Telegraf UDP address for metrics, e.g. localhost:8125 (empty disables metrics)")
 	)
 	flag.Parse()
 
@@ -115,16 +123,37 @@ func main() {
 		return nil
 	}
 
+	// Structured library logs go to stderr at Info; without WithLogger the
+	// consumer is silent. See docs/logging.md for the event catalog.
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
 	// Note: no WithLeaseManager here. The Valkey store satisfies lease.Provider,
 	// so the consumer auto-detects it and leases shards through the same Valkey
 	// connection settings (lease keys use the "<prefix>-lease" namespace).
-	cons, err := consumer.New(cfg, kinesisClient, store, handler,
+	opts := []consumer.Option{
 		consumer.WithBatching(int32(*batchSize), *checkpointEvery),
 		consumer.WithPolling(*pollInterval, *shardSync),
 		consumer.WithShardConcurrency(*shardConcurrency),
 		consumer.WithRetry(*retryAttempts, *retryBackoff),
 		consumer.WithGracefulDrain(*drainTimeout),
-	)
+		consumer.WithLogger(logger),
+	}
+
+	// Metrics are opt-in: only wire a statsd reporter when an address is given,
+	// so the example still runs without a statsd/Telegraf endpoint.
+	// WithMetrics(nil) is rejected by New. See docs/metrics.md for the catalog.
+	if *statsdAddr != "" {
+		reporter, err := metricstatsd.New(*statsdAddr)
+		if err != nil {
+			log.Fatalf("connect to statsd at %s: %v", *statsdAddr, err)
+		}
+		defer reporter.Close()
+		opts = append(opts, consumer.WithMetrics(reporter))
+	}
+
+	cons, err := consumer.New(cfg, kinesisClient, store, handler, opts...)
 	if err != nil {
 		log.Fatalf("create consumer: %v", err)
 	}

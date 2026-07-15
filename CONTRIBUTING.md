@@ -2,10 +2,12 @@ Thanks for taking the time to contribute! This project is intended to be a clean
 
 ## Development setup
 
-This repository is a Go workspace with three modules (core, the Valkey backend
-under `pkg/backend/valkey`, and `examples/valkey`). Use the `make` targets, which
-run across all modules — a bare `go test ./...` only covers the module you are
-standing in.
+This repository is a Go workspace with four modules: core, the Valkey backend
+under `pkg/backend/valkey`, the example under `examples/valkey`, and the
+integration suite under `test/integration`. Use the `make` targets, which run
+across the first three — a bare `go test ./...` only covers the module you are
+standing in. The infra-backed `test/integration` suite runs via
+`make integration`.
 
 Install the shared git hooks once after cloning:
 

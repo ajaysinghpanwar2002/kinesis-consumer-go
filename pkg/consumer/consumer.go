@@ -39,7 +39,15 @@ type Consumer struct {
 	sleepFn                   func(context.Context, time.Duration) error
 }
 
-// Start begins the consumer lifecycle and blocks until the context is done.
+// Start begins the consumer lifecycle and blocks until ctx is cancelled — a
+// clean shutdown that returns nil after any graceful drain — or a fatal error
+// stops the consumer and is returned.
+//
+// A Consumer is single-use. Start installs no re-entry guard: calling it more
+// than once concurrently runs duplicate heartbeat and rebalance loops under
+// the same owner identity and double-processes shards. Reusing a Consumer for
+// a second run after Start returns is likewise unsupported; construct a fresh
+// Consumer with New to run again.
 func (c *Consumer) Start(ctx context.Context) (err error) {
 	c.logger.Info("consumer starting", slog.String("stream", c.streamKey()))
 	// Registered first so it runs last, after the lifecycle-cleanup defers
