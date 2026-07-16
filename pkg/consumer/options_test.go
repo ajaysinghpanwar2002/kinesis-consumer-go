@@ -132,7 +132,7 @@ func TestOptionValidation(t *testing.T) {
 		{
 			name: "batch size",
 			opt:  WithBatching(0, 1),
-			want: "batchSize must be >= 1",
+			want: "batch size must be between 1 and 10000",
 		},
 		{
 			name: "checkpoint every",
@@ -177,12 +177,12 @@ func TestOptionValidation(t *testing.T) {
 		{
 			name: "heartbeat interval",
 			opt:  WithHeartbeat(0, time.Second),
-			want: "heartbeat interval must be > 0",
+			want: "heartbeat interval must be >= 1ms",
 		},
 		{
 			name: "heartbeat ttl",
 			opt:  WithHeartbeat(time.Second, 0),
-			want: "heartbeat ttl must be > 0",
+			want: "heartbeat ttl must be >= 1ms",
 		},
 		{
 			name: "failure policy empty",

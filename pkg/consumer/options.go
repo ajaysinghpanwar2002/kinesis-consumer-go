@@ -107,8 +107,8 @@ func WithPolling(pollInterval, shardSyncInterval time.Duration) Option {
 // WithBatching adjusts GetRecords batch size and checkpoint frequency.
 func WithBatching(batchSize int32, checkpointEvery int) Option {
 	return func(cfg *options) error {
-		if batchSize < 1 {
-			return errors.New("batchSize must be >= 1")
+		if err := validateBatchSize(batchSize); err != nil {
+			return err
 		}
 		if checkpointEvery < 1 {
 			return errors.New("checkpointEvery must be >= 1")
@@ -178,14 +178,13 @@ func WithIdleTimeBetweenReads(d time.Duration) Option {
 	}
 }
 
-// WithHeartbeat configures the worker heartbeat interval and TTL.
+// WithHeartbeat configures the worker heartbeat interval and TTL. Both values
+// must be whole milliseconds because the built-in Valkey backend stores TTLs
+// with millisecond precision.
 func WithHeartbeat(interval, ttl time.Duration) Option {
 	return func(cfg *options) error {
-		if interval <= 0 {
-			return errors.New("heartbeat interval must be > 0")
-		}
-		if ttl <= 0 {
-			return errors.New("heartbeat ttl must be > 0")
+		if err := validateHeartbeatDurations(interval, ttl); err != nil {
+			return err
 		}
 		cfg.tuning.heartbeatInterval = interval
 		cfg.tuning.heartbeatTTL = ttl

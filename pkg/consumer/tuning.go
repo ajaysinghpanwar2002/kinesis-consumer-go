@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const maxKinesisGetRecordsBatchSize int32 = 10_000
+
 type tuningConfig struct {
 	shardConcurrency         int
 	batchSize                int32
@@ -44,8 +46,8 @@ func defaultTuning() tuningConfig {
 }
 
 func (t tuningConfig) validate() error {
-	if t.batchSize < 1 {
-		return errors.New("batch size must be >= 1")
+	if err := validateBatchSize(t.batchSize); err != nil {
+		return err
 	}
 	if t.shardConcurrency < 1 {
 		return errors.New("shardConcurrency must be >= 1")
@@ -74,17 +76,8 @@ func (t tuningConfig) validate() error {
 	if t.rebalanceIntervalJitter < 0 {
 		return errors.New("rebalance jitter cannot be negative")
 	}
-	if t.heartbeatInterval <= 0 {
-		return errors.New("heartbeat interval must be > 0")
-	}
-	if t.heartbeatTTL <= 0 {
-		return errors.New("heartbeat ttl must be > 0")
-	}
-	// A renew tick must land well inside the TTL, or every lease expires
-	// before its renewal and peers systematically claim shards away from a
-	// live worker (dual ownership).
-	if t.heartbeatInterval >= t.heartbeatTTL {
-		return errors.New("heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)")
+	if err := validateHeartbeatDurations(t.heartbeatInterval, t.heartbeatTTL); err != nil {
+		return err
 	}
 	if t.shardLeaseReleaseTimeout <= 0 {
 		return errors.New("shard lease release timeout must be > 0")
@@ -94,6 +87,41 @@ func (t tuningConfig) validate() error {
 	}
 	if t.maxMovesPerRebalance < 1 {
 		return errors.New("maxMovesPerRebalance must be >= 1")
+	}
+	return nil
+}
+
+func validateBatchSize(batchSize int32) error {
+	if batchSize < 1 || batchSize > maxKinesisGetRecordsBatchSize {
+		return errors.New("batch size must be between 1 and 10000")
+	}
+	return nil
+}
+
+func validateHeartbeatDurations(interval, ttl time.Duration) error {
+	if interval < time.Millisecond {
+		return errors.New("heartbeat interval must be >= 1ms")
+	}
+	if interval%time.Millisecond != 0 {
+		return errors.New("heartbeat interval must be a whole number of milliseconds")
+	}
+	if ttl < time.Millisecond {
+		return errors.New("heartbeat ttl must be >= 1ms")
+	}
+	if ttl%time.Millisecond != 0 {
+		return errors.New("heartbeat ttl must be a whole number of milliseconds")
+	}
+	// A renew tick must land well inside the TTL, or every lease expires
+	// before its renewal and peers systematically claim shards away from a
+	// live worker (dual ownership).
+	if interval >= ttl {
+		return errors.New("heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)")
+	}
+	// renewShardLeaseLoopWithWatchdog derives its first watchdog deadline by
+	// adding these durations. Check before adding so an accepted configuration
+	// cannot wrap negative and later panic in time.NewTimer.
+	if ttl > time.Duration(1<<63-1)-interval {
+		return errors.New("heartbeat ttl + interval overflows time.Duration")
 	}
 	return nil
 }

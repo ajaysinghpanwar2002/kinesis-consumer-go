@@ -71,7 +71,7 @@ func TestTuningValidate(t *testing.T) {
 		{
 			name: "batch size",
 			edit: func(cfg *tuningConfig) { cfg.batchSize = 0 },
-			want: "batch size must be >= 1",
+			want: "batch size must be between 1 and 10000",
 		},
 		{
 			name: "shard concurrency",
@@ -125,12 +125,12 @@ func TestTuningValidate(t *testing.T) {
 		{
 			name: "heartbeat interval",
 			edit: func(cfg *tuningConfig) { cfg.heartbeatInterval = 0 },
-			want: "heartbeat interval must be > 0",
+			want: "heartbeat interval must be >= 1ms",
 		},
 		{
 			name: "heartbeat ttl",
 			edit: func(cfg *tuningConfig) { cfg.heartbeatTTL = 0 },
-			want: "heartbeat ttl must be > 0",
+			want: "heartbeat ttl must be >= 1ms",
 		},
 		{
 			name: "heartbeat interval equals ttl",
@@ -194,6 +194,170 @@ func TestTuningValidate(t *testing.T) {
 			}
 			if err.Error() != tt.want {
 				t.Fatalf("validate() error = %q, want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestHeartbeatValidationBoundariesAtOptionAndFinalizedTuning(t *testing.T) {
+	t.Parallel()
+
+	const maxDuration time.Duration = 1<<63 - 1
+	maxWholeMillisecond := maxDuration - maxDuration%time.Millisecond
+	tests := []struct {
+		name     string
+		interval time.Duration
+		ttl      time.Duration
+		want     string
+	}{
+		{
+			name:     "sub-millisecond interval",
+			interval: time.Millisecond - time.Nanosecond,
+			ttl:      2 * time.Millisecond,
+			want:     "heartbeat interval must be >= 1ms",
+		},
+		{
+			name:     "fractional-millisecond interval",
+			interval: time.Millisecond + time.Nanosecond,
+			ttl:      2 * time.Millisecond,
+			want:     "heartbeat interval must be a whole number of milliseconds",
+		},
+		{
+			name:     "sub-millisecond ttl",
+			interval: time.Millisecond,
+			ttl:      time.Millisecond - time.Nanosecond,
+			want:     "heartbeat ttl must be >= 1ms",
+		},
+		{
+			name:     "fractional-millisecond ttl",
+			interval: time.Millisecond,
+			ttl:      2*time.Millisecond + time.Nanosecond,
+			want:     "heartbeat ttl must be a whole number of milliseconds",
+		},
+		{
+			name:     "minimum whole milliseconds",
+			interval: time.Millisecond,
+			ttl:      2 * time.Millisecond,
+		},
+		{
+			name:     "interval equals ttl",
+			interval: time.Millisecond,
+			ttl:      time.Millisecond,
+			want:     "heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)",
+		},
+		{
+			name:     "largest non-overflowing watchdog deadline",
+			interval: time.Millisecond,
+			ttl:      maxWholeMillisecond - time.Millisecond,
+		},
+		{
+			name:     "watchdog deadline overflow",
+			interval: time.Millisecond,
+			ttl:      maxWholeMillisecond,
+			want:     "heartbeat ttl + interval overflows time.Duration",
+		},
+	}
+
+	paths := []struct {
+		name     string
+		validate func(time.Duration, time.Duration) error
+	}{
+		{
+			name: "option",
+			validate: func(interval, ttl time.Duration) error {
+				_, err := applyOptions([]Option{WithHeartbeat(interval, ttl)})
+				return err
+			},
+		},
+		{
+			name: "finalized tuning",
+			validate: func(interval, ttl time.Duration) error {
+				cfg := defaultTuning()
+				cfg.heartbeatInterval = interval
+				cfg.heartbeatTTL = ttl
+				return cfg.validate()
+			},
+		},
+	}
+
+	for _, path := range paths {
+		path := path
+		t.Run(path.name, func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range tests {
+				tt := tt
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					err := path.validate(tt.interval, tt.ttl)
+					if tt.want == "" {
+						if err != nil {
+							t.Fatalf("validation error = %v, want nil", err)
+						}
+						return
+					}
+					if err == nil || err.Error() != tt.want {
+						t.Fatalf("validation error = %v, want %q", err, tt.want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestBatchSizeValidationBoundariesAtOptionAndFinalizedTuning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		batchSize int32
+		want      string
+	}{
+		{name: "zero", batchSize: 0, want: "batch size must be between 1 and 10000"},
+		{name: "minimum", batchSize: 1},
+		{name: "kinesis maximum", batchSize: 10_000},
+		{name: "above kinesis maximum", batchSize: 10_001, want: "batch size must be between 1 and 10000"},
+	}
+
+	paths := []struct {
+		name     string
+		validate func(int32) error
+	}{
+		{
+			name: "option",
+			validate: func(batchSize int32) error {
+				_, err := applyOptions([]Option{WithBatching(batchSize, 1)})
+				return err
+			},
+		},
+		{
+			name: "finalized tuning",
+			validate: func(batchSize int32) error {
+				cfg := defaultTuning()
+				cfg.batchSize = batchSize
+				return cfg.validate()
+			},
+		},
+	}
+
+	for _, path := range paths {
+		path := path
+		t.Run(path.name, func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range tests {
+				tt := tt
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					err := path.validate(tt.batchSize)
+					if tt.want == "" {
+						if err != nil {
+							t.Fatalf("validation error = %v, want nil", err)
+						}
+						return
+					}
+					if err == nil || err.Error() != tt.want {
+						t.Fatalf("validation error = %v, want %q", err, tt.want)
+					}
+				})
 			}
 		})
 	}
