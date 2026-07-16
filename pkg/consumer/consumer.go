@@ -18,21 +18,23 @@ import (
 
 // Consumer owns Kinesis shard consumption for one worker process.
 type Consumer struct {
-	cfg           Config
-	client        KinesisAPI
-	store         checkpoint.Store
-	handler       HandlerFunc
-	batchHandler  BatchHandlerFunc
-	failurePolicy FailurePolicy
-	dlqPublisher  DLQPublisher
-	leaseManager  lease.Manager
-	leaseOwner    string
-	gracefulDrain bool
-	drainTimeout  time.Duration
-	draining      atomic.Bool
-	tuning        tuningConfig
-	logger        *slog.Logger
-	reporter      metrics.Reporter
+	cfg                  Config
+	client               KinesisAPI
+	store                checkpoint.Store
+	handler              HandlerFunc
+	batchHandler         BatchHandlerFunc
+	failurePolicy        FailurePolicy
+	dlqPublisher         DLQPublisher
+	leaseManager         lease.Manager
+	leaseOwner           string
+	streamName           string
+	coordinationIdentity string
+	gracefulDrain        bool
+	drainTimeout         time.Duration
+	draining             atomic.Bool
+	tuning               tuningConfig
+	logger               *slog.Logger
+	reporter             metrics.Reporter
 
 	processShardRecordsPassFn func(context.Context, string, int, string) (string, int, string, error)
 	processShardRecordsLoopFn func(context.Context, string) (string, int, error)
@@ -49,16 +51,16 @@ type Consumer struct {
 // a second run after Start returns is likewise unsupported; construct a fresh
 // Consumer with New to run again.
 func (c *Consumer) Start(ctx context.Context) (err error) {
-	c.logger.Info("consumer starting", slog.String("stream", c.streamKey()))
+	c.logger.Info("consumer starting")
 	// Registered first so it runs last, after the lifecycle-cleanup defers
 	// below, and observes the final returned error. Every fatal path
 	// (including no shards found) lands in the error branch.
 	defer func() {
 		if err != nil {
-			c.logger.Error("consumer stopped", slog.String("stream", c.streamKey()), slog.Any("error", err))
+			c.logger.Error("consumer stopped", slog.Any("error", err))
 			return
 		}
-		c.logger.Info("consumer stopped", slog.String("stream", c.streamKey()))
+		c.logger.Info("consumer stopped")
 	}()
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -86,7 +88,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 		return err
 	}
 	if len(shards) == 0 {
-		return fmt.Errorf("%w for stream %s", ErrNoShards, c.streamKey())
+		return fmt.Errorf("%w for stream %s", ErrNoShards, c.canonicalStreamName())
 	}
 
 	shardMap := make(map[string]types.Shard, len(shards))
@@ -206,7 +208,7 @@ func New(cfg Config, client KinesisAPI, store checkpoint.Store, handler HandlerF
 		return nil, err
 	}
 
-	resolvedCfg, err := finalizeConfig(cfg)
+	resolvedCfg, streamName, err := finalizeConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -223,21 +225,29 @@ func New(cfg Config, client KinesisAPI, store checkpoint.Store, handler HandlerF
 		return nil, err
 	}
 
+	coordinationIdentity := resolvedCfg.ConsumerGroup + ":" + streamName
+	logger := opt.logger.With(
+		slog.String("stream", streamName),
+		slog.String("consumer_group", resolvedCfg.ConsumerGroup),
+	)
+
 	return &Consumer{
-		cfg:           resolvedCfg,
-		client:        client,
-		store:         store,
-		handler:       handler,
-		batchHandler:  batchHandler,
-		failurePolicy: opt.failurePolicy,
-		dlqPublisher:  opt.dlqPublisher,
-		leaseManager:  leaseManager,
-		leaseOwner:    leaseOwner,
-		gracefulDrain: opt.shutdown.gracefulDrain,
-		drainTimeout:  opt.shutdown.gracefulDrainTimeout,
-		tuning:        opt.tuning,
-		logger:        opt.logger,
-		reporter:      opt.reporter,
+		cfg:                  resolvedCfg,
+		client:               client,
+		store:                store,
+		handler:              handler,
+		batchHandler:         batchHandler,
+		failurePolicy:        opt.failurePolicy,
+		dlqPublisher:         opt.dlqPublisher,
+		leaseManager:         leaseManager,
+		leaseOwner:           leaseOwner,
+		streamName:           streamName,
+		coordinationIdentity: coordinationIdentity,
+		gracefulDrain:        opt.shutdown.gracefulDrain,
+		drainTimeout:         opt.shutdown.gracefulDrainTimeout,
+		tuning:               opt.tuning,
+		logger:               logger,
+		reporter:             opt.reporter,
 	}, nil
 }
 
@@ -261,12 +271,13 @@ func resolveHandlers(handler HandlerFunc, opt options) (HandlerFunc, BatchHandle
 	return handler, opt.batchHandler, nil
 }
 
-func finalizeConfig(cfg Config) (Config, error) {
+func finalizeConfig(cfg Config) (Config, string, error) {
 	cfg = cfg.withDefaults()
-	if err := cfg.validate(); err != nil {
-		return Config{}, err
+	streamName, err := cfg.validateAndResolveStreamName()
+	if err != nil {
+		return Config{}, "", err
 	}
-	return cfg, nil
+	return cfg, streamName, nil
 }
 
 func leaseSettings(store checkpoint.Store, opt options) (lease.Manager, string, error) {

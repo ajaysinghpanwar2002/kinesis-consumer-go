@@ -56,7 +56,7 @@ go get github.com/ajaysinghpanwar2002/kinesis-consumer-go
 
   ```bash
   cd examples/valkey
-  go run . -stream-name my-stream -valkey-addr localhost:6379
+  go run . -stream-name my-stream -consumer-group my-app -valkey-addr localhost:6379
   ```
 
 ## Development

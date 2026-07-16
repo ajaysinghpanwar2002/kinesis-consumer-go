@@ -127,6 +127,7 @@ func newCooldownProbeConsumer(
 	t.Helper()
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
@@ -149,7 +150,7 @@ func waitForOnlyLeaseWorker(t *testing.T, manager lease.Manager, stream, owner s
 	var last []string
 	var lastErr error
 	for {
-		workers, err := manager.Workers(context.Background(), stream)
+		workers, err := manager.Workers(context.Background(), integrationCoordinationIdentity(stream))
 		if err == nil {
 			last = workers
 			if len(workers) == 1 && workers[0] == owner {
@@ -171,7 +172,7 @@ func waitForShardOwner(t *testing.T, manager lease.Manager, stream, shardID, own
 	var last map[string]string
 	var lastErr error
 	for {
-		owners, err := manager.List(context.Background(), stream)
+		owners, err := manager.List(context.Background(), integrationCoordinationIdentity(stream))
 		if err == nil {
 			last = owners
 			if owners[shardID] == owner {
@@ -192,7 +193,7 @@ func assertShardOwnerFor(t *testing.T, manager lease.Manager, stream, shardID, o
 	deadline := time.Now().Add(stableFor)
 	samples := 0
 	for time.Now().Before(deadline) {
-		owners, err := manager.List(context.Background(), stream)
+		owners, err := manager.List(context.Background(), integrationCoordinationIdentity(stream))
 		if err != nil {
 			t.Fatalf("list owners while checking shard %s stability: %v", shardID, err)
 		}

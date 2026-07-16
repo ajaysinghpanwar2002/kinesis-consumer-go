@@ -89,7 +89,7 @@ func TestSkipPoisonContinuesAndCheckpoints(t *testing.T) {
 	// Phase 1: C1 processes batch1 with the skip policy, skipping the poison.
 	collC1 := newCollector()
 	var poisonCallsC1 atomic.Int64
-	cfg := consumer.Config{StreamName: stream, StartPosition: consumer.StartTrimHorizon}
+	cfg := consumer.Config{StreamName: stream, ConsumerGroup: integrationConsumerGroup, StartPosition: consumer.StartTrimHorizon}
 	consumerC1, err := consumer.New(cfg, client, store, newSkipHandler(collC1, poison, &poisonCallsC1),
 		consumer.WithFailurePolicy(consumer.FailurePolicySkip),
 		consumer.WithRetry(1, time.Millisecond),

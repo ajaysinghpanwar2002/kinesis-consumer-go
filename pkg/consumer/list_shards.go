@@ -26,7 +26,7 @@ Input: kinesis.ListShardsInput
 	    StreamName              *string
 	}
 
-We normally provide either StreamARN or StreamName, or both. AWS recommends StreamARN.
+The consumer provides exactly one of StreamARN or StreamName, as validated by New.
 
 Gotchas
 NextToken is for pagination. Once we use NextToken, we should not also specify StreamName or StreamCreationTimestamp, because the token already identifies the stream.

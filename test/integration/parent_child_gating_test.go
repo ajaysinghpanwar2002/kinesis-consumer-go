@@ -139,7 +139,7 @@ func TestParentChildGatingHoldsChildrenUntilParentCompletes(t *testing.T) {
 	// (b) Guard: the parent is provably incomplete (no SHARD_END checkpoint yet), so
 	// (a) is not vacuously true — the children were gated by a real incomplete
 	// parent, not by a race or a prematurely completed parent.
-	if seq, err := store.Get(ctx, stream, parentID); err != nil {
+	if seq, err := store.Get(ctx, integrationCoordinationIdentity(stream), parentID); err != nil {
 		t.Fatalf("read parent checkpoint during gate window: %v", err)
 	} else if strings.HasPrefix(seq, "SHARD_END") {
 		t.Fatalf("parent %s already SHARD_END (%q) during the gate window; blocking handler failed to hold it incomplete", parentID, seq)

@@ -102,6 +102,7 @@ func newMaxMovesProbeConsumer(
 	t.Helper()
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
@@ -131,7 +132,7 @@ func waitForThreeOneSplitBeforeTwoTwo(
 	var last map[string]string
 	var lastErr error
 	for {
-		owners, err := manager.List(context.Background(), stream)
+		owners, err := manager.List(context.Background(), integrationCoordinationIdentity(stream))
 		if err == nil {
 			last = owners
 			if len(owners) == shardCount {
@@ -168,7 +169,7 @@ func waitForOwnerSplit(
 	var last map[string]string
 	var lastErr error
 	for {
-		owners, err := manager.List(context.Background(), stream)
+		owners, err := manager.List(context.Background(), integrationCoordinationIdentity(stream))
 		if err == nil {
 			last = owners
 			if len(owners) == shardCount {
@@ -201,7 +202,7 @@ func assertOwnerSplitFor(
 	deadline := time.Now().Add(stableFor)
 	samples := 0
 	for time.Now().Before(deadline) {
-		owners, err := manager.List(context.Background(), stream)
+		owners, err := manager.List(context.Background(), integrationCoordinationIdentity(stream))
 		if err != nil {
 			t.Fatalf("list owners while checking split stability: %v", err)
 		}

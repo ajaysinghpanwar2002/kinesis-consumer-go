@@ -108,7 +108,7 @@ func TestDLQCapturesPoisonAndContinues(t *testing.T) {
 		return record(hctx, rec)
 	}
 	dlq := &capturingDLQ{}
-	cfg := consumer.Config{StreamName: stream, StartPosition: consumer.StartTrimHorizon}
+	cfg := consumer.Config{StreamName: stream, ConsumerGroup: integrationConsumerGroup, StartPosition: consumer.StartTrimHorizon}
 	consumerC1, err := consumer.New(cfg, client, store, dlqHandler,
 		consumer.WithFailurePolicy(consumer.FailurePolicySendToDLQ),
 		consumer.WithDLQPublisher(dlq),
@@ -145,6 +145,9 @@ func TestDLQCapturesPoisonAndContinues(t *testing.T) {
 	}
 	if got.StreamARN != "" {
 		t.Errorf("poison StreamARN = %q; want empty (only StreamName was configured)", got.StreamARN)
+	}
+	if got.ConsumerGroup != integrationConsumerGroup {
+		t.Errorf("poison ConsumerGroup = %q; want %q", got.ConsumerGroup, integrationConsumerGroup)
 	}
 	if got.ShardID != shardID {
 		t.Errorf("poison ShardID = %q; want %q", got.ShardID, shardID)

@@ -68,7 +68,7 @@ func TestStaleLeaseReclaimedAfterTTLExpiry(t *testing.T) {
 	// intentionally discarded — we never Renew/Release it, so it lapses on its
 	// own like an abandoned worker's lease.
 	plantedAt := time.Now()
-	if _, ok, err := mgr.Acquire(ctx, stream, shardID, deadOwner, staleTTL); err != nil || !ok {
+	if _, ok, err := mgr.Acquire(ctx, integrationCoordinationIdentity(stream), shardID, deadOwner, staleTTL); err != nil || !ok {
 		t.Fatalf("plant stale lease: ok=%v err=%v, want ok true", ok, err)
 	}
 
@@ -98,7 +98,7 @@ func TestStaleLeaseReclaimedAfterTTLExpiry(t *testing.T) {
 	// merely slow startup.
 	time.Sleep(midWindow)
 
-	owners, err := mgr.List(ctx, stream)
+	owners, err := mgr.List(ctx, integrationCoordinationIdentity(stream))
 	if err != nil {
 		t.Fatalf("mid-window List: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestStaleLeaseReclaimedAfterTTLExpiry(t *testing.T) {
 		t.Fatalf("mid-window lease owner for %s = %q, want %q (stale lease should still be present)", shardID, owners[shardID], deadOwner)
 	}
 
-	workers, err := mgr.Workers(ctx, stream)
+	workers, err := mgr.Workers(ctx, integrationCoordinationIdentity(stream))
 	if err != nil {
 		t.Fatalf("mid-window Workers: %v", err)
 	}

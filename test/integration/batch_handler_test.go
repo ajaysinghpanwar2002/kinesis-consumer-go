@@ -102,6 +102,7 @@ func newBatchConsumer(t *testing.T, stream string, client *kinesis.Client, store
 	t.Helper()
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, nil,

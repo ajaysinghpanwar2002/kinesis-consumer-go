@@ -78,7 +78,7 @@ func TestStartSendsWorkerHeartbeat(t *testing.T) {
 	cancel()
 	waitStartDone(t, done, nil)
 
-	assertHeartbeatCall(t, call, "stream", "owner", 30*time.Millisecond)
+	assertHeartbeatCall(t, call, "group:stream", "owner", 30*time.Millisecond)
 }
 
 func TestStartAttemptsAcquisitionForDiscoveredShardIDs(t *testing.T) {
@@ -1344,7 +1344,8 @@ func newTestStartConsumerWithLeaseManager(client KinesisAPI, manager lease.Manag
 
 	return &Consumer{
 		cfg: Config{
-			StreamName: "stream",
+			StreamName:    "stream",
+			ConsumerGroup: "group",
 		},
 		client:       client,
 		store:        &fakeCheckpointSaveStore{},

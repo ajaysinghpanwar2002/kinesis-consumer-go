@@ -110,6 +110,7 @@ func TestUngracefulCrashFailoverResumesFromCheckpoint(t *testing.T) {
 	}
 	consA, err := consumer.New(consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}, client, store, handlerA,
 		consumer.WithBatching(batchSize, 1),
@@ -132,7 +133,7 @@ func TestUngracefulCrashFailoverResumesFromCheckpoint(t *testing.T) {
 
 	// Capture A's lease owner token so we can prove the SAME lease survives the
 	// crash (not released, not yet reclaimed).
-	before, err := crashMgr.List(ctx, stream)
+	before, err := crashMgr.List(ctx, integrationCoordinationIdentity(stream))
 	if err != nil {
 		t.Fatalf("List before crash: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestUngracefulCrashFailoverResumesFromCheckpoint(t *testing.T) {
 
 	// PRECONDITION (fail-fast, not the load-bearing check): the crashed worker's
 	// lease is still present under the SAME owner token — it was not released.
-	after, err := crashMgr.List(ctx, stream)
+	after, err := crashMgr.List(ctx, integrationCoordinationIdentity(stream))
 	if err != nil {
 		t.Fatalf("List after crash: %v", err)
 	}

@@ -104,10 +104,10 @@ func TestKeyPrefixIsolationAcrossStreams(t *testing.T) {
 	ownerB := waitForSingleLeaseOwner(t, leaseB, streamB, shardCount, 45*time.Second)
 
 	// LOAD-BEARING: the other prefix cannot see those leases.
-	if owners, err := leaseB.List(ctx, streamA); err != nil || len(owners) != 0 {
+	if owners, err := leaseB.List(ctx, integrationCoordinationIdentity(streamA)); err != nil || len(owners) != 0 {
 		t.Fatalf("prefix B leaked stream A leases: List(streamA)=%v err=%v; want empty", owners, err)
 	}
-	if owners, err := leaseA.List(ctx, streamB); err != nil || len(owners) != 0 {
+	if owners, err := leaseA.List(ctx, integrationCoordinationIdentity(streamB)); err != nil || len(owners) != 0 {
 		t.Fatalf("prefix A leaked stream B leases: List(streamB)=%v err=%v; want empty", owners, err)
 	}
 
@@ -117,10 +117,10 @@ func TestKeyPrefixIsolationAcrossStreams(t *testing.T) {
 		t.Fatalf("prefix A saw no worker for stream A; guard for the worker cross-read is vacuous")
 	}
 	_ = waitForLeaseWorkers(t, leaseB, streamB, 1, 30*time.Second)
-	if workers, err := leaseB.Workers(ctx, streamA); err != nil || len(workers) != 0 {
+	if workers, err := leaseB.Workers(ctx, integrationCoordinationIdentity(streamA)); err != nil || len(workers) != 0 {
 		t.Fatalf("prefix B leaked stream A workers: Workers(streamA)=%v err=%v; want empty", workers, err)
 	}
-	if workers, err := leaseA.Workers(ctx, streamB); err != nil || len(workers) != 0 {
+	if workers, err := leaseA.Workers(ctx, integrationCoordinationIdentity(streamB)); err != nil || len(workers) != 0 {
 		t.Fatalf("prefix A leaked stream B workers: Workers(streamB)=%v err=%v; want empty", workers, err)
 	}
 	t.Logf("lease isolation held: ownerA=%s ownerB=%s", ownerA, ownerB)
@@ -131,13 +131,13 @@ func TestKeyPrefixIsolationAcrossStreams(t *testing.T) {
 		// per-page save that lands after the handler returns).
 		waitForCheckpoint(t, storeA, streamA, shard, 30*time.Second)
 		// LOAD-BEARING: prefix B cannot see A's checkpoint for the same shard.
-		if v, err := storeB.Get(ctx, streamA, shard); err != nil || v != "" {
+		if v, err := storeB.Get(ctx, integrationCoordinationIdentity(streamA), shard); err != nil || v != "" {
 			t.Fatalf("prefix B leaked stream A checkpoint for shard %s: Get=%q err=%v; want empty", shard, v, err)
 		}
 	}
 	for _, shard := range listShardIDs(ctx, t, client, streamB) {
 		waitForCheckpoint(t, storeB, streamB, shard, 30*time.Second)
-		if v, err := storeA.Get(ctx, streamB, shard); err != nil || v != "" {
+		if v, err := storeA.Get(ctx, integrationCoordinationIdentity(streamB), shard); err != nil || v != "" {
 			t.Fatalf("prefix A leaked stream B checkpoint for shard %s: Get=%q err=%v; want empty", shard, v, err)
 		}
 	}
@@ -151,7 +151,7 @@ func waitForCheckpoint(t *testing.T, store *valkeycheckpoint.Store, stream, shar
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		v, err := store.Get(context.Background(), stream, shard)
+		v, err := store.Get(context.Background(), integrationCoordinationIdentity(stream), shard)
 		if err == nil && v != "" {
 			return v
 		}

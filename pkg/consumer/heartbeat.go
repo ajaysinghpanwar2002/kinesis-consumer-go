@@ -6,16 +6,28 @@ import (
 	"time"
 )
 
-func (c *Consumer) streamKey() string {
-	if c.cfg.StreamName != "" {
-		return c.cfg.StreamName
+func (c *Consumer) canonicalStreamName() string {
+	if c.streamName != "" {
+		return c.streamName
 	}
-	return c.cfg.StreamARN
+	streamName, _ := resolveCanonicalStreamName(c.cfg)
+	return streamName
+}
+
+func (c *Consumer) coordinationKey() string {
+	if c.coordinationIdentity != "" {
+		return c.coordinationIdentity
+	}
+	streamName := c.canonicalStreamName()
+	if c.cfg.ConsumerGroup == "" {
+		return streamName
+	}
+	return c.cfg.ConsumerGroup + ":" + streamName
 }
 
 func (c *Consumer) workerHeartbeatLoop(ctx context.Context) {
 	send := func() {
-		err := c.leaseManager.Heartbeat(ctx, c.streamKey(), c.leaseOwner, c.tuning.heartbeatTTL)
+		err := c.leaseManager.Heartbeat(ctx, c.coordinationKey(), c.leaseOwner, c.tuning.heartbeatTTL)
 		if err == nil || ctx.Err() != nil {
 			// Success, or shutdown cancellation (not a liveness failure).
 			return

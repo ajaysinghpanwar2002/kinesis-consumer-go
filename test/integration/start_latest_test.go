@@ -80,6 +80,7 @@ func TestStartLatestSkipsBacklogDeliversNew(t *testing.T) {
 	coll := newCollector()
 	consC1, err := consumer.New(consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartLatest,
 	}, client, store, coll.handler(),
 		consumer.WithBatching(10, 1),

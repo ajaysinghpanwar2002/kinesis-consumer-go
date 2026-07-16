@@ -78,7 +78,7 @@ func TestNewValidation(t *testing.T) {
 	}{
 		{
 			name:    "nil client",
-			cfg:     Config{StreamName: "stream"},
+			cfg:     Config{StreamName: "stream", ConsumerGroup: "group"},
 			client:  nil,
 			store:   store,
 			handler: handler,
@@ -86,21 +86,21 @@ func TestNewValidation(t *testing.T) {
 		},
 		{
 			name:    "nil checkpoint store",
-			cfg:     Config{StreamName: "stream"},
+			cfg:     Config{StreamName: "stream", ConsumerGroup: "group"},
 			client:  client,
 			handler: handler,
 			want:    "checkpoint store is required",
 		},
 		{
 			name:   "missing handler",
-			cfg:    Config{StreamName: "stream"},
+			cfg:    Config{StreamName: "stream", ConsumerGroup: "group"},
 			client: client,
 			store:  store,
 			want:   "handler is required (provide WithBatchHandler for batch processing)",
 		},
 		{
 			name:    "invalid option",
-			cfg:     Config{StreamName: "stream"},
+			cfg:     Config{StreamName: "stream", ConsumerGroup: "group"},
 			client:  client,
 			store:   store,
 			handler: handler,
@@ -109,16 +109,38 @@ func TestNewValidation(t *testing.T) {
 		},
 		{
 			name:    "invalid config",
-			cfg:     Config{},
+			cfg:     Config{ConsumerGroup: "group"},
 			client:  client,
 			store:   store,
 			handler: handler,
 			opts:    []Option{WithLeaseManager(leaseMgr)},
-			want:    "stream name or ARN is required",
+			want:    "exactly one of stream name or ARN is required",
+		},
+		{
+			name:    "missing consumer group",
+			cfg:     Config{StreamName: "stream"},
+			client:  client,
+			store:   store,
+			handler: handler,
+			opts:    []Option{WithLeaseManager(leaseMgr)},
+			want:    "consumer group is required",
+		},
+		{
+			name: "both stream identities",
+			cfg: Config{
+				StreamName:    "stream",
+				StreamARN:     "arn:aws:kinesis:us-east-1:123456789012:stream/stream",
+				ConsumerGroup: "group",
+			},
+			client:  client,
+			store:   store,
+			handler: handler,
+			opts:    []Option{WithLeaseManager(leaseMgr)},
+			want:    "exactly one of stream name or ARN is required",
 		},
 		{
 			name:    "missing lease manager",
-			cfg:     Config{StreamName: "stream"},
+			cfg:     Config{StreamName: "stream", ConsumerGroup: "group"},
 			client:  client,
 			store:   store,
 			handler: handler,
@@ -126,7 +148,7 @@ func TestNewValidation(t *testing.T) {
 		},
 		{
 			name:    "send to dlq without publisher",
-			cfg:     Config{StreamName: "stream"},
+			cfg:     Config{StreamName: "stream", ConsumerGroup: "group"},
 			client:  client,
 			store:   store,
 			handler: handler,
@@ -135,7 +157,7 @@ func TestNewValidation(t *testing.T) {
 		},
 		{
 			name:    "record handler and batch handler together",
-			cfg:     Config{StreamName: "stream"},
+			cfg:     Config{StreamName: "stream", ConsumerGroup: "group"},
 			client:  client,
 			store:   store,
 			handler: handler,
@@ -171,7 +193,7 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 	leaseMgr := fakeLeaseManager{}
 
 	c, err := New(
-		Config{StreamName: "stream"},
+		Config{StreamName: "stream", ConsumerGroup: "group"},
 		client,
 		store,
 		handler,
@@ -190,6 +212,12 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 	}
 	if c.cfg.StartPosition != StartLatest {
 		t.Fatalf("StartPosition = %q, want %q", c.cfg.StartPosition, StartLatest)
+	}
+	if c.streamName != "stream" {
+		t.Fatalf("streamName = %q, want %q", c.streamName, "stream")
+	}
+	if c.coordinationIdentity != "group:stream" {
+		t.Fatalf("coordinationIdentity = %q, want %q", c.coordinationIdentity, "group:stream")
 	}
 	if c.client != client {
 		t.Fatalf("client was not retained")
@@ -235,6 +263,33 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 	}
 }
 
+func TestNewResolvesARNCanonicalCoordinationIdentity(t *testing.T) {
+	t.Parallel()
+
+	c, err := New(
+		Config{
+			StreamARN:     "arn:aws:kinesis:us-east-1:123456789012:stream/orders",
+			ConsumerGroup: "billing",
+		},
+		&Client{},
+		fakeCheckpointStore{},
+		func(context.Context, Record) error { return nil },
+		WithLeaseManager(fakeLeaseManager{}),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil", err)
+	}
+	if c.streamName != "orders" {
+		t.Fatalf("streamName = %q, want %q", c.streamName, "orders")
+	}
+	if c.coordinationIdentity != "billing:orders" {
+		t.Fatalf("coordinationIdentity = %q, want %q", c.coordinationIdentity, "billing:orders")
+	}
+	if c.cfg.StreamARN == "" || c.cfg.StreamName != "" {
+		t.Fatalf("AWS identity was rewritten: StreamARN=%q StreamName=%q", c.cfg.StreamARN, c.cfg.StreamName)
+	}
+}
+
 func TestNewAllowsBatchHandlerWithoutRecordHandler(t *testing.T) {
 	t.Parallel()
 
@@ -244,7 +299,7 @@ func TestNewAllowsBatchHandlerWithoutRecordHandler(t *testing.T) {
 	leaseMgr := fakeLeaseManager{}
 
 	c, err := New(
-		Config{StreamName: "stream"},
+		Config{StreamName: "stream", ConsumerGroup: "group"},
 		client,
 		store,
 		nil,
@@ -274,7 +329,7 @@ func TestNewAcceptsCustomKinesisAPI(t *testing.T) {
 	handler := func(context.Context, Record) error { return nil }
 	leaseMgr := fakeLeaseManager{}
 
-	c, err := New(Config{StreamName: "stream"}, client, store, handler, WithLeaseManager(leaseMgr))
+	c, err := New(Config{StreamName: "stream", ConsumerGroup: "group"}, client, store, handler, WithLeaseManager(leaseMgr))
 	if err != nil {
 		t.Fatalf("New() error = %v, want nil", err)
 	}
@@ -291,7 +346,7 @@ func TestNewUsesLeaseProviderStore(t *testing.T) {
 	store := fakeProviderStore{manager: leaseMgr}
 	handler := func(context.Context, Record) error { return nil }
 
-	c, err := New(Config{StreamName: "stream"}, client, store, handler)
+	c, err := New(Config{StreamName: "stream", ConsumerGroup: "group"}, client, store, handler)
 	if err != nil {
 		t.Fatalf("New() error = %v, want nil", err)
 	}
@@ -311,7 +366,7 @@ func TestNewWrapsLeaseProviderError(t *testing.T) {
 	store := fakeProviderStore{err: errBoom}
 	handler := func(context.Context, Record) error { return nil }
 
-	_, err := New(Config{StreamName: "stream"}, client, store, handler)
+	_, err := New(Config{StreamName: "stream", ConsumerGroup: "group"}, client, store, handler)
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("New() error = %v, want wraps %v", err, errBoom)
 	}

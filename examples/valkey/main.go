@@ -35,10 +35,11 @@ import (
 
 func main() {
 	var (
-		streamName = flag.String("stream-name", "", "Kinesis stream name")
-		streamARN  = flag.String("stream-arn", "", "Kinesis stream ARN (alternative to -stream-name)")
-		region     = flag.String("region", "ap-south-1", "AWS region for the stream")
-		endpoint   = flag.String("endpoint", os.Getenv("AWS_ENDPOINT_URL"), "Override Kinesis endpoint (e.g. http://localhost:4566 for LocalStack)")
+		streamName    = flag.String("stream-name", "", "Kinesis stream name")
+		streamARN     = flag.String("stream-arn", "", "Kinesis stream ARN (alternative to -stream-name)")
+		consumerGroup = flag.String("consumer-group", "", "Logical application group sharing checkpoints and shard ownership")
+		region        = flag.String("region", "ap-south-1", "AWS region for the stream")
+		endpoint      = flag.String("endpoint", os.Getenv("AWS_ENDPOINT_URL"), "Override Kinesis endpoint (e.g. http://localhost:4566 for LocalStack)")
 
 		valkeyAddr    = flag.String("valkey-addr", "localhost:6379", "Valkey/Redis address (used for checkpoints and leasing)")
 		valkeyPrefix  = flag.String("valkey-prefix", "kinesis-checkpoint", "Key prefix for checkpoints (leases use <prefix>-lease by default)")
@@ -60,8 +61,11 @@ func main() {
 	)
 	flag.Parse()
 
-	if *streamName == "" && *streamARN == "" {
-		log.Fatal("one of -stream-name or -stream-arn is required")
+	if (*streamName == "") == (*streamARN == "") {
+		log.Fatal("exactly one of -stream-name or -stream-arn is required")
+	}
+	if *consumerGroup == "" {
+		log.Fatal("-consumer-group is required")
 	}
 
 	// Stop the consumer on Ctrl-C / SIGINT so graceful drain can run.
@@ -114,6 +118,7 @@ func main() {
 	cfg := consumer.Config{
 		StreamName:    *streamName,
 		StreamARN:     *streamARN,
+		ConsumerGroup: *consumerGroup,
 		StartPosition: consumer.StartLatest,
 	}
 

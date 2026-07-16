@@ -101,8 +101,8 @@
       },
       "targets": [
         {
-          "alias": "$tag_stream",
-          "query": "SELECT last(\"value\") FROM \"kinesis_consumer_owned_shards\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY \"stream\"",
+          "alias": "$tag_consumer_group / $tag_stream",
+          "query": "SELECT last(\"value\") FROM \"kinesis_consumer_owned_shards\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/) AND $timeFilter GROUP BY \"consumer_group\", \"stream\"",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -151,8 +151,8 @@
       },
       "targets": [
         {
-          "alias": "$tag_stream",
-          "query": "SELECT last(\"value\") FROM \"kinesis_consumer_active_workers\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY \"stream\"",
+          "alias": "$tag_consumer_group / $tag_stream",
+          "query": "SELECT last(\"value\") FROM \"kinesis_consumer_active_workers\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/) AND $timeFilter GROUP BY \"consumer_group\", \"stream\"",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -201,8 +201,8 @@
       },
       "targets": [
         {
-          "alias": "$tag_stream",
-          "query": "SELECT last(\"value\") FROM \"kinesis_consumer_fair_share_low\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY \"stream\"",
+          "alias": "$tag_consumer_group / $tag_stream",
+          "query": "SELECT last(\"value\") FROM \"kinesis_consumer_fair_share_low\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/) AND $timeFilter GROUP BY \"consumer_group\", \"stream\"",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -251,8 +251,8 @@
       },
       "targets": [
         {
-          "alias": "$tag_stream",
-          "query": "SELECT last(\"value\") FROM \"kinesis_consumer_fair_share_high\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY \"stream\"",
+          "alias": "$tag_consumer_group / $tag_stream",
+          "query": "SELECT last(\"value\") FROM \"kinesis_consumer_fair_share_high\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/) AND $timeFilter GROUP BY \"consumer_group\", \"stream\"",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -323,14 +323,14 @@
       "targets": [
         {
           "alias": "records ($tag_handler)",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_records_processed\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_records_processed\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
           "alias": "pages fetched",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_pages_fetched\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_pages_fetched\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -389,7 +389,7 @@
       "targets": [
         {
           "alias": "$tag_shard",
-          "query": "SELECT max(\"value\") FROM \"kinesis_consumer_millis_behind_latest\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"shard\" fill(null)",
+          "query": "SELECT max(\"value\") FROM \"kinesis_consumer_millis_behind_latest\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"shard\" fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -460,21 +460,21 @@
       "targets": [
         {
           "alias": "records skipped",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_records_skipped\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_records_skipped\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
           "alias": "DLQ records published",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_dlq_records_published\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_dlq_records_published\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
         },
         {
           "alias": "handler retries ($tag_handler)",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_handler_retries\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_handler_retries\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
           "rawQuery": true,
           "refId": "C",
           "resultFormat": "time_series"
@@ -532,14 +532,14 @@
       "targets": [
         {
           "alias": "saved",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_checkpoints_saved\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_checkpoints_saved\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
           "alias": "failures",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_checkpoint_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_checkpoint_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -597,7 +597,7 @@
       "targets": [
         {
           "alias": "get records failures ($tag_kind)",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_get_records_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_get_records_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
@@ -669,14 +669,14 @@
       "targets": [
         {
           "alias": "mean ($tag_handler)",
-          "query": "SELECT mean(\"mean\") FROM \"kinesis_consumer_handler_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
+          "query": "SELECT mean(\"mean\") FROM \"kinesis_consumer_handler_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
           "alias": "p95 ($tag_handler)",
-          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_handler_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
+          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_handler_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
@@ -735,35 +735,35 @@
       "targets": [
         {
           "alias": "get records p95",
-          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_get_records_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_get_records_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
           "alias": "checkpoint save p95",
-          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_checkpoint_save_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_checkpoint_save_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
         },
         {
           "alias": "lease acquire p95",
-          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_lease_acquire_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_lease_acquire_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "C",
           "resultFormat": "time_series"
         },
         {
           "alias": "rebalance pass p95",
-          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_rebalance_pass_duration\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_rebalance_pass_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "D",
           "resultFormat": "time_series"
         },
         {
           "alias": "drain p95",
-          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_drain_duration\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT mean(\"percentile_95\") FROM \"kinesis_consumer_drain_duration\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "E",
           "resultFormat": "time_series"
@@ -834,42 +834,42 @@
       "targets": [
         {
           "alias": "acquired",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_acquired\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_acquired\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
           "alias": "released",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_released\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_released\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
         },
         {
           "alias": "release failures",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_release_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_release_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "C",
           "resultFormat": "time_series"
         },
         {
           "alias": "renewals",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_renewals\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_renewals\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "D",
           "resultFormat": "time_series"
         },
         {
           "alias": "renewal failures",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_renewal_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_lease_renewal_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "E",
           "resultFormat": "time_series"
         },
         {
           "alias": "heartbeat failures",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_heartbeat_failures\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_heartbeat_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "F",
           "resultFormat": "time_series"
@@ -927,21 +927,21 @@
       "targets": [
         {
           "alias": "moves ($tag_kind)",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_moves\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_moves\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
           "alias": "skips ($tag_kind)",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_skips\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_skips\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"kind\" fill(null)",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
         },
         {
           "alias": "pass failures",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_pass_failures\" WHERE (\"stream\" =~ /^$stream$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_rebalance_pass_failures\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "C",
           "resultFormat": "time_series"
@@ -1012,21 +1012,21 @@
       "targets": [
         {
           "alias": "worker starts",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_worker_starts\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_worker_starts\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "A",
           "resultFormat": "time_series"
         },
         {
           "alias": "worker stops ($tag_outcome)",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_worker_stops\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"outcome\" fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_worker_stops\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval), \"outcome\" fill(null)",
           "rawQuery": true,
           "refId": "B",
           "resultFormat": "time_series"
         },
         {
           "alias": "shards completed",
-          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_shards_completed\" WHERE (\"stream\" =~ /^$stream$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
+          "query": "SELECT sum(\"value\") FROM \"kinesis_consumer_shards_completed\" WHERE (\"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/ AND \"shard\" =~ /^$shard$/) AND $timeFilter GROUP BY time($__interval) fill(null)",
           "rawQuery": true,
           "refId": "C",
           "resultFormat": "time_series"
@@ -1065,14 +1065,14 @@
           "type": "influxdb",
           "uid": "${datasource}"
         },
-        "definition": "SHOW TAG VALUES FROM \"kinesis_consumer_records_processed\" WITH KEY = \"stream\"",
+        "definition": "SHOW TAG VALUES FROM \"kinesis_consumer_records_processed\" WITH KEY = \"consumer_group\"",
         "hide": 0,
         "includeAll": true,
-        "label": "Stream",
+        "label": "Consumer group",
         "multi": true,
-        "name": "stream",
+        "name": "consumer_group",
         "options": [],
-        "query": "SHOW TAG VALUES FROM \"kinesis_consumer_records_processed\" WITH KEY = \"stream\"",
+        "query": "SHOW TAG VALUES FROM \"kinesis_consumer_records_processed\" WITH KEY = \"consumer_group\"",
         "refresh": 1,
         "regex": "",
         "sort": 1,
@@ -1085,14 +1085,34 @@
           "type": "influxdb",
           "uid": "${datasource}"
         },
-        "definition": "SHOW TAG VALUES FROM \"kinesis_consumer_millis_behind_latest\" WITH KEY = \"shard\" WHERE \"stream\" =~ /^$stream$/",
+        "definition": "SHOW TAG VALUES FROM \"kinesis_consumer_records_processed\" WITH KEY = \"stream\" WHERE \"consumer_group\" =~ /^$consumer_group$/",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Stream",
+        "multi": true,
+        "name": "stream",
+        "options": [],
+        "query": "SHOW TAG VALUES FROM \"kinesis_consumer_records_processed\" WITH KEY = \"stream\" WHERE \"consumer_group\" =~ /^$consumer_group$/",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {},
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${datasource}"
+        },
+        "definition": "SHOW TAG VALUES FROM \"kinesis_consumer_millis_behind_latest\" WITH KEY = \"shard\" WHERE \"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/",
         "hide": 0,
         "includeAll": true,
         "label": "Shard",
         "multi": true,
         "name": "shard",
         "options": [],
-        "query": "SHOW TAG VALUES FROM \"kinesis_consumer_millis_behind_latest\" WITH KEY = \"shard\" WHERE \"stream\" =~ /^$stream$/",
+        "query": "SHOW TAG VALUES FROM \"kinesis_consumer_millis_behind_latest\" WITH KEY = \"shard\" WHERE \"stream\" =~ /^$stream$/ AND \"consumer_group\" =~ /^$consumer_group$/",
         "refresh": 1,
         "regex": "",
         "sort": 1,

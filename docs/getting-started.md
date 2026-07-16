@@ -83,6 +83,7 @@ func main() {
 	// 3. Which stream, and where to start when there is no checkpoint yet.
 	cfg := consumer.Config{
 		StreamName:    "my-stream",
+		ConsumerGroup: "my-app",
 		StartPosition: consumer.StartTrimHorizon,
 	}
 

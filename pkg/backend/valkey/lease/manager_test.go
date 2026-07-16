@@ -104,6 +104,63 @@ func TestManagerAcquireClaimReleaseRenew(t *testing.T) {
 	}
 }
 
+func TestManagerConsumerGroupCoordinationKeysAreIsolated(t *testing.T) {
+	t.Parallel()
+
+	mgr, server := newTestManager(t)
+	ctx := context.Background()
+
+	leaseA, acquired, err := mgr.Acquire(ctx, "group-a:orders", "shard-1", "owner-a", time.Minute)
+	if err != nil || !acquired || leaseA == nil {
+		t.Fatalf("Acquire group A = (%v, %v, %v), want non-nil, true, nil", leaseA, acquired, err)
+	}
+	leaseB, acquired, err := mgr.Acquire(ctx, "group-b:orders", "shard-1", "owner-b", time.Minute)
+	if err != nil || !acquired || leaseB == nil {
+		t.Fatalf("Acquire group B = (%v, %v, %v), want non-nil, true, nil", leaseB, acquired, err)
+	}
+	if peerLease, peerAcquired, err := mgr.Acquire(ctx, "group-a:orders", "shard-1", "owner-a-peer", time.Minute); err != nil || peerAcquired || peerLease != nil {
+		t.Fatalf("same-group peer Acquire = (%v, %v, %v), want nil, false, nil", peerLease, peerAcquired, err)
+	}
+
+	if err := mgr.Heartbeat(ctx, "group-a:orders", "worker-a", time.Minute); err != nil {
+		t.Fatalf("Heartbeat group A: %v", err)
+	}
+	if err := mgr.Heartbeat(ctx, "group-b:orders", "worker-b", time.Minute); err != nil {
+		t.Fatalf("Heartbeat group B: %v", err)
+	}
+
+	if owners, err := mgr.List(ctx, "group-a:orders"); err != nil || len(owners) != 1 || owners["shard-1"] != "owner-a" {
+		t.Fatalf("List group A = (%v, %v), want shard-1 owner-a", owners, err)
+	}
+	if owners, err := mgr.List(ctx, "group-b:orders"); err != nil || len(owners) != 1 || owners["shard-1"] != "owner-b" {
+		t.Fatalf("List group B = (%v, %v), want shard-1 owner-b", owners, err)
+	}
+	if workers, err := mgr.Workers(ctx, "group-a:orders"); err != nil || !slices.Equal(workers, []string{"worker-a"}) {
+		t.Fatalf("Workers group A = (%v, %v), want [worker-a]", workers, err)
+	}
+	if workers, err := mgr.Workers(ctx, "group-b:orders"); err != nil || !slices.Equal(workers, []string{"worker-b"}) {
+		t.Fatalf("Workers group B = (%v, %v), want [worker-b]", workers, err)
+	}
+
+	for key, want := range map[string]string{
+		"lease-test:group-a:orders:shard-1":         "owner-a",
+		"lease-test:group-b:orders:shard-1":         "owner-b",
+		"lease-test-worker:group-a:orders:worker-a": "worker-a",
+		"lease-test-worker:group-b:orders:worker-b": "worker-b",
+	} {
+		if got, err := server.Get(key); err != nil || got != want {
+			t.Fatalf("Valkey key %q = (%q, %v), want (%q, nil)", key, got, err, want)
+		}
+	}
+
+	if err := leaseA.Release(ctx); err != nil {
+		t.Fatalf("Release group A: %v", err)
+	}
+	if err := leaseB.Release(ctx); err != nil {
+		t.Fatalf("Release group B: %v", err)
+	}
+}
+
 func TestManagerMaxLeasesGate(t *testing.T) {
 	t.Parallel()
 
@@ -141,7 +198,7 @@ func TestConsumerTransactionalAcquireRollbackFreesMaxLeasesSlot(t *testing.T) {
 	}
 	client := twoShardKinesisClient{}
 	c, err := consumer.New(
-		consumer.Config{StreamName: "stream", StartPosition: consumer.StartTrimHorizon},
+		consumer.Config{StreamName: "stream", ConsumerGroup: "group", StartPosition: consumer.StartTrimHorizon},
 		client,
 		checkpoint.NewMemoryStore(),
 		func(context.Context, consumer.Record) error { return nil },
@@ -161,7 +218,7 @@ func TestConsumerTransactionalAcquireRollbackFreesMaxLeasesSlot(t *testing.T) {
 		t.Fatalf("Acquire calls = %d, want 2", failingManager.calls)
 	}
 
-	probe, acquired, err := mgr.Acquire(context.Background(), "stream", "shard-3", "probe-owner", time.Minute)
+	probe, acquired, err := mgr.Acquire(context.Background(), "group:stream", "shard-3", "probe-owner", time.Minute)
 	if err != nil || !acquired || probe == nil {
 		t.Fatalf("Acquire after transactional rollback = (%v, %v, %v), want non-nil, true, nil", probe, acquired, err)
 	}

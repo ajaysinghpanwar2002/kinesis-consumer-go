@@ -77,7 +77,7 @@ func TestRestartOverReleasedLeaseResumesFromCheckpoint(t *testing.T) {
 
 	// LOAD-BEARING: A released every lease on its clean stop (no leftover lease can
 	// block B). Read through the derived lease prefix so checkpoint keys don't leak in.
-	if owners, err := leaseManager.List(ctx, stream); err != nil || len(owners) != 0 {
+	if owners, err := leaseManager.List(ctx, integrationCoordinationIdentity(stream)); err != nil || len(owners) != 0 {
 		t.Fatalf("consumer A did not release its leases on clean stop: List=%v err=%v; want empty", owners, err)
 	}
 
@@ -85,7 +85,7 @@ func TestRestartOverReleasedLeaseResumesFromCheckpoint(t *testing.T) {
 	// the released-lease assertion above is a real restart precondition, not a
 	// "nothing happened" state.
 	for _, shard := range listShardIDs(ctx, t, client, stream) {
-		v, err := store.Get(ctx, stream, shard)
+		v, err := store.Get(ctx, integrationCoordinationIdentity(stream), shard)
 		if err != nil || v == "" {
 			t.Fatalf("no leftover checkpoint for shard %s after A's stop: Get=%q err=%v", shard, v, err)
 		}

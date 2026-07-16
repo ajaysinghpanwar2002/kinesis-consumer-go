@@ -34,6 +34,24 @@ func TestGetRecordsForwardsContextAndShardIterator(t *testing.T) {
 	}
 }
 
+func TestGetRecordsUsesConfiguredStreamARN(t *testing.T) {
+	t.Parallel()
+
+	const streamARN = "arn:aws:kinesis:us-east-1:123456789012:stream/orders"
+	client := &fakeKinesisClient{}
+	c := &Consumer{
+		cfg:    Config{StreamARN: streamARN},
+		client: client,
+	}
+
+	if _, err := c.getRecords(context.Background(), "iterator-1"); err != nil {
+		t.Fatalf("getRecords() error = %v, want nil", err)
+	}
+	if got := aws.ToString(client.getRecordsCalls[0].StreamARN); got != streamARN {
+		t.Fatalf("StreamARN = %q, want %q", got, streamARN)
+	}
+}
+
 func TestGetRecordsSetsBatchSizeLimit(t *testing.T) {
 	t.Parallel()
 

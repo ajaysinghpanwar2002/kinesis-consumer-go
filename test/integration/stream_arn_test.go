@@ -36,15 +36,15 @@ func streamARN(ctx context.Context, t *testing.T, client *kinesis.Client, name s
 //
 // StreamARN drives ListShards (list_shards.go:58) and GetShardIterator
 // (get_shard_iterator.go:77) when set; GetRecords rides the iterator; and
-// streamKey() (heartbeat.go:8) returns the ARN when StreamName is empty, so the
-// ARN is also the checkpoint/lease coordination namespace. Producing is done by
-// StreamName (test-side, independent of the consumer's identity config).
+// New extracts the ARN's canonical stream name for the grouped checkpoint and
+// lease namespace. Producing is done by StreamName (test-side, independent of
+// the consumer's identity config).
 //
 // The load-bearing fact is that ARN-only delivery works at all: if StreamARN were
 // ignored, shard discovery / iterator acquisition would fail and nothing would be
 // delivered (mutation: a valid-format but nonexistent ARN → no delivery). The
-// resume half additionally proves the checkpoint is keyed consistently under the
-// ARN.
+// resume half additionally proves the ARN-only consumer resolves the same
+// `<group>:<stream-name>` checkpoint identity on both runs.
 func TestStreamARNConsumesAndResumes(t *testing.T) {
 	ctx := context.Background()
 
@@ -85,6 +85,7 @@ func TestStreamARNConsumesAndResumes(t *testing.T) {
 	collC1 := newCollector()
 	consC1, err := consumer.New(consumer.Config{
 		StreamARN:     arn,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}, client, store, collC1.handler(),
 		consumer.WithBatching(10, 1),
@@ -109,8 +110,8 @@ func TestStreamARNConsumesAndResumes(t *testing.T) {
 		}
 	}
 
-	// Graceful stop: drain flush + lease release; checkpoint sits at batch1's tip
-	// (keyed under streamKey() == the ARN).
+	// Graceful stop: drain flush + lease release; the checkpoint sits at batch1's
+	// tip under the canonical group+stream-name identity.
 	stopC1()
 
 	// Produce batch2 after C1 stopped, so it is only ever seen by C2.
@@ -121,6 +122,7 @@ func TestStreamARNConsumesAndResumes(t *testing.T) {
 	collC2 := newCollector()
 	consC2, err := consumer.New(consumer.Config{
 		StreamARN:     arn,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}, client, store, collC2.handler(),
 		consumer.WithBatching(10, 1),
@@ -138,8 +140,8 @@ func TestStreamARNConsumesAndResumes(t *testing.T) {
 	}
 
 	// (2) LOAD-BEARING resume: C2 replays NONE of batch1 — the checkpoint written by
-	// C1 under the ARN key was read back by C2 under the same ARN key. If the ARN
-	// were not the consistent coordination namespace, C2 would restart from
+	// C1 under the canonical grouped key was read back by C2 under the same key.
+	// If ARN canonicalization were inconsistent, C2 would restart from
 	// TRIM_HORIZON and replay all of batch1.
 	replay := 0
 	for _, p := range batch1 {

@@ -29,6 +29,16 @@ import (
 // uniqueSeq disambiguates names within a single test process run.
 var uniqueSeq atomic.Int64
 
+const integrationConsumerGroup = "integration-tests"
+
+func integrationCoordinationIdentity(stream string) string {
+	return coordinationIdentity(integrationConsumerGroup, stream)
+}
+
+func coordinationIdentity(group, stream string) string {
+	return group + ":" + stream
+}
+
 func envOr(key, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
@@ -409,6 +419,7 @@ func newConsumer(t *testing.T, stream string, client *kinesis.Client, store *val
 	t.Helper()
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
@@ -440,6 +451,7 @@ func newNoDrainConsumer(
 	t.Helper()
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
@@ -470,6 +482,7 @@ func newDrainConsumer(
 	t.Helper()
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
@@ -498,6 +511,7 @@ func newRebalancingConsumer(
 	t.Helper()
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
@@ -532,7 +546,7 @@ func waitForSingleLeaseOwner(t *testing.T, manager lease.Manager, stream string,
 	var last map[string]string
 	var lastErr error
 	for {
-		owners, err := manager.List(context.Background(), stream)
+		owners, err := manager.List(context.Background(), integrationCoordinationIdentity(stream))
 		if err == nil {
 			last = owners
 			counts := leaseOwnerCounts(owners)
@@ -558,7 +572,7 @@ func waitForDistributedLeaseOwners(t *testing.T, manager lease.Manager, stream s
 	var lastWorkers []string
 	var lastErr error
 	for {
-		owners, err := manager.List(context.Background(), stream)
+		owners, err := manager.List(context.Background(), integrationCoordinationIdentity(stream))
 		if err == nil {
 			last = owners
 			counts := leaseOwnerCounts(owners)
@@ -568,7 +582,7 @@ func waitForDistributedLeaseOwners(t *testing.T, manager lease.Manager, stream s
 		} else {
 			lastErr = err
 		}
-		if workers, err := manager.Workers(context.Background(), stream); err == nil {
+		if workers, err := manager.Workers(context.Background(), integrationCoordinationIdentity(stream)); err == nil {
 			lastWorkers = workers
 		}
 		if time.Now().After(deadline) {
@@ -584,7 +598,7 @@ func waitForLeaseWorkers(t *testing.T, manager lease.Manager, stream string, min
 	var last []string
 	var lastErr error
 	for {
-		workers, err := manager.Workers(context.Background(), stream)
+		workers, err := manager.Workers(context.Background(), integrationCoordinationIdentity(stream))
 		if err == nil {
 			last = workers
 			if len(workers) >= minWorkers {
@@ -610,7 +624,7 @@ func waitForStableLeaseOwners(t *testing.T, manager lease.Manager, stream string
 	var prev map[string]string
 	var stableSince time.Time
 	for {
-		owners, err := manager.List(context.Background(), stream)
+		owners, err := manager.List(context.Background(), integrationCoordinationIdentity(stream))
 		valid := err == nil && len(owners) == shardCount && len(leaseOwnerCounts(owners)) >= minOwners
 		if valid {
 			if prev != nil && sameOwnerMap(prev, owners) {

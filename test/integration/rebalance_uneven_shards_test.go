@@ -132,7 +132,7 @@ func TestRebalanceUnevenShardCount(t *testing.T) {
 	// (b) Stability: re-read after a further settle and confirm the owner map is
 	// unchanged (no late thrash after the stability window).
 	time.Sleep(2 * time.Second)
-	after, err := leaseManager.List(ctx, stream)
+	after, err := leaseManager.List(ctx, integrationCoordinationIdentity(stream))
 	if err != nil {
 		t.Fatalf("re-list owners for stability check: %v", err)
 	}

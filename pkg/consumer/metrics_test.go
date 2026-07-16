@@ -127,7 +127,7 @@ func assertCounterTags(t *testing.T, call counterCall, want map[string]string) {
 
 func newMetricsTestConsumer(reporter *recordingReporter) *Consumer {
 	return &Consumer{
-		cfg:      Config{StreamName: "stream"},
+		cfg:      Config{StreamName: "stream", ConsumerGroup: "group"},
 		logger:   slog.New(slog.DiscardHandler),
 		reporter: reporter,
 	}
@@ -153,9 +153,10 @@ func TestRecordHandlerSuccessCountsRecordsProcessed(t *testing.T) {
 		t.Fatalf("records_processed value = %d, want 1", processed[0].value)
 	}
 	assertCounterTags(t, processed[0], map[string]string{
-		"stream":  "stream",
-		"shard":   "shard-1",
-		"handler": "record",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+		"handler":        "record",
 	})
 
 	durations := reporter.timingsNamed(metricHandlerDuration)
@@ -163,9 +164,10 @@ func TestRecordHandlerSuccessCountsRecordsProcessed(t *testing.T) {
 		t.Fatalf("handler_duration calls = %d, want 1 (one per attempt)", len(durations))
 	}
 	assertTagMap(t, durations[0].name, durations[0].tags, map[string]string{
-		"stream":  "stream",
-		"shard":   "shard-1",
-		"handler": "record",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+		"handler":        "record",
 	})
 }
 
@@ -193,9 +195,10 @@ func TestBatchHandlerSuccessCountsBatchSizeOnce(t *testing.T) {
 		t.Fatalf("records_processed value = %d, want 3", processed[0].value)
 	}
 	assertCounterTags(t, processed[0], map[string]string{
-		"stream":  "stream",
-		"shard":   "shard-1",
-		"handler": "batch",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+		"handler":        "batch",
 	})
 }
 
@@ -228,9 +231,10 @@ func TestRetriesCountHandlerRetriesBeyondFirstAttempt(t *testing.T) {
 			t.Fatalf("handler_retries value = %d, want 1", call.value)
 		}
 		assertCounterTags(t, call, map[string]string{
-			"stream":  "stream",
-			"shard":   "shard-1",
-			"handler": "record",
+			"stream":         "stream",
+			"consumer_group": "group",
+			"shard":          "shard-1",
+			"handler":        "record",
 		})
 	}
 	if processed := reporter.countersNamed(metricRecordsProcessed); len(processed) != 1 {
@@ -266,9 +270,10 @@ func TestSkipPolicyCountsRecordsSkippedNotProcessed(t *testing.T) {
 		t.Fatalf("records_skipped value = %d, want 2", skipped[0].value)
 	}
 	assertCounterTags(t, skipped[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
-		"policy": "skip",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+		"policy":         "skip",
 	})
 	if processed := reporter.countersNamed(metricRecordsProcessed); len(processed) != 0 {
 		t.Fatalf("records_processed calls = %d, want 0 (records were skipped)", len(processed))
@@ -301,8 +306,9 @@ func TestDLQPolicyCountsPublishedRecords(t *testing.T) {
 			t.Fatalf("dlq_records_published value = %d, want 1", call.value)
 		}
 		assertCounterTags(t, call, map[string]string{
-			"stream": "stream",
-			"shard":  "shard-1",
+			"stream":         "stream",
+			"consumer_group": "group",
+			"shard":          "shard-1",
 		})
 	}
 	if processed := reporter.countersNamed(metricRecordsProcessed); len(processed) != 0 {
@@ -348,8 +354,9 @@ func TestSaveShardCheckpointCountsSave(t *testing.T) {
 		t.Fatalf("checkpoints_saved value = %d, want 1", saved[0].value)
 	}
 	assertCounterTags(t, saved[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 	if failures := reporter.countersNamed(metricCheckpointFailures); len(failures) != 0 {
 		t.Fatalf("checkpoint_failures calls = %d, want 0", len(failures))
@@ -359,8 +366,9 @@ func TestSaveShardCheckpointCountsSave(t *testing.T) {
 		t.Fatalf("checkpoint_save_duration calls = %d, want 1", len(durations))
 	}
 	assertTagMap(t, durations[0].name, durations[0].tags, map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 }
 
@@ -380,8 +388,9 @@ func TestSaveShardCheckpointCountsFailure(t *testing.T) {
 		t.Fatalf("checkpoint_failures calls = %d, want 1", len(failures))
 	}
 	assertCounterTags(t, failures[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 	if saved := reporter.countersNamed(metricCheckpointsSaved); len(saved) != 0 {
 		t.Fatalf("checkpoints_saved calls = %d, want 0", len(saved))
@@ -409,8 +418,9 @@ func TestSaveShardCompletionCheckpointCountsSaveAndFailure(t *testing.T) {
 		t.Fatalf("shards_completed calls = %d, want 1", len(completed))
 	}
 	assertCounterTags(t, completed[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 
 	failing := &recordingReporter{}
@@ -475,8 +485,9 @@ func TestProcessShardRecordsPassCountsPagesFetched(t *testing.T) {
 			t.Fatalf("pages_fetched value = %d, want 1", call.value)
 		}
 		assertCounterTags(t, call, map[string]string{
-			"stream": "stream",
-			"shard":  "shard-1",
+			"stream":         "stream",
+			"consumer_group": "group",
+			"shard":          "shard-1",
 		})
 	}
 
@@ -494,8 +505,9 @@ func TestProcessShardRecordsPassCountsPagesFetched(t *testing.T) {
 		t.Fatalf("millis_behind_latest value = %v, want 1500", behind[0].value)
 	}
 	assertTagMap(t, behind[0].name, behind[0].tags, map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 }
 
@@ -521,8 +533,9 @@ func TestAcquireShardLeasesCountsAcquiredAndTiming(t *testing.T) {
 		t.Fatalf("lease_acquired value = %d, want 1", acquired[0].value)
 	}
 	assertCounterTags(t, acquired[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 
 	durations := reporter.timingsNamed(metricLeaseAcquireDuration)
@@ -530,8 +543,9 @@ func TestAcquireShardLeasesCountsAcquiredAndTiming(t *testing.T) {
 		t.Fatalf("lease_acquire_duration calls = %d, want 1", len(durations))
 	}
 	assertTagMap(t, durations[0].name, durations[0].tags, map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 }
 
@@ -573,8 +587,9 @@ func TestReleaseShardLeaseWithTimeoutCountsRelease(t *testing.T) {
 		t.Fatalf("lease_released calls = %d, want 1", len(released))
 	}
 	assertCounterTags(t, released[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 	if failures := reporter.countersNamed(metricLeaseReleaseFailures); len(failures) != 0 {
 		t.Fatalf("lease_release_failures calls = %d, want 0", len(failures))
@@ -597,8 +612,9 @@ func TestReleaseShardLeaseWithTimeoutCountsReleaseFailure(t *testing.T) {
 		t.Fatalf("lease_release_failures calls = %d, want 1", len(failures))
 	}
 	assertCounterTags(t, failures[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 	if released := reporter.countersNamed(metricLeaseReleased); len(released) != 0 {
 		t.Fatalf("lease_released calls = %d, want 0", len(released))
@@ -637,8 +653,9 @@ func TestRenewShardLeaseLoopCountsRenewals(t *testing.T) {
 		t.Fatal("lease_renewals calls = 0, want at least 1")
 	}
 	assertCounterTags(t, renewals[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 	if failures := reporter.countersNamed(metricLeaseRenewalFailures); len(failures) != 0 {
 		t.Fatalf("lease_renewal_failures calls = %d, want 0", len(failures))
@@ -668,8 +685,9 @@ func TestRenewShardLeaseLoopCountsRenewalFailure(t *testing.T) {
 		t.Fatalf("lease_renewal_failures calls = %d, want %d (one per renew attempt)", len(failures), shardLease.calls)
 	}
 	assertCounterTags(t, failures[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 	if renewals := reporter.countersNamed(metricLeaseRenewals); len(renewals) != 0 {
 		t.Fatalf("lease_renewals calls = %d, want 0", len(renewals))
@@ -695,6 +713,7 @@ func TestRebalanceShardsOnceEmitsMovesGaugesAndPassDuration(t *testing.T) {
 	}
 	reporter := &recordingReporter{}
 	c := newTestRebalanceOnceConsumer(manager)
+	c.cfg.ConsumerGroup = "group"
 	c.reporter = reporter
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
@@ -730,14 +749,16 @@ func TestRebalanceShardsOnceEmitsMovesGaugesAndPassDuration(t *testing.T) {
 		t.Fatalf("rebalance_moves calls = %d, want 2 (acquire + claim)", len(moves))
 	}
 	assertCounterTags(t, moves[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-a",
-		"kind":   "acquire",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-a",
+		"kind":           "acquire",
 	})
 	assertCounterTags(t, moves[1], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-b",
-		"kind":   "claim",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-b",
+		"kind":           "claim",
 	})
 	if skips := reporter.countersNamed(metricRebalanceSkips); len(skips) != 0 {
 		t.Fatalf("rebalance_skips calls = %d, want 0", len(skips))
@@ -759,14 +780,14 @@ func TestRebalanceShardsOnceEmitsMovesGaugesAndPassDuration(t *testing.T) {
 		if gauges[0].value != want {
 			t.Fatalf("%s value = %v, want %v", name, gauges[0].value, want)
 		}
-		assertTagMap(t, name, gauges[0].tags, map[string]string{"stream": "stream"})
+		assertTagMap(t, name, gauges[0].tags, map[string]string{"stream": "stream", "consumer_group": "group"})
 	}
 
 	durations := reporter.timingsNamed(metricRebalancePassDuration)
 	if len(durations) != 1 {
 		t.Fatalf("rebalance_pass_duration calls = %d, want 1", len(durations))
 	}
-	assertTagMap(t, durations[0].name, durations[0].tags, map[string]string{"stream": "stream"})
+	assertTagMap(t, durations[0].name, durations[0].tags, map[string]string{"stream": "stream", "consumer_group": "group"})
 }
 
 func TestRebalanceShardsOnceCountsShedMoves(t *testing.T) {
@@ -783,6 +804,7 @@ func TestRebalanceShardsOnceCountsShedMoves(t *testing.T) {
 	}
 	reporter := &recordingReporter{}
 	c := newTestRebalanceOnceConsumer(manager)
+	c.cfg.ConsumerGroup = "group"
 	c.reporter = reporter
 	workers := newShardWorkerSet()
 	workers.add("shard-a", func() {})
@@ -819,9 +841,10 @@ func TestRebalanceShardsOnceCountsShedMoves(t *testing.T) {
 		t.Fatalf("rebalance_moves calls = %d, want 1 (shed)", len(moves))
 	}
 	assertCounterTags(t, moves[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-a",
-		"kind":   "shed",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-a",
+		"kind":           "shed",
 	})
 }
 
@@ -857,14 +880,16 @@ func TestExecuteRebalanceActionsCountSkips(t *testing.T) {
 		t.Fatalf("rebalance_skips calls = %d, want 2", len(skips))
 	}
 	assertCounterTags(t, skips[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
-		"kind":   "acquire",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+		"kind":           "acquire",
 	})
 	assertCounterTags(t, skips[1], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-2",
-		"kind":   "claim",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-2",
+		"kind":           "claim",
 	})
 	if moves := reporter.countersNamed(metricRebalanceMoves); len(moves) != 0 {
 		t.Fatalf("rebalance_moves calls = %d, want 0", len(moves))
@@ -876,6 +901,7 @@ func TestShardWorkerCountsStartAndCleanStop(t *testing.T) {
 
 	reporter := &recordingReporter{}
 	c := newTestRegisteredShardWorkerConsumer(nil)
+	c.cfg.ConsumerGroup = "group"
 	c.reporter = reporter
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
@@ -890,8 +916,9 @@ func TestShardWorkerCountsStartAndCleanStop(t *testing.T) {
 		t.Fatalf("worker_starts calls = %d, want 1", len(starts))
 	}
 	assertCounterTags(t, starts[0], map[string]string{
-		"stream": "stream",
-		"shard":  "shard-1",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
 	})
 
 	stops := reporter.countersNamed(metricWorkerStops)
@@ -899,9 +926,10 @@ func TestShardWorkerCountsStartAndCleanStop(t *testing.T) {
 		t.Fatalf("worker_stops calls = %d, want 1", len(stops))
 	}
 	assertCounterTags(t, stops[0], map[string]string{
-		"stream":  "stream",
-		"shard":   "shard-1",
-		"outcome": "clean",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+		"outcome":        "clean",
 	})
 }
 
@@ -910,6 +938,7 @@ func TestShardWorkerCountsErrorStop(t *testing.T) {
 
 	reporter := &recordingReporter{}
 	c := newTestRegisteredShardWorkerConsumer(errors.New("process boom"))
+	c.cfg.ConsumerGroup = "group"
 	c.reporter = reporter
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
@@ -923,9 +952,10 @@ func TestShardWorkerCountsErrorStop(t *testing.T) {
 		t.Fatalf("worker_stops calls = %d, want 1", len(stops))
 	}
 	assertCounterTags(t, stops[0], map[string]string{
-		"stream":  "stream",
-		"shard":   "shard-1",
-		"outcome": "error",
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+		"outcome":        "error",
 	})
 }
 
@@ -945,5 +975,5 @@ func TestDrainShardWorkersEmitsDrainDuration(t *testing.T) {
 	if len(durations) != 1 {
 		t.Fatalf("drain_duration calls = %d, want 1", len(durations))
 	}
-	assertTagMap(t, durations[0].name, durations[0].tags, map[string]string{"stream": "stream"})
+	assertTagMap(t, durations[0].name, durations[0].tags, map[string]string{"stream": "stream", "consumer_group": "group"})
 }

@@ -83,7 +83,7 @@ func newClaimProbeConsumer(
 	rebalanceInterval time.Duration,
 ) *consumer.Consumer {
 	t.Helper()
-	cfg := consumer.Config{StreamName: stream, StartPosition: consumer.StartTrimHorizon}
+	cfg := consumer.Config{StreamName: stream, ConsumerGroup: integrationConsumerGroup, StartPosition: consumer.StartTrimHorizon}
 	cons, err := consumer.New(cfg, client, store, handler,
 		consumer.WithBatching(10, 1),
 		consumer.WithPolling(100*time.Millisecond, time.Second),

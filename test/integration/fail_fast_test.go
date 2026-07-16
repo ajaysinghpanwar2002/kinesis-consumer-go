@@ -82,6 +82,7 @@ func TestDefaultFailurePolicyReturnsHandlerError(t *testing.T) {
 
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
@@ -134,7 +135,7 @@ func TestDefaultFailurePolicyReturnsHandlerError(t *testing.T) {
 	}
 
 	// (3) Second angle: fail-fast committed nothing for the shard.
-	seq, err := store.Get(ctx, stream, shardID)
+	seq, err := store.Get(ctx, integrationCoordinationIdentity(stream), shardID)
 	if err != nil {
 		t.Fatalf("read checkpoint for shard %s: %v", shardID, err)
 	}

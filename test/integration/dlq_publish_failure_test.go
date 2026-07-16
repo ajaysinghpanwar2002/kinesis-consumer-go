@@ -102,6 +102,7 @@ func TestDLQPublishFailureFailsConsumer(t *testing.T) {
 	dlq := &failingDLQ{}
 	cfg := consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
@@ -169,7 +170,7 @@ func TestDLQPublishFailureFailsConsumer(t *testing.T) {
 
 	// (5) Second angle / behavior-defining: unlike a successful publish, a failed
 	// publish committed nothing for the shard.
-	seq, err := store.Get(ctx, stream, shardID)
+	seq, err := store.Get(ctx, integrationCoordinationIdentity(stream), shardID)
 	if err != nil {
 		t.Fatalf("read checkpoint for shard %s: %v", shardID, err)
 	}

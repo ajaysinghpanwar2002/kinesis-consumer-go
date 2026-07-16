@@ -84,6 +84,38 @@ func findRecord(records []capturedRecord, message string) (capturedRecord, bool)
 	return capturedRecord{}, false
 }
 
+func TestNewLoggerCarriesCanonicalStreamAndConsumerGroup(t *testing.T) {
+	t.Parallel()
+
+	handler := newCapturingHandler()
+	c, err := New(
+		Config{
+			StreamARN:     "arn:aws:kinesis:us-east-1:123456789012:stream/orders",
+			ConsumerGroup: "billing",
+		},
+		&fakeKinesisClient{},
+		fakeCheckpointStore{},
+		func(context.Context, Record) error { return nil },
+		WithLeaseManager(fakeLeaseManager{}),
+		WithLogger(slog.New(handler)),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil", err)
+	}
+	c.logger.Info("identity probe")
+
+	record, ok := findRecord(handler.snapshot(), "identity probe")
+	if !ok {
+		t.Fatal("identity probe log missing")
+	}
+	if record.attrs["stream"] != "orders" {
+		t.Fatalf("stream attr = %q, want %q", record.attrs["stream"], "orders")
+	}
+	if record.attrs["consumer_group"] != "billing" {
+		t.Fatalf("consumer_group attr = %q, want %q", record.attrs["consumer_group"], "billing")
+	}
+}
+
 func TestStartLogsCleanLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -96,7 +128,7 @@ func TestStartLogsCleanLifecycle(t *testing.T) {
 		},
 		newRecordingHeartbeatManager(),
 	)
-	c.logger = slog.New(handler)
+	c.logger = slog.New(handler).With(slog.String("stream", "stream"), slog.String("consumer_group", "group"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runStart(ctx, c)
@@ -116,6 +148,9 @@ func TestStartLogsCleanLifecycle(t *testing.T) {
 	}
 	if starting.attrs["stream"] != "stream" {
 		t.Fatalf("starting stream attr = %q, want %q", starting.attrs["stream"], "stream")
+	}
+	if starting.attrs["consumer_group"] != "group" {
+		t.Fatalf("starting consumer_group attr = %q, want %q", starting.attrs["consumer_group"], "group")
 	}
 
 	stopped, ok := findRecord(records, "consumer stopped")
@@ -143,7 +178,7 @@ func TestStartLogsFatalError(t *testing.T) {
 		&fakeKinesisClient{outs: []*kinesis.ListShardsOutput{{}}},
 		newRecordingHeartbeatManager(),
 	)
-	c.logger = slog.New(handler)
+	c.logger = slog.New(handler).With(slog.String("stream", "stream"), slog.String("consumer_group", "group"))
 
 	err := c.Start(context.Background())
 	if err == nil {
@@ -168,6 +203,9 @@ func TestStartLogsFatalError(t *testing.T) {
 	}
 	if stopped.attrs["stream"] != "stream" {
 		t.Fatalf("stopped stream attr = %q, want %q", stopped.attrs["stream"], "stream")
+	}
+	if stopped.attrs["consumer_group"] != "group" {
+		t.Fatalf("stopped consumer_group attr = %q, want %q", stopped.attrs["consumer_group"], "group")
 	}
 }
 

@@ -92,7 +92,7 @@ func TestRetryEventuallySucceeds(t *testing.T) {
 	// Phase 1: C1 processes batch1; the flaky record fails failTimes then succeeds.
 	collC1 := newCollector()
 	var flakyAttempts atomic.Int64
-	cfg := consumer.Config{StreamName: stream, StartPosition: consumer.StartTrimHorizon}
+	cfg := consumer.Config{StreamName: stream, ConsumerGroup: integrationConsumerGroup, StartPosition: consumer.StartTrimHorizon}
 	consumerC1, err := consumer.New(cfg, client, store, newRetryHandler(collC1, flaky, failTimes, &flakyAttempts),
 		consumer.WithFailurePolicy(consumer.FailurePolicyFailFast), // tripwire: fires only if retry fails to recover
 		consumer.WithRetry(maxAttempts, 10*time.Millisecond),

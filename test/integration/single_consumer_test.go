@@ -45,7 +45,7 @@ func TestSingleConsumerEndToEnd(t *testing.T) {
 	shards := listShardIDs(ctx, t, client, stream)
 	checkpointed := 0
 	for _, id := range shards {
-		v, err := store.Get(ctx, stream, id)
+		v, err := store.Get(ctx, integrationCoordinationIdentity(stream), id)
 		if err != nil {
 			t.Fatalf("read checkpoint for shard %s: %v", id, err)
 		}

@@ -91,7 +91,7 @@ handler failure and the DLQ publish failure.
 
 The DLQ publisher receives a `consumer.PoisonRecord`. The record includes:
 
-- Stream name and ARN when configured.
+- Stream name and ARN when configured, plus the required consumer group.
 - Shard ID, sequence number, partition key, approximate arrival timestamp, and a
   copied payload.
 - The original handler error text.

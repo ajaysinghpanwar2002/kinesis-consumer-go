@@ -25,6 +25,12 @@ shared by the consumer's heartbeat, rebalance, and shard-worker goroutines, so
 the handler you supply must be safe for concurrent use (all `slog` handlers in
 the standard library are).
 
+`New` derives the consumer logger with two bounded identity attributes that are
+present on every event: canonical `stream` and configured `consumer_group`.
+When `StreamARN` is used, `stream` is the ARN's stream-name resource rather than
+the full ARN. Attribute lists in the catalog below name fields added by the
+individual event; the two identity attributes are implicit everywhere.
+
 ## Level philosophy
 
 | Level | Meaning here |
@@ -45,9 +51,9 @@ nothing per record, per poll, or per rebalance tick.
 
 | Message | Level | Attributes | When |
 | --- | --- | --- | --- |
-| `consumer starting` | Info | `stream` | `Start(ctx)` begins. |
-| `consumer stopped` | Info | `stream` | `Start` returns nil (clean cancellation). |
-| `consumer stopped` | Error | `stream`, `error` | `Start` returns an error; this is the terminal event. |
+| `consumer starting` | Info | — | `Start(ctx)` begins. |
+| `consumer stopped` | Info | — | `Start` returns nil (clean cancellation). |
+| `consumer stopped` | Error | `error` | `Start` returns an error; this is the terminal event. |
 
 ### Shard workers and leases
 

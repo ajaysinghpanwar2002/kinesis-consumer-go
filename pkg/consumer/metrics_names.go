@@ -48,12 +48,13 @@ const (
 // bounded identifiers; handler and policy are enums. Never tag with sequence
 // numbers, owners of unbounded sets, or error strings.
 const (
-	metricTagStream  = "stream"
-	metricTagShard   = "shard"
-	metricTagHandler = "handler"
-	metricTagPolicy  = "policy"
-	metricTagKind    = "kind"
-	metricTagOutcome = "outcome"
+	metricTagStream        = "stream"
+	metricTagConsumerGroup = "consumer_group"
+	metricTagShard         = "shard"
+	metricTagHandler       = "handler"
+	metricTagPolicy        = "policy"
+	metricTagKind          = "kind"
+	metricTagOutcome       = "outcome"
 )
 
 // rebalance_moves / rebalance_skips kind tag values.
@@ -78,14 +79,17 @@ const (
 
 // streamTags builds the stream-only tag set for consumer-level metrics.
 func (c *Consumer) streamTags() []metrics.Tag {
-	return []metrics.Tag{{Key: metricTagStream, Value: c.streamKey()}}
+	tags := []metrics.Tag{{Key: metricTagStream, Value: c.canonicalStreamName()}}
+	if c.cfg.ConsumerGroup != "" {
+		tags = append(tags, metrics.Tag{Key: metricTagConsumerGroup, Value: c.cfg.ConsumerGroup})
+	}
+	return tags
 }
 
 // shardTags builds the standard stream+shard tag set, appending any extra
 // enum-valued tags, so every emission site shares one definition.
 func (c *Consumer) shardTags(shardID string, extra ...metrics.Tag) []metrics.Tag {
-	tags := make([]metrics.Tag, 0, 2+len(extra))
-	tags = append(tags, metrics.Tag{Key: metricTagStream, Value: c.streamKey()})
+	tags := c.streamTags()
 	tags = append(tags, metrics.Tag{Key: metricTagShard, Value: shardID})
 	return append(tags, extra...)
 }

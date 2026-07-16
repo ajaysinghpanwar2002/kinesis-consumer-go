@@ -89,6 +89,7 @@ func TestStartAtTimestampSkipsBeforeTimestamp(t *testing.T) {
 	coll := newCollector()
 	cons, err := consumer.New(consumer.Config{
 		StreamName:     stream,
+		ConsumerGroup:  integrationConsumerGroup,
 		StartPosition:  consumer.StartAtTimestamp,
 		StartTimestamp: &startAt,
 	}, client, store, coll.handler(),

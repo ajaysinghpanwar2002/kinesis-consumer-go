@@ -10,19 +10,23 @@ For a narrative overview see [features.md](features.md); to get running see
 
 ## `consumer.Config`
 
-Passed by value as the first argument to `consumer.New`. Identifies the stream
-and the initial read position.
+Passed by value as the first argument to `consumer.New`. Identifies the stream,
+the logical consumer group, and the initial read position.
 
 | Field | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `StreamName` | `string` | — | Stream to consume. Either this or `StreamARN` is required. |
-| `StreamARN` | `string` | — | Stream ARN; an alternative to `StreamName`. All coordination keys use whichever is set. |
+| `StreamName` | `string` | — | Stream to consume by name. Set exactly one of this and `StreamARN`. |
+| `StreamARN` | `string` | — | Stream to consume by ARN. Set exactly one of this and `StreamName`; AWS calls use the ARN while coordination and telemetry use its canonical stream-name resource. |
+| `ConsumerGroup` | `string` | — | Required logical application identity. Workers with the same group share checkpoints and shard ownership; different groups consume the same stream independently. |
 | `StartPosition` | `StartPosition` | `StartLatest` | Where to start when a shard has **no checkpoint** (see below). |
 | `StartTimestamp` | `*time.Time` | `nil` | Required when `StartPosition == StartAtTimestamp`; ignored otherwise. |
 
-Validation (`New` returns an error if violated): at least one of `StreamName` /
-`StreamARN` must be set; `StartPosition` must be one of the three values below;
-`StartAtTimestamp` requires a non-nil `StartTimestamp`.
+Validation (`New` returns an error if violated): exactly one of `StreamName` /
+`StreamARN` must be set; an ARN must be a complete Kinesis `stream/<name>` ARN
+with partition, region, and 12-digit account ID;
+`ConsumerGroup` and the canonical stream name must be 1–128 characters using
+only letters, numbers, `.`, `_`, and `-`; `StartPosition` must be one of the
+three values below; `StartAtTimestamp` requires a non-nil `StartTimestamp`.
 
 ### Start positions
 
@@ -91,16 +95,20 @@ If you build a standalone lease manager explicitly (for `WithLeaseManager`),
 
 ## Key scheme
 
-All coordination state is namespaced so multiple streams/tenants can share one
-Valkey:
+All coordination state is namespaced by consumer group and canonical stream
+name, so unrelated applications can consume the same stream through one
+Valkey without sharing progress or ownership:
 
 | Key | Format | Default prefix |
 | --- | --- | --- |
-| Checkpoint | `<checkpointPrefix>:<stream>:<shard>` | `kinesis-checkpoint` |
-| Lease | `<leasePrefix>:<stream>:<shard>` | `kinesis-lease` |
-| Worker heartbeat | `<leasePrefix>-worker:<stream>:<owner>` | `kinesis-lease-worker` |
+| Checkpoint | `<checkpointPrefix>:<group>:<stream>:<shard>` | `kinesis-checkpoint` |
+| Lease | `<leasePrefix>:<group>:<stream>:<shard>` | `kinesis-lease` |
+| Worker heartbeat | `<leasePrefix>-worker:<group>:<stream>:<owner>` | `kinesis-lease-worker` |
 
-`<stream>` is the `StreamName` or `StreamARN`, whichever the `Config` sets.
+`<group>` is `ConsumerGroup`. `<stream>` is the canonical Kinesis stream name:
+`StreamName` directly, or the name extracted from the `stream/<name>` resource
+of `StreamARN`. Name-only and ARN-only configurations for the same group and
+stream therefore share one coordination namespace.
 
 The default lease prefix is the same whether the manager is store-provided or
 built standalone with `valkeylease.NewManager`, so default-configured workers
@@ -109,7 +117,17 @@ the store derives `<checkpointPrefix>-lease` — any standalone manager in that
 deployment must be given the matching prefix explicitly, or its workers will
 lease in a separate namespace and process every shard twice.
 
-### Migration note: default lease prefix change
+### Migration note: consumer-group key scheme
+
+The consumer-group segment is a pre-v1 breaking key-format change. There is no
+legacy dual-read or automatic checkpoint migration because no published tag
+used the old scheme. Old checkpoints are not visible under the new keys, and
+old and new workers do not coordinate. Stop every old worker before upgrading,
+then restart all workers with the same intended `ConsumerGroup`; do not perform
+a rolling mixed-version deployment. Copy or rename checkpoint keys out of band
+before restart only when retaining the old progress is required.
+
+### Historical migration note: default lease prefix change
 
 Store-provided lease managers with default prefixes previously wrote lease
 and worker-heartbeat keys under `kinesis-checkpoint-lease(-worker)`; they now

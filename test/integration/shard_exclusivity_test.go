@@ -85,7 +85,7 @@ func TestShardExclusivitySteadyState(t *testing.T) {
 
 		// Ownership must not have moved during the produce/deliver window, or the
 		// steady-state claim does not apply to this batch.
-		after, err := leaseManager.List(ctx, stream)
+		after, err := leaseManager.List(ctx, integrationCoordinationIdentity(stream))
 		if err != nil || !sameOwnerMap(before, after) {
 			lastIssue = fmt.Sprintf("ownership changed during measurement window (before=%v after=%v err=%v)", before, after, err)
 			continue

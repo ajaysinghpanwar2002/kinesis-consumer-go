@@ -89,7 +89,7 @@ func TestReadShardCheckpointReadsStreamShardAndSequence(t *testing.T) {
 	}
 }
 
-func TestReadShardCheckpointUsesStreamARN(t *testing.T) {
+func TestReadShardCheckpointUsesARNCanonicalCoordinationIdentity(t *testing.T) {
 	t.Parallel()
 
 	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
@@ -97,7 +97,7 @@ func TestReadShardCheckpointUsesStreamARN(t *testing.T) {
 	c := &Consumer{
 		logger:   slog.New(slog.DiscardHandler),
 		reporter: metrics.Nop{},
-		cfg:      Config{StreamARN: streamARN},
+		cfg:      Config{StreamARN: streamARN, ConsumerGroup: "group"},
 		store:    store,
 	}
 
@@ -111,8 +111,8 @@ func TestReadShardCheckpointUsesStreamARN(t *testing.T) {
 	if len(store.getCalls) != 1 {
 		t.Fatalf("Get calls = %d, want 1", len(store.getCalls))
 	}
-	if store.getCalls[0].streamName != streamARN {
-		t.Fatalf("streamName = %q, want %q", store.getCalls[0].streamName, streamARN)
+	if store.getCalls[0].streamName != "group:test" {
+		t.Fatalf("streamName = %q, want %q", store.getCalls[0].streamName, "group:test")
 	}
 }
 
@@ -213,7 +213,7 @@ func TestSaveShardCheckpointSavesStreamShardAndSequence(t *testing.T) {
 	}
 }
 
-func TestSaveShardCheckpointUsesStreamARN(t *testing.T) {
+func TestSaveShardCheckpointUsesARNCanonicalCoordinationIdentity(t *testing.T) {
 	t.Parallel()
 
 	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
@@ -221,7 +221,7 @@ func TestSaveShardCheckpointUsesStreamARN(t *testing.T) {
 	c := &Consumer{
 		logger:   slog.New(slog.DiscardHandler),
 		reporter: metrics.Nop{},
-		cfg:      Config{StreamARN: streamARN},
+		cfg:      Config{StreamARN: streamARN, ConsumerGroup: "group"},
 		store:    store,
 	}
 
@@ -231,8 +231,8 @@ func TestSaveShardCheckpointUsesStreamARN(t *testing.T) {
 	if len(store.saveCalls) != 1 {
 		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
 	}
-	if store.saveCalls[0].streamName != streamARN {
-		t.Fatalf("streamName = %q, want %q", store.saveCalls[0].streamName, streamARN)
+	if store.saveCalls[0].streamName != "group:test" {
+		t.Fatalf("streamName = %q, want %q", store.saveCalls[0].streamName, "group:test")
 	}
 }
 
@@ -351,7 +351,7 @@ func TestSaveShardCompletionCheckpointSavesEmptySequenceMarker(t *testing.T) {
 	}
 }
 
-func TestSaveShardCompletionCheckpointUsesStreamARN(t *testing.T) {
+func TestSaveShardCompletionCheckpointUsesARNCanonicalCoordinationIdentity(t *testing.T) {
 	t.Parallel()
 
 	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
@@ -359,7 +359,7 @@ func TestSaveShardCompletionCheckpointUsesStreamARN(t *testing.T) {
 	c := &Consumer{
 		logger:   slog.New(slog.DiscardHandler),
 		reporter: metrics.Nop{},
-		cfg:      Config{StreamARN: streamARN},
+		cfg:      Config{StreamARN: streamARN, ConsumerGroup: "group"},
 		store:    store,
 	}
 
@@ -369,8 +369,8 @@ func TestSaveShardCompletionCheckpointUsesStreamARN(t *testing.T) {
 	if len(store.saveCalls) != 1 {
 		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))
 	}
-	if store.saveCalls[0].streamName != streamARN {
-		t.Fatalf("streamName = %q, want %q", store.saveCalls[0].streamName, streamARN)
+	if store.saveCalls[0].streamName != "group:test" {
+		t.Fatalf("streamName = %q, want %q", store.saveCalls[0].streamName, "group:test")
 	}
 }
 

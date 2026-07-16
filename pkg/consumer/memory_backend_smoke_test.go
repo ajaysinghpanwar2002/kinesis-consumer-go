@@ -79,6 +79,7 @@ func assertDefaultHandlerFailureStopsStartWithoutCheckpoint(t *testing.T, handle
 	)
 	cons, err := New(Config{
 		StreamName:    "stream",
+		ConsumerGroup: "group",
 		StartPosition: StartTrimHorizon,
 	}, client, store, handler, opts...)
 	if err != nil {
@@ -95,7 +96,7 @@ func assertDefaultHandlerFailureStopsStartWithoutCheckpoint(t *testing.T, handle
 		t.Fatalf("Start() error = %v, default failure policy did not stop the consumer", err)
 	}
 
-	got, err := store.Get(context.Background(), "stream", "shard-1")
+	got, err := store.Get(context.Background(), "group:stream", "shard-1")
 	if err != nil {
 		t.Fatalf("checkpoint Get() error = %v, want nil", err)
 	}

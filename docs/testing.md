@@ -127,3 +127,4 @@ number.
 | IT-22 (#25) | `TestKeyPrefixIsolationAcrossStreams` | Distinct key prefixes isolate checkpoint/lease/worker keys across streams (foreign-prefix reads return empty). |
 | IT-23 (#26) | `TestStoreDerivedLeasePrefix` | A store-provided lease manager leases under the derived `<checkpointPrefix>-lease` prefix. |
 | IT-24 (#27) | `TestRestartOverReleasedLeaseResumesFromCheckpoint` | After a clean stop releases the lease, a fresh consumer resumes over the leftover checkpoint. |
+| IT-25 | `TestConsumerGroupsIsolateAndShareCoordination` | Different groups on one stream independently checkpoint and lease every shard; two workers in one group share checkpoints and distribute the same lease set. |

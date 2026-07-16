@@ -91,6 +91,7 @@ func TestBatchSkipDropsWholePage(t *testing.T) {
 	}
 	consC1, err := consumer.New(consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}, client, store, nil,
 		consumer.WithBatchHandler(batchHandler),

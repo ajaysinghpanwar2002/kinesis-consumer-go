@@ -8,7 +8,10 @@ import (
 
 var ErrNotOwned = errors.New("lease not owned by caller")
 
-// Manager coordinates shard ownership across consumer workers.
+// Manager coordinates shard ownership across consumer workers. The streamName
+// argument is the consumer's opaque coordination identity, currently
+// "<consumerGroup>:<canonicalStreamName>"; implementations must preserve it
+// verbatim so different groups remain isolated.
 //
 // Ownership is exclusive in steady state but not absolute: transfers open
 // short windows during which the previous owner may still be processing.

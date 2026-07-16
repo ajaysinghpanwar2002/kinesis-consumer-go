@@ -66,6 +66,36 @@ func TestStoreGetSaveDelete(t *testing.T) {
 	}
 }
 
+func TestStoreConsumerGroupCoordinationKeysAreIsolated(t *testing.T) {
+	t.Parallel()
+
+	store, server := newTestStore(t)
+	ctx := context.Background()
+
+	if err := store.Save(ctx, "group-a:orders", "shard-1", "10"); err != nil {
+		t.Fatalf("Save group A: %v", err)
+	}
+	if err := store.Save(ctx, "group-b:orders", "shard-1", "20"); err != nil {
+		t.Fatalf("Save group B: %v", err)
+	}
+
+	if got, err := store.Get(ctx, "group-a:orders", "shard-1"); err != nil || got != "10" {
+		t.Fatalf("Get group A = (%q, %v), want (10, nil)", got, err)
+	}
+	if got, err := store.Get(ctx, "group-b:orders", "shard-1"); err != nil || got != "20" {
+		t.Fatalf("Get group B = (%q, %v), want (20, nil)", got, err)
+	}
+
+	wantAKey := "kinesis-checkpoint:group-a:orders:shard-1"
+	if got, err := server.Get(wantAKey); err != nil || got != "10" {
+		t.Fatalf("Valkey key %q = (%q, %v), want (10, nil)", wantAKey, got, err)
+	}
+	wantBKey := "kinesis-checkpoint:group-b:orders:shard-1"
+	if got, err := server.Get(wantBKey); err != nil || got != "20" {
+		t.Fatalf("Valkey key %q = (%q, %v), want (20, nil)", wantBKey, got, err)
+	}
+}
+
 func TestStoreSaveIsAdvanceOnly(t *testing.T) {
 	t.Parallel()
 

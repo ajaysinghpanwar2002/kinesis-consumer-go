@@ -42,7 +42,11 @@ type Store struct {
 
 // New creates a Store connected to addr. Keys are written as:
 //
-//	<KeyPrefix>:<streamName>:<shardID>
+//	<KeyPrefix>:<coordinationIdentity>:<shardID>
+//
+// The consumer supplies coordinationIdentity as
+// "<consumerGroup>:<canonicalStreamName>", producing the concrete key format
+// "<KeyPrefix>:<consumerGroup>:<canonicalStreamName>:<shardID>".
 //
 // New validates the resulting config, opens a client, and verifies
 // connectivity with a PING bounded by the configured ping timeout.

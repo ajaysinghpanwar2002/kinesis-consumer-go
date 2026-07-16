@@ -471,7 +471,7 @@ func TestHandleRecordsPageSendToDLQPublishesPoisonRecord(t *testing.T) {
 	c := &Consumer{
 		logger:        slog.New(slog.DiscardHandler),
 		reporter:      metrics.Nop{},
-		cfg:           Config{StreamName: "stream", StreamARN: "arn:stream"},
+		cfg:           Config{StreamName: "stream", StreamARN: "arn:stream", ConsumerGroup: "group"},
 		failurePolicy: FailurePolicySendToDLQ,
 		dlqPublisher:  publisher,
 		tuning:        tuningConfig{retryMaxAttempts: 2},
@@ -499,6 +499,9 @@ func TestHandleRecordsPageSendToDLQPublishesPoisonRecord(t *testing.T) {
 	got := publisher.records[0]
 	if got.StreamName != "stream" || got.StreamARN != "arn:stream" || got.ShardID != "shard-1" {
 		t.Fatalf("poison stream/shard = %q/%q/%q, want stream/arn:stream/shard-1", got.StreamName, got.StreamARN, got.ShardID)
+	}
+	if got.ConsumerGroup != "group" {
+		t.Fatalf("poison ConsumerGroup = %q, want %q", got.ConsumerGroup, "group")
 	}
 	if got.SequenceNumber != "sequence-1" || got.PartitionKey != "partition-1" {
 		t.Fatalf("poison sequence/partition = %q/%q, want sequence-1/partition-1", got.SequenceNumber, got.PartitionKey)

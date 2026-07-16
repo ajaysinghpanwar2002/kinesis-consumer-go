@@ -14,7 +14,7 @@ so you can plan around the gaps.
 
 | Area | Capability |
 | --- | --- |
-| Stream identity | Consume by `StreamName` or `StreamARN` |
+| Stream identity | Consume by exactly one of `StreamName` / `StreamARN`, isolated by required `ConsumerGroup` |
 | Start position | `LATEST` (default), `TRIM_HORIZON`, `AT_TIMESTAMP`; resumes from checkpoint when one exists |
 | Shard discovery | Initial listing + periodic resync; live reshard/refresh without restart |
 | Reshard ordering | Parent/child gating via `SHARD_END` completion markers |
@@ -27,7 +27,7 @@ so you can plan around the gaps.
 | Throughput | Per-shard record-handler concurrency |
 | Shutdown | Optional graceful drain (finish in-flight work, checkpoint, release leases) |
 | Backends | Built-in Valkey; pluggable `checkpoint.Store` + `lease.Manager` interfaces |
-| Multi-tenancy | Key-prefix isolation for checkpoint, lease, and worker keys |
+| Multi-tenancy | Consumer-group plus key-prefix isolation for checkpoint, lease, and worker keys |
 | Logging | Opt-in structured `log/slog` events for lifecycle, leases, rebalance, and record outcomes ([logging.md](logging.md)) |
 | Metrics | Opt-in counters, gauges, and timings through `metrics.Reporter`, with a statsd/Telegraf/InfluxDB/Grafana path ([metrics.md](metrics.md)) |
 
@@ -54,9 +54,11 @@ its message).
 
 ## Stream identity and start position
 
-- **Identity:** set `Config.StreamName` or `Config.StreamARN` (one is required).
-  All coordination keys are keyed by whichever is set, consistently across
-  discovery, checkpointing, and leasing.
+- **Identity:** set exactly one of `Config.StreamName` or `Config.StreamARN`,
+  plus required `Config.ConsumerGroup`. AWS calls use the configured name or
+  ARN; checkpoint, lease, and heartbeat keys use
+  `<consumer-group>:<canonical-stream-name>`. Workers in one group share
+  progress and ownership, while different groups consume independently.
 - **Start position** (`Config.StartPosition`, used only when no checkpoint
   exists for a shard):
   - `StartLatest` — the default; only records produced after the consumer
@@ -191,10 +193,10 @@ DLQ semantics.
 
 - `WithDLQPublisher(DLQPublisher)` plugs in any destination implementing
   `Publish(ctx, PoisonRecord) error`.
-- `PoisonRecord` carries stream name/ARN, shard ID, sequence number, partition
-  key, approximate arrival timestamp, a copied payload, the handler error text,
-  handler kind (`record` or `batch`), attempt count, failure time, and batch
-  index fields.
+- `PoisonRecord` carries stream name/ARN, consumer group, shard ID, sequence
+  number, partition key, approximate arrival timestamp, a copied payload, the
+  handler error text, handler kind (`record` or `batch`), attempt count, failure
+  time, and batch index fields.
 - For a failed batch, every record in the page is published as its own
   `PoisonRecord` with batch metadata (there is no per-record isolation in batch
   mode).
@@ -231,14 +233,16 @@ DLQ semantics.
 
 ## Multi-tenant key isolation
 
-All coordination state lives under configurable key prefixes, so multiple
-streams or tenants can share one Valkey without colliding:
+All coordination state lives under consumer-group and canonical-stream
+segments plus configurable key prefixes, so multiple applications and streams
+can share one Valkey without colliding:
 
-- Checkpoints: `<checkpointPrefix>:<stream>:<shard>` (default prefix
+- Checkpoints: `<checkpointPrefix>:<group>:<stream>:<shard>` (default prefix
   `kinesis-checkpoint`; override with `WithKeyPrefix`).
-- Leases: `<leasePrefix>:<stream>:<shard>`, where `leasePrefix` defaults to
-  `<checkpointPrefix>-lease`.
-- Worker heartbeats: `<leasePrefix>-worker:<stream>:<owner>`.
+- Leases: `<leasePrefix>:<group>:<stream>:<shard>`, where `leasePrefix`
+  defaults to `kinesis-lease` (a custom checkpoint prefix derives an adjacent
+  lease prefix unless explicitly overridden).
+- Worker heartbeats: `<leasePrefix>-worker:<group>:<stream>:<owner>`.
 
 ## Observability
 

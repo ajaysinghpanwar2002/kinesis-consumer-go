@@ -7,7 +7,10 @@ import "context"
 // "SHARD_END:<finalSequenceNumber>"; any value with this prefix is terminal.
 const CompletedPrefix = "SHARD_END"
 
-// Store persists per-shard consumer progress.
+// Store persists per-shard consumer progress. The streamName argument is the
+// consumer's opaque coordination identity, currently
+// "<consumerGroup>:<canonicalStreamName>"; implementations must preserve it
+// verbatim when constructing their namespace.
 //
 // Save is advance-only: an implementation must apply a save only when it
 // advances the checkpoint, and silently discard (return nil) one that would

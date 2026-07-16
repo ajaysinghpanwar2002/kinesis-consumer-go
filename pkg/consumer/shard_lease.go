@@ -15,7 +15,7 @@ func (c *Consumer) acquireShardLease(ctx context.Context, shardID string) (lease
 	start := time.Now()
 	shardLease, acquired, err := c.leaseManager.Acquire(
 		ctx,
-		c.streamKey(),
+		c.coordinationKey(),
 		shardID,
 		c.leaseOwner,
 		c.tuning.heartbeatTTL,
@@ -55,7 +55,7 @@ func (c *Consumer) acquireShardLeaseWithRetry(ctx context.Context, shardID strin
 func (c *Consumer) claimShardLease(ctx context.Context, shardID, expectedOwner string) (lease.Lease, bool, error) {
 	shardLease, claimed, err := c.leaseManager.Claim(
 		ctx,
-		c.streamKey(),
+		c.coordinationKey(),
 		shardID,
 		expectedOwner,
 		c.leaseOwner,

@@ -78,7 +78,7 @@ func TestCheckpointResumeAfterRebalance(t *testing.T) {
 	// Starvation sanity only (A alone satisfies this — NOT evidence of the
 	// transfer): every shard has some persisted resume point.
 	for _, id := range listShardIDs(ctx, t, client, stream) {
-		v, err := store.Get(ctx, stream, id)
+		v, err := store.Get(ctx, integrationCoordinationIdentity(stream), id)
 		if err != nil {
 			t.Fatalf("read checkpoint for shard %s: %v", id, err)
 		}

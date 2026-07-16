@@ -110,6 +110,7 @@ func TestShardConcurrencyDeliversAllAndCheckpointsPerPage(t *testing.T) {
 	probe := newConcurrencyProbe(perRecord)
 	consC1, err := consumer.New(consumer.Config{
 		StreamName:    stream,
+		ConsumerGroup: integrationConsumerGroup,
 		StartPosition: consumer.StartTrimHorizon,
 	}, client, store, probe.handler(),
 		consumer.WithShardConcurrency(concurrency),

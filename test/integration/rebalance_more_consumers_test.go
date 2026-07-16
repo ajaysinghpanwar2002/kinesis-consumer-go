@@ -96,7 +96,7 @@ func TestRebalanceMoreConsumersThanShards(t *testing.T) {
 	// (b) LOAD-BEARING idle-heartbeat: all 4 consumers appear in Workers() even
 	// though only 2 own a shard, proving the surplus consumers keep heartbeating
 	// independent of ownership.
-	workers, err := leaseManager.Workers(ctx, stream)
+	workers, err := leaseManager.Workers(ctx, integrationCoordinationIdentity(stream))
 	if err != nil {
 		t.Fatalf("list workers: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestRebalanceMoreConsumersThanShards(t *testing.T) {
 	// unchanged. waitForStableLeaseOwners already required stability for a window;
 	// this extra check guards against a late thrash move after that window.
 	time.Sleep(2 * time.Second)
-	after, err := leaseManager.List(ctx, stream)
+	after, err := leaseManager.List(ctx, integrationCoordinationIdentity(stream))
 	if err != nil {
 		t.Fatalf("re-list owners for stability check: %v", err)
 	}

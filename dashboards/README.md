@@ -26,14 +26,15 @@ InfluxQL-configured Grafana datasource that can see the measurements.
 
 1. In Grafana, open **Dashboards > New > Import**.
 2. Upload [`grafana/kinesis-consumer-overview.json`](grafana/kinesis-consumer-overview.json).
-3. Open the imported dashboard and select the InfluxDB datasource, stream, and
-   shard at the top.
+3. Open the imported dashboard and select the InfluxDB datasource, consumer
+   group, stream, and shard at the top.
 
-The `stream` and `shard` selectors support multiple values and **All**. A stream
-does not appear until `kinesis_consumer_records_processed` has been written; a
-shard does not appear until `kinesis_consumer_millis_behind_latest` has been
-written. If a quiet/new consumer has only other measurements, query it directly
-in Grafana Explore until these selector measurements arrive.
+The `consumer_group`, `stream`, and `shard` selectors support multiple values
+and **All**. A group or stream does not appear until
+`kinesis_consumer_records_processed` has been written; a shard does not appear
+until `kinesis_consumer_millis_behind_latest` has been written. If a quiet/new
+consumer has only other measurements, query it directly in Grafana Explore
+until these selector measurements arrive.
 
 ## Provision from files
 
@@ -116,12 +117,13 @@ From Grafana Explore or an InfluxQL client, verify the naming and fields:
 
 ```sql
 SHOW MEASUREMENTS WITH MEASUREMENT =~ /^kinesis_consumer_/
+SHOW TAG VALUES FROM "kinesis_consumer_records_processed" WITH KEY = "consumer_group"
 SHOW TAG VALUES FROM "kinesis_consumer_records_processed" WITH KEY = "stream"
-SELECT LAST("value") FROM "kinesis_consumer_owned_shards" GROUP BY "stream"
+SELECT LAST("value") FROM "kinesis_consumer_owned_shards" GROUP BY "consumer_group", "stream"
 SELECT MEAN("mean"), MEAN("percentile_95")
   FROM "kinesis_consumer_handler_duration"
   WHERE time > now() - 15m
-  GROUP BY time(1m), "stream", "handler" fill(null)
+  GROUP BY time(1m), "consumer_group", "stream", "handler" fill(null)
 ```
 
 - No measurements: verify the reporter address, UDP routing, Telegraf input,
@@ -141,4 +143,3 @@ than showing process-lifetime cumulative totals.
 is useful for diagnosis but creates one series per shard. Monitor InfluxDB
 series cardinality for streams with very large shard counts and narrow the
 dashboard shard selection when investigating them.
-

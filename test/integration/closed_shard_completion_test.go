@@ -181,7 +181,7 @@ func waitForShardEndCheckpoint(ctx context.Context, t *testing.T, store interfac
 	var last string
 	var lastErr error
 	for time.Now().Before(deadline) {
-		value, err := store.Get(ctx, stream, shardID)
+		value, err := store.Get(ctx, integrationCoordinationIdentity(stream), shardID)
 		if err != nil {
 			lastErr = err
 		} else {

@@ -36,11 +36,15 @@ type Option func(*Config) error
 // (exclusive in steady state — see the lease.Manager contract for the
 // ownership-transfer windows). Lease keys are written as:
 //
-//	<KeyPrefix>:<streamName>:<shardID>
+//	<KeyPrefix>:<coordinationIdentity>:<shardID>
 //
 // and worker heartbeat keys as:
 //
-//	<KeyPrefix>-worker:<streamName>:<owner>
+//	<KeyPrefix>-worker:<coordinationIdentity>:<owner>
+//
+// The consumer supplies coordinationIdentity as
+// "<consumerGroup>:<canonicalStreamName>", so shard leases and heartbeats are
+// isolated by group while workers in one group share the same namespace.
 type Manager struct {
 	client     valkey.Client
 	keyPrefix  string

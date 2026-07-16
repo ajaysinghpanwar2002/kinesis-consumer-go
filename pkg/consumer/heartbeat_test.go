@@ -51,28 +51,32 @@ func (m *recordingHeartbeatManager) Heartbeat(_ context.Context, streamName, own
 	return m.err
 }
 
-func TestStreamKey(t *testing.T) {
+func TestConsumerIdentityHelpers(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		cfg  Config
-		want string
+		name             string
+		consumer         *Consumer
+		wantStream       string
+		wantCoordination string
 	}{
 		{
-			name: "uses stream name before arn",
-			cfg: Config{
-				StreamName: "stream-name",
-				StreamARN:  "stream-arn",
+			name: "uses resolved constructor identity",
+			consumer: &Consumer{
+				cfg:                  Config{StreamARN: "arn:aws:kinesis:us-east-1:123456789012:stream/orders", ConsumerGroup: "billing"},
+				streamName:           "orders",
+				coordinationIdentity: "billing:orders",
 			},
-			want: "stream-name",
+			wantStream:       "orders",
+			wantCoordination: "billing:orders",
 		},
 		{
-			name: "falls back to arn",
-			cfg: Config{
-				StreamARN: "stream-arn",
+			name: "direct fixture fallback",
+			consumer: &Consumer{
+				cfg: Config{StreamName: "orders", ConsumerGroup: "billing"},
 			},
-			want: "stream-arn",
+			wantStream:       "orders",
+			wantCoordination: "billing:orders",
 		},
 	}
 
@@ -80,9 +84,11 @@ func TestStreamKey(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := Consumer{cfg: tt.cfg}
-			if got := c.streamKey(); got != tt.want {
-				t.Fatalf("streamKey() = %q, want %q", got, tt.want)
+			if got := tt.consumer.canonicalStreamName(); got != tt.wantStream {
+				t.Fatalf("canonicalStreamName() = %q, want %q", got, tt.wantStream)
+			}
+			if got := tt.consumer.coordinationKey(); got != tt.wantCoordination {
+				t.Fatalf("coordinationKey() = %q, want %q", got, tt.wantCoordination)
 			}
 		})
 	}
@@ -101,7 +107,7 @@ func TestWorkerHeartbeatLoopSendsImmediateHeartbeat(t *testing.T) {
 	cancel()
 	waitDone(t, done)
 
-	assertHeartbeatCall(t, call, "stream", "owner", 30*time.Millisecond)
+	assertHeartbeatCall(t, call, "group:stream", "owner", 30*time.Millisecond)
 }
 
 func TestWorkerHeartbeatLoopSendsRepeatedHeartbeats(t *testing.T) {
@@ -118,7 +124,7 @@ func TestWorkerHeartbeatLoopSendsRepeatedHeartbeats(t *testing.T) {
 	cancel()
 	waitDone(t, done)
 
-	assertHeartbeatCall(t, call, "stream", "owner", 30*time.Millisecond)
+	assertHeartbeatCall(t, call, "group:stream", "owner", 30*time.Millisecond)
 }
 
 func TestWorkerHeartbeatLoopStopsOnCancel(t *testing.T) {
@@ -167,7 +173,7 @@ func TestWorkerHeartbeatLoopWarnsAndCountsFailures(t *testing.T) {
 	if len(failures) != 1 {
 		t.Fatalf("heartbeat_failures calls = %d, want 1", len(failures))
 	}
-	assertCounterTags(t, failures[0], map[string]string{"stream": "stream"})
+	assertCounterTags(t, failures[0], map[string]string{"stream": "stream", "consumer_group": "group"})
 
 	var warns []capturedRecord
 	for _, rec := range logHandler.snapshot() {
@@ -216,7 +222,8 @@ func newTestHeartbeatConsumer(manager *recordingHeartbeatManager) *Consumer {
 
 	return &Consumer{
 		cfg: Config{
-			StreamName: "stream",
+			StreamName:    "stream",
+			ConsumerGroup: "group",
 		},
 		leaseManager: manager,
 		leaseOwner:   "owner",

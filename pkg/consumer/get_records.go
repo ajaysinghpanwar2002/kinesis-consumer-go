@@ -73,6 +73,9 @@ func (c *Consumer) getRecords(ctx context.Context, shardIterator string) (*kines
 	input := &kinesis.GetRecordsInput{
 		ShardIterator: aws.String(shardIterator),
 	}
+	if c.cfg.StreamARN != "" {
+		input.StreamARN = aws.String(c.cfg.StreamARN)
+	}
 	// Cap the page size to the configured batch size so WithBatching actually
 	// bounds how many records a single GetRecords call returns. Guard against a
 	// zero value (Kinesis rejects Limit=0); real consumers always validate

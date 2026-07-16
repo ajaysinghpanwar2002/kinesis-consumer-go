@@ -257,19 +257,19 @@ func TestAcquireShardLeaseNotAcquired(t *testing.T) {
 	assertAcquireCall(t, manager.call, "stream", "shard-1", "owner", 30*time.Millisecond)
 }
 
-func TestAcquireShardLeaseUsesARNStreamKey(t *testing.T) {
+func TestAcquireShardLeaseUsesARNCanonicalCoordinationIdentity(t *testing.T) {
 	t.Parallel()
 
 	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
 	manager := &recordingAcquireManager{}
 	c := newTestAcquireConsumer(manager)
-	c.cfg = Config{StreamARN: streamARN}
+	c.cfg = Config{StreamARN: streamARN, ConsumerGroup: "group"}
 
 	_, _, err := c.acquireShardLease(context.Background(), "shard-1")
 	if err != nil {
 		t.Fatalf("acquireShardLease() error = %v, want nil", err)
 	}
-	assertAcquireCall(t, manager.call, streamARN, "shard-1", "owner", 30*time.Millisecond)
+	assertAcquireCall(t, manager.call, "group:test", "shard-1", "owner", 30*time.Millisecond)
 }
 
 func TestAcquireShardLeaseWrapsError(t *testing.T) {
@@ -485,19 +485,19 @@ func TestClaimShardLeaseNotClaimed(t *testing.T) {
 	assertClaimCall(t, manager.call, nil, "stream", "shard-1", "donor", "owner", 30*time.Millisecond)
 }
 
-func TestClaimShardLeaseUsesARNStreamKey(t *testing.T) {
+func TestClaimShardLeaseUsesARNCanonicalCoordinationIdentity(t *testing.T) {
 	t.Parallel()
 
 	const streamARN = "arn:aws:kinesis:us-east-1:111111111111:stream/test"
 	manager := &recordingClaimManager{}
 	c := newTestClaimConsumer(manager)
-	c.cfg = Config{StreamARN: streamARN}
+	c.cfg = Config{StreamARN: streamARN, ConsumerGroup: "group"}
 
 	_, _, err := c.claimShardLease(context.Background(), "shard-1", "donor")
 	if err != nil {
 		t.Fatalf("claimShardLease() error = %v, want nil", err)
 	}
-	assertClaimCall(t, manager.call, nil, streamARN, "shard-1", "donor", "owner", 30*time.Millisecond)
+	assertClaimCall(t, manager.call, nil, "group:test", "shard-1", "donor", "owner", 30*time.Millisecond)
 }
 
 func TestClaimShardLeaseWrapsError(t *testing.T) {

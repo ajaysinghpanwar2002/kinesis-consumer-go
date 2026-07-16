@@ -37,6 +37,7 @@ const (
 type PoisonRecord struct {
 	StreamName                 string     `json:"stream_name,omitempty"`
 	StreamARN                  string     `json:"stream_arn,omitempty"`
+	ConsumerGroup              string     `json:"consumer_group"`
 	ShardID                    string     `json:"shard_id"`
 	SequenceNumber             string     `json:"sequence_number,omitempty"`
 	PartitionKey               string     `json:"partition_key,omitempty"`
@@ -238,15 +239,17 @@ func (c *Consumer) newPoisonRecord(
 	payload := make([]byte, len(record.Data))
 	copy(payload, record.Data)
 
-	var streamName, streamARN string
+	var streamName, streamARN, consumerGroup string
 	if c != nil {
 		streamName = c.cfg.StreamName
 		streamARN = c.cfg.StreamARN
+		consumerGroup = c.cfg.ConsumerGroup
 	}
 
 	return PoisonRecord{
 		StreamName:                 streamName,
 		StreamARN:                  streamARN,
+		ConsumerGroup:              consumerGroup,
 		ShardID:                    shardID,
 		SequenceNumber:             aws.ToString(record.SequenceNumber),
 		PartitionKey:               aws.ToString(record.PartitionKey),

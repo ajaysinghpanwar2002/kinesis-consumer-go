@@ -129,7 +129,7 @@ func recordRebalanceCooldown(
 }
 
 func (c *Consumer) listRebalanceLeaseOwners(ctx context.Context) (map[string]string, error) {
-	leaseOwners, err := c.leaseManager.List(ctx, c.streamKey())
+	leaseOwners, err := c.leaseManager.List(ctx, c.coordinationKey())
 	if err != nil {
 		return nil, fmt.Errorf("list rebalance lease owners: %w", err)
 	}
@@ -162,7 +162,7 @@ func (c *Consumer) listRebalanceLeaseOwnersWithRetry(ctx context.Context) (map[s
 }
 
 func (c *Consumer) listRebalanceWorkerOwners(ctx context.Context) ([]string, error) {
-	workerOwners, err := c.leaseManager.Workers(ctx, c.streamKey())
+	workerOwners, err := c.leaseManager.Workers(ctx, c.coordinationKey())
 	if err != nil {
 		return nil, fmt.Errorf("list rebalance worker owners: %w", err)
 	}
