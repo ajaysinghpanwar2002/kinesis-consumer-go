@@ -49,7 +49,7 @@ working default, so `New` with no options is valid.
 | `WithIdleTimeBetweenReads` | `d time.Duration` | `200ms` | Minimum delay between successive GetRecords calls on one shard (KCL `idleTimeBetweenReadsInMillis` equivalent) — paces catch-up reads under the Kinesis 5 reads/sec/shard limit. `0` disables pacing. Retryable read errors (throttling, 5xx, network) additionally back off in-place (500ms doubling to a 10s cap) instead of stopping the consumer. | `>= 0` |
 | `WithRetry` | `maxAttempts int, backoff time.Duration` | `3, 1s` | Handler retry attempts and linear base backoff (`sleep = attempt * backoff`) before the failure policy applies. | `maxAttempts >= 1`; `backoff > 0` |
 | `WithShardConcurrency` | `concurrency int` | `1` | Concurrent record-handler calls within one shard page. `> 1` improves throughput but breaks strict per-shard ordering. Record handlers only. | `>= 1` |
-| `WithFailurePolicy` | `policy FailurePolicy` | `FailurePolicySkip` | What happens to a record/batch after retries are exhausted (see values below). | must be a valid policy |
+| `WithFailurePolicy` | `policy FailurePolicy` | `FailurePolicyFailFast` | What happens to a record/batch after retries are exhausted (see values below). | must be a valid policy |
 | `WithDLQPublisher` | `publisher DLQPublisher` | none | Destination for poison records; **required** when the policy is `FailurePolicySendToDLQ`. | non-nil |
 | `WithBatchHandler` | `handler BatchHandlerFunc` | none | Switches to one handler call per GetRecords page instead of per record. Mutually exclusive with the positional record handler in `New`: pass one or the other — the positional handler must be nil when this is set, and `New` errors if both are provided. | non-nil |
 | `WithHeartbeat` | `interval, ttl time.Duration` | `5s, 20s` | Worker liveness heartbeat cadence and the lease/worker key TTL. | both `> 0`; `interval < ttl` — otherwise every lease expires before its renew tick and peers claim shards away from a live worker. Recommended: `ttl >= 3x interval` (the default is 4x) so a lease survives transient renew hiccups. |
@@ -63,8 +63,8 @@ working default, so `New` with no options is valid.
 
 | Value | Behavior |
 | --- | --- |
-| `FailurePolicySkip` | Default. Treat the poison record/batch as handled and continue. |
-| `FailurePolicyFailFast` | Stop the shard worker and surface the error through `Start`. |
+| `FailurePolicyFailFast` | Default. Stop the shard worker, surface the error through `Start`, and do not checkpoint the failed page. |
+| `FailurePolicySkip` | Explicit, intentionally lossy opt-in. Record mode drops the failed record; batch mode drops the entire failed GetRecords page. Processing continues and the page can be checkpointed, so the dropped data is not replayed on resume. |
 | `FailurePolicySendToDLQ` | Publish to the configured `DLQPublisher` and continue (requires `WithDLQPublisher`; `New` errors without one). |
 
 See [handler-behavior.md](handler-behavior.md) for the full failure-policy and

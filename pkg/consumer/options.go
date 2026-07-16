@@ -34,7 +34,7 @@ type shutdownOptions struct {
 
 func defaultOptions() options {
 	return options{
-		failurePolicy: FailurePolicySkip,
+		failurePolicy: FailurePolicyFailFast,
 		tuning:        defaultTuning(),
 		// Discard by default so the library stays silent unless the caller
 		// opts in via WithLogger. A non-nil logger is always present so call
@@ -194,6 +194,8 @@ func WithHeartbeat(interval, ttl time.Duration) Option {
 }
 
 // WithFailurePolicy sets behavior when a handler keeps failing after retries.
+// The default is FailurePolicyFailFast. FailurePolicySkip is an intentionally
+// lossy opt-in that checkpoints past failed records or batches.
 func WithFailurePolicy(policy FailurePolicy) Option {
 	return func(cfg *options) error {
 		if err := policy.validate(); err != nil {

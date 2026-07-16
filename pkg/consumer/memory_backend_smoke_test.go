@@ -2,6 +2,8 @@ package consumer
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +13,96 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 )
+
+var errDefaultHandlerFailure = errors.New("default handler failure")
+
+func TestDefaultRecordHandlerFailureStopsStartWithoutCheckpoint(t *testing.T) {
+	var calls atomic.Int64
+	assertDefaultHandlerFailureStopsStartWithoutCheckpoint(t, func(_ context.Context, _ Record) error {
+		calls.Add(1)
+		return errDefaultHandlerFailure
+	})
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("record handler calls = %d, want 1", got)
+	}
+}
+
+func TestDefaultBatchHandlerFailureStopsStartWithoutCheckpoint(t *testing.T) {
+	var calls atomic.Int64
+	var batchSize atomic.Int64
+	assertDefaultHandlerFailureStopsStartWithoutCheckpoint(t, nil,
+		WithBatchHandler(func(_ context.Context, records []Record) error {
+			calls.Add(1)
+			batchSize.Store(int64(len(records)))
+			return errDefaultHandlerFailure
+		}),
+	)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("batch handler calls = %d, want 1", got)
+	}
+	if got := batchSize.Load(); got != 1 {
+		t.Fatalf("batch records = %d, want 1", got)
+	}
+}
+
+func assertDefaultHandlerFailureStopsStartWithoutCheckpoint(t *testing.T, handler HandlerFunc, handlerOpts ...Option) {
+	t.Helper()
+
+	store := checkpoint.NewMemoryStore()
+	leaseManager := lease.NewMemoryManager()
+	client := &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+		},
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("iterator-1"),
+		},
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{
+				Records: []types.Record{{
+					SequenceNumber: aws.String("sequence-1"),
+					PartitionKey:   aws.String("partition-1"),
+					Data:           []byte("payload-1"),
+				}},
+				NextShardIterator: aws.String("iterator-2"),
+			},
+		},
+	}
+
+	opts := append([]Option(nil), handlerOpts...)
+	opts = append(opts,
+		WithLeaseManager(leaseManager),
+		WithRetry(1, time.Millisecond),
+		WithHeartbeat(10*time.Millisecond, 2*time.Second),
+		WithBatching(10, 1),
+		WithPolling(time.Millisecond, time.Second),
+	)
+	cons, err := New(Config{
+		StreamName:    "stream",
+		StartPosition: StartTrimHorizon,
+	}, client, store, handler, opts...)
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = cons.Start(ctx)
+	if !errors.Is(err, errDefaultHandlerFailure) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, errDefaultHandlerFailure)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start() error = %v, default failure policy did not stop the consumer", err)
+	}
+
+	got, err := store.Get(context.Background(), "stream", "shard-1")
+	if err != nil {
+		t.Fatalf("checkpoint Get() error = %v, want nil", err)
+	}
+	if got != "" {
+		t.Fatalf("checkpoint = %q, want empty after default handler failure", got)
+	}
+}
 
 func TestMemoryBackendsRunConsumerSmoke(t *testing.T) {
 	store := checkpoint.NewMemoryStore()

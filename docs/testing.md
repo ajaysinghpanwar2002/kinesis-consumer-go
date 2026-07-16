@@ -80,7 +80,7 @@ number.
 
 | IT | Test | Proves |
 | --- | --- | --- |
-| IT-8 (#14) | `TestFailFastReturnsHandlerError` | `FailFast` surfaces the handler error through `Start` and does not checkpoint. |
+| IT-8 (#14) | `TestDefaultFailurePolicyReturnsHandlerError` | The default `FailFast` policy surfaces the handler error through `Start` and does not checkpoint. |
 | IT-9a (#15) | `TestSkipPoisonContinuesAndCheckpoints` | `Skip` drops a poison record, keeps delivering later records, and checkpoints past it. |
 | IT-9b (#18) | `TestRetryEventuallySucceeds` | A flaky record is retried, succeeds once (no double-delivery), and stops retrying early. |
 | IT-10a (#16) | `TestDLQCapturesPoisonAndContinues` | `SendToDLQ` publishes a poison record once with full metadata, then continues and checkpoints. |

@@ -16,11 +16,11 @@ import (
 // package-level sentinel so the test can assert errors.Is against Start's return.
 var errFailFastBoom = errors.New("integration: permanent handler failure")
 
-// TestFailFastReturnsHandlerError proves the fail-fast failure policy (#14): when a
-// handler permanently errors and the consumer is configured with
-// WithFailurePolicy(FailurePolicyFailFast), Start returns the wrapped handler error
-// (rather than skipping the record or blocking forever), and nothing is
-// checkpointed for the shard.
+// TestDefaultFailurePolicyReturnsHandlerError proves the default fail-fast
+// failure policy (#14): when a handler permanently errors and no failure-policy
+// option is configured, Start returns the wrapped handler error (rather than
+// skipping the record or blocking forever), and nothing is checkpointed for the
+// shard.
 //
 // The discriminating assertion is errors.Is(startErr, errFailFastBoom) &&
 // !isCanceled(startErr): that pair separates fail-fast from the skip/dlq policies.
@@ -36,7 +36,7 @@ var errFailFastBoom = errors.New("integration: permanent handler failure")
 // never completes when a record errors, and no drain/catch-up runs on an
 // internal-cancel fail-fast, so the checkpoint stays empty regardless of which
 // record failed.
-func TestFailFastReturnsHandlerError(t *testing.T) {
+func TestDefaultFailurePolicyReturnsHandlerError(t *testing.T) {
 	ctx := context.Background()
 	client := newKinesisClient()
 
@@ -85,7 +85,6 @@ func TestFailFastReturnsHandlerError(t *testing.T) {
 		StartPosition: consumer.StartTrimHorizon,
 	}
 	cons, err := consumer.New(cfg, client, store, handler,
-		consumer.WithFailurePolicy(consumer.FailurePolicyFailFast),
 		consumer.WithRetry(1, time.Millisecond), // WithRetry(1, 1ms): backoff must be > 0 by validation but is unused at 1 attempt
 		consumer.WithBatching(10, 1),
 		consumer.WithShardConcurrency(1), // sequential ordered handling, so the exact call-count assertion below is deterministic

@@ -31,8 +31,8 @@ func TestDefaultOptions(t *testing.T) {
 	if cfg.shutdown.gracefulDrainTimeout != 0 {
 		t.Fatalf("gracefulDrainTimeout = %v, want 0", cfg.shutdown.gracefulDrainTimeout)
 	}
-	if cfg.failurePolicy != FailurePolicySkip {
-		t.Fatalf("failurePolicy = %q, want %q", cfg.failurePolicy, FailurePolicySkip)
+	if cfg.failurePolicy != FailurePolicyFailFast {
+		t.Fatalf("failurePolicy = %q, want %q", cfg.failurePolicy, FailurePolicyFailFast)
 	}
 	if cfg.dlqPublisher != nil {
 		t.Fatalf("dlqPublisher = %v, want nil", cfg.dlqPublisher)

@@ -25,7 +25,8 @@ line but may still change in a future minor version (see
 - Shard-aware, advance-only (monotonic) checkpointing with `SHARD_END`
   reshard gating and parent-shard ordering.
 - Record and batch handlers with configurable batching, retries, and polling.
-- Pluggable poison-record handling: fail-fast, skip, or send-to-DLQ.
+- Production-safe fail-fast poison-record handling by default, with explicit
+  skip or send-to-DLQ options.
 - Optional graceful drain on shutdown (finish in-flight work, checkpoint,
   release the lease).
 - Pluggable `checkpoint.Store` and `lease.Manager` interfaces with documented

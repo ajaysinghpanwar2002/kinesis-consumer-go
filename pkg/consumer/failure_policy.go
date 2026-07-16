@@ -13,11 +13,18 @@ import (
 )
 
 // FailurePolicy controls behavior when a handler keeps failing after retries.
+// The default is FailurePolicyFailFast.
 type FailurePolicy string
 
 const (
-	FailurePolicyFailFast  FailurePolicy = "fail-fast"
-	FailurePolicySkip      FailurePolicy = "skip"
+	// FailurePolicyFailFast stops the consumer without checkpointing the failed
+	// page and surfaces the handler error through Start.
+	FailurePolicyFailFast FailurePolicy = "fail-fast"
+	// FailurePolicySkip intentionally drops failed record-handler records or an
+	// entire failed batch-handler page and allows the page checkpoint to advance.
+	FailurePolicySkip FailurePolicy = "skip"
+	// FailurePolicySendToDLQ publishes failed records before allowing the page
+	// checkpoint to advance.
 	FailurePolicySendToDLQ FailurePolicy = "send-to-dlq"
 )
 
@@ -76,7 +83,7 @@ func (c *Consumer) retryBackoff(attempt int) time.Duration {
 
 func (c *Consumer) effectiveFailurePolicy() FailurePolicy {
 	if c == nil || c.failurePolicy == "" {
-		return FailurePolicySkip
+		return FailurePolicyFailFast
 	}
 	return c.failurePolicy
 }

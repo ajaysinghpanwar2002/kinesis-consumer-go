@@ -12,7 +12,8 @@ No Java, no MultiLangDaemon.
   planned.
 - Reshard-aware ordering via SHARD_END markers and parent gating.
 - Tunable batching, retries, polling, and per-shard concurrency.
-- Pluggable poison-record handling: fail-fast, skip, or send-to-DLQ.
+- Production-safe fail-fast poison-record handling by default, with explicit
+  skip or send-to-DLQ options.
 
 ## Key features
 

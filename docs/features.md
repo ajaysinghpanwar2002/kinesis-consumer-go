@@ -175,9 +175,12 @@ writes, conditional updates keyed by sequence number).
   with linear backoff (`sleep = attempt * backoff`). Context cancellation /
   deadline is terminal and bypasses the failure policy.
 - **Failure policy** (`WithFailurePolicy`, applied after retries are exhausted):
-  - `FailurePolicySkip` — default; treat as handled and continue.
-  - `FailurePolicyFailFast` — stop the worker and surface the error through
-    `Start`.
+  - `FailurePolicyFailFast` — default; stop the worker, surface the error
+    through `Start`, and do not checkpoint the failed page.
+  - `FailurePolicySkip` — explicit, intentionally lossy opt-in. Record mode
+    drops the failed record but continues the page; batch mode drops the entire
+    failed `GetRecords` page. The completed page is then eligible for a
+    checkpoint, so the dropped data is not replayed on resume.
   - `FailurePolicySendToDLQ` — publish to the configured `DLQPublisher` and
     continue (requires `WithDLQPublisher`; `New` errors without one).
 
@@ -261,7 +264,7 @@ Every knob has a working default, so a consumer runs with no options at all.
 | `WithPolling(pollInterval, shardSyncInterval)` | 1s, 1m | GetRecords poll cadence; shard resync cadence |
 | `WithRetry(maxAttempts, backoff)` | 3, 1s | Handler retry attempts and linear base backoff |
 | `WithShardConcurrency(n)` | 1 | Concurrent record-handler calls per shard |
-| `WithFailurePolicy(policy)` | `skip` | Post-retry poison handling |
+| `WithFailurePolicy(policy)` | `fail-fast` | Post-retry poison handling |
 | `WithHeartbeat(interval, ttl)` | 5s, 20s | Worker liveness cadence and lease/worker TTL |
 | `WithRebalance(min, jitter, cooldown, maxMoves)` | 10s, 10s, 10s, 2 | Rebalance timing and move bounds |
 | `WithGracefulDrain(timeout)` | off | Drain in-flight work on shutdown |

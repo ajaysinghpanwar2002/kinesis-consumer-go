@@ -79,14 +79,13 @@ func TestProcessRecordsPageTreatsNilAndEmptyPagesAsZeroProgress(t *testing.T) {
 	}
 }
 
-func TestProcessRecordsPageReturnsNoProgressWhenHandlerFails(t *testing.T) {
+func TestProcessRecordsPageDefaultPolicyReturnsNoProgressWhenHandlerFails(t *testing.T) {
 	t.Parallel()
 
 	errBoom := errors.New("boom")
 	c := &Consumer{
-		logger:        slog.New(slog.DiscardHandler),
-		reporter:      metrics.Nop{},
-		failurePolicy: FailurePolicyFailFast,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
 		handler: func(ctx context.Context, record Record) error {
 			_ = ctx
 			if aws.ToString(record.SequenceNumber) == "sequence-2" {
@@ -118,14 +117,13 @@ func TestProcessRecordsPageReturnsNoProgressWhenHandlerFails(t *testing.T) {
 	}
 }
 
-func TestProcessRecordsPageWrapsBatchHandlerError(t *testing.T) {
+func TestProcessRecordsPageDefaultPolicyWrapsBatchHandlerError(t *testing.T) {
 	t.Parallel()
 
 	errBoom := errors.New("boom")
 	c := &Consumer{
-		logger:        slog.New(slog.DiscardHandler),
-		reporter:      metrics.Nop{},
-		failurePolicy: FailurePolicyFailFast,
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
 		batchHandler: func(ctx context.Context, records []Record) error {
 			_ = ctx
 			_ = records

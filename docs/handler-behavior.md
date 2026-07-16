@@ -55,9 +55,18 @@ happens to the poison record or failed batch.
 
 | Policy | Behavior |
 | --- | --- |
-| `consumer.FailurePolicySkip` | Default. Treats poison records as handled and continues. |
-| `consumer.FailurePolicyFailFast` | Returns the handler failure. The shard worker stops and the error is surfaced through `Start`. |
+| `consumer.FailurePolicyFailFast` | Default. Returns the handler failure, stops the shard worker, surfaces the error through `Start`, and leaves the failed page uncheckpointed for replay. |
+| `consumer.FailurePolicySkip` | Explicit, intentionally lossy opt-in. Treats the failure as handled and allows the completed page checkpoint to advance. |
 | `consumer.FailurePolicySendToDLQ` | Publishes poison records through the configured `DLQPublisher` and continues if publishing succeeds. |
+
+Skip has different loss granularity in the two handler modes. With a record
+handler, only the failed record is dropped; the consumer continues processing
+the other records in the page and can checkpoint past the page. With a batch
+handler, one error fails the indivisible batch, so Skip drops the entire failed
+`GetRecords` page—including records that were not themselves poison—and can
+checkpoint past all of it. In both modes, a restart resumes after the advanced
+checkpoint and does not recover the dropped data. Use Skip only when continued
+progress is worth that deliberate durability tradeoff.
 
 `FailurePolicySendToDLQ` requires `consumer.WithDLQPublisher`. `consumer.New`
 returns an error if send-to-DLQ is configured without a publisher.

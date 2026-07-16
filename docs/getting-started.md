@@ -87,7 +87,8 @@ func main() {
 	}
 
 	// 4. Your record handler. Return nil on success; a non-nil error triggers
-	//    retries and then the configured failure policy (default: skip).
+	//    retries and then the configured failure policy (default: fail-fast,
+	//    which returns the error without checkpointing the failed page).
 	handler := func(_ context.Context, rec consumer.Record) error {
 		log.Printf("seq=%s pk=%s bytes=%d",
 			aws.ToString(rec.SequenceNumber), aws.ToString(rec.PartitionKey), len(rec.Data))

@@ -120,7 +120,7 @@ batch.
 | `kinesis_consumer.records_processed` | records | `stream`, `shard`, `handler` | A record handler succeeds, or a batch handler succeeds (adds the batch size). Records handled by skip or DLQ policy are excluded. |
 | `kinesis_consumer.pages_fetched` | pages | `stream`, `shard` | A `GetRecords` call succeeds, including an empty page. |
 | `kinesis_consumer.get_records_failures` | failures | `stream`, `shard`, `kind` | A `GetRecords` call fails, counted per attempt: `throttle` (throughput/limit/KMS throttling), `expired` (expired iterator, recovered in place), or `other` (server faults, network errors, and fatal client errors). Shutdown cancellation is not counted. Pair with `pages_fetched` for a failure ratio. |
-| `kinesis_consumer.records_skipped` | records | `stream`, `shard`, `policy=skip` | Handler retries are exhausted and skip policy accepts the record or page (adds the page size in batch mode). |
+| `kinesis_consumer.records_skipped` | records | `stream`, `shard`, `policy=skip` | Handler retries are exhausted and the explicit, intentionally lossy Skip policy drops the failed record or page (adds the whole page size in batch mode) before processing continues and the page can be checkpointed. |
 | `kinesis_consumer.dlq_records_published` | records | `stream`, `shard` | One poison record is successfully published. A failed publish is not counted. |
 | `kinesis_consumer.handler_retries` | retry attempts | `stream`, `shard`, `handler` | A handler attempt after the first is about to run. |
 | `kinesis_consumer.checkpoints_saved` | checkpoints | `stream`, `shard` | A regular, catch-up, drain, or shard-completion checkpoint save succeeds. |
