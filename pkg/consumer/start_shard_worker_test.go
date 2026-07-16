@@ -135,6 +135,9 @@ func TestStartRegisteredShardWorkerLeaseLossIsLocalAndKeepsPeerWorkerLive(t *tes
 	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
 		processStarted <- shardID
 		<-ctx.Done()
+		if shardID == "shard-lost" {
+			return "", 0, ctx.Err()
+		}
 		return "", 0, nil
 	}
 

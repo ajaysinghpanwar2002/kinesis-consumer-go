@@ -96,7 +96,12 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 	if leaseLost.Load() {
 		// The lease belongs to a peer now — there is nothing to release, and a
 		// release attempt would only fail ErrNotOwned and pollute the failure
-		// counters on a clean shard-local handoff.
+		// counters on a clean shard-local handoff. Processing may report the
+		// cancellation we issued to stop it; that is part of the handoff, not an
+		// independent worker failure. Preserve every other processing error.
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return err
 	}
 	if releaseErr := c.releaseShardLeaseWithTimeout(shardID, shardLease); releaseErr != nil && err == nil {

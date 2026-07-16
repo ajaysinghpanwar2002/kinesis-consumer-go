@@ -363,3 +363,23 @@ func TestRunShardWorkerTreatsErrNotOwnedAsShardLocalCompletion(t *testing.T) {
 		})
 	}
 }
+
+func TestRunShardWorkerPreservesProcessingFailureAfterLeaseLoss(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("process boom")
+	shardLease := &renewErrReleaseRecorderLease{renewErr: lease.ErrNotOwned}
+	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, _ string) (string, int, error) {
+		<-ctx.Done()
+		return "", 0, errBoom
+	}
+
+	err := c.runShardWorker(context.Background(), "shard-1", shardLease)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("runShardWorker() error = %v, want wraps independent processing error %v", err, errBoom)
+	}
+	if calls := shardLease.releaseCalls.Load(); calls != 0 {
+		t.Fatalf("Release calls = %d, want 0 (lease belongs to the peer)", calls)
+	}
+}
