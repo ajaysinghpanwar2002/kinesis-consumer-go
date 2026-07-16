@@ -327,50 +327,39 @@ func (l *renewErrReleaseRecorderLease) Release(context.Context) error {
 	return nil
 }
 
-func TestRunShardWorkerTreatsErrNotOwnedAsDrainCompletionWhileDraining(t *testing.T) {
-	t.Parallel()
+func TestRunShardWorkerTreatsErrNotOwnedAsShardLocalCompletion(t *testing.T) {
+	for _, draining := range []bool{false, true} {
+		t.Run(fmt.Sprintf("draining=%t", draining), func(t *testing.T) {
+			t.Parallel()
 
-	shardLease := &renewErrReleaseRecorderLease{renewErr: lease.ErrNotOwned}
-	logHandler := newCapturingHandler()
-	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
-	c.logger = slog.New(logHandler)
-	c.draining.Store(true)
+			shardLease := &renewErrReleaseRecorderLease{renewErr: lease.ErrNotOwned}
+			logHandler := newCapturingHandler()
+			c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+			c.logger = slog.New(logHandler)
+			c.draining.Store(draining)
 
-	err := c.runShardWorker(context.Background(), "shard-1", shardLease)
-	if err != nil {
-		t.Fatalf("runShardWorker() error = %v, want nil (peer takeover completes this shard's drain)", err)
-	}
-	if calls := shardLease.releaseCalls.Load(); calls != 0 {
-		t.Fatalf("Release calls = %d, want 0 (lease belongs to the peer)", calls)
-	}
-	var infos []capturedRecord
-	for _, rec := range logHandler.snapshot() {
-		if rec.message == "shard lease lost during drain; treating shard as drained" {
-			infos = append(infos, rec)
-		}
-	}
-	if len(infos) != 1 {
-		t.Fatalf("drain takeover info logs = %d, want 1", len(infos))
-	}
-	if infos[0].level != slog.LevelInfo {
-		t.Fatalf("drain takeover log level = %v, want %v", infos[0].level, slog.LevelInfo)
-	}
-	if infos[0].attrs["shard"] != "shard-1" {
-		t.Fatalf("drain takeover log shard = %q, want shard-1", infos[0].attrs["shard"])
-	}
-}
-
-func TestRunShardWorkerErrNotOwnedOutsideDrainStopsWithError(t *testing.T) {
-	t.Parallel()
-
-	shardLease := &renewErrReleaseRecorderLease{renewErr: lease.ErrNotOwned}
-	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
-
-	err := c.runShardWorker(context.Background(), "shard-1", shardLease)
-	if !errors.Is(err, lease.ErrNotOwned) {
-		t.Fatalf("runShardWorker() error = %v, want wraps %v", err, lease.ErrNotOwned)
-	}
-	if calls := shardLease.releaseCalls.Load(); calls != 1 {
-		t.Fatalf("Release calls = %d, want 1", calls)
+			err := c.runShardWorker(context.Background(), "shard-1", shardLease)
+			if err != nil {
+				t.Fatalf("runShardWorker() error = %v, want nil (peer takeover is shard-local)", err)
+			}
+			if calls := shardLease.releaseCalls.Load(); calls != 0 {
+				t.Fatalf("Release calls = %d, want 0 (lease belongs to the peer)", calls)
+			}
+			var infos []capturedRecord
+			for _, rec := range logHandler.snapshot() {
+				if rec.message == "shard lease lost; stopping worker" {
+					infos = append(infos, rec)
+				}
+			}
+			if len(infos) != 1 {
+				t.Fatalf("lease-lost info logs = %d, want 1", len(infos))
+			}
+			if infos[0].level != slog.LevelInfo {
+				t.Fatalf("lease-lost log level = %v, want %v", infos[0].level, slog.LevelInfo)
+			}
+			if infos[0].attrs["shard"] != "shard-1" {
+				t.Fatalf("lease-lost log shard = %q, want shard-1", infos[0].attrs["shard"])
+			}
+		})
 	}
 }

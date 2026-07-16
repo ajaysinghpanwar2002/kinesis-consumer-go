@@ -130,6 +130,7 @@ batch.
 | `kinesis_consumer.lease_release_failures` | failures | `stream`, `shard` | A worker's bounded shutdown release fails or times out. |
 | `kinesis_consumer.lease_renewals` | renewals | `stream`, `shard` | A scheduled lease renewal succeeds. |
 | `kinesis_consumer.lease_renewal_failures` | failures | `stream`, `shard` | A scheduled renewal fails for a reason other than shutdown cancellation. Shutdown cancellation counts neither success nor failure. |
+| `kinesis_consumer.lease_lost` | leases | `stream`, `shard` | A renewal reports `ErrNotOwned` because a peer claimed the shard. The affected worker stops cleanly without releasing the peer-owned lease; other workers and the consumer run remain live. |
 | `kinesis_consumer.heartbeat_failures` | failures | `stream` | A worker-liveness heartbeat send fails (live context). Sustained failures mean peers will treat this worker as dead and claim its shards away. |
 | `kinesis_consumer.rebalance_pass_failures` | failures | `stream` | A rebalance pass returns an error and is skipped until the next tick (live context). Shard-sync failures are not counted here — they stop the consumer. |
 | `kinesis_consumer.rebalance_moves` | moves | `stream`, `shard`, `kind` | An unowned shard is acquired, a donor shard is claimed, or a local worker is selected and stopped for shedding. |

@@ -125,6 +125,90 @@ func TestStartRegisteredShardWorkerReportsErrorAndCancelsRun(t *testing.T) {
 	}
 }
 
+func TestStartRegisteredShardWorkerLeaseLossIsLocalAndKeepsPeerWorkerLive(t *testing.T) {
+	t.Parallel()
+
+	reporter := &recordingReporter{}
+	c := newTestRegisteredShardWorkerConsumer(nil)
+	c.reporter = reporter
+	processStarted := make(chan string, 2)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		processStarted <- shardID
+		<-ctx.Done()
+		return "", 0, nil
+	}
+
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 2)
+	lostLease := &renewErrReleaseRecorderLease{renewErr: lease.ErrNotOwned}
+	healthyLease := &recordingReleaseLease{}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	c.startRegisteredShardWorker(runCtx, "shard-lost", lostLease, workers, &workerWG, workerErrCh, cancelRun)
+	c.startRegisteredShardWorker(runCtx, "shard-healthy", healthyLease, workers, &workerWG, workerErrCh, cancelRun)
+
+	started := map[string]bool{}
+	for len(started) < 2 {
+		select {
+		case shardID := <-processStarted:
+			started[shardID] = true
+		case <-time.After(time.Second):
+			t.Fatalf("workers did not both start; started=%v", started)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for workers.has("shard-lost") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if workers.has("shard-lost") {
+		t.Fatal("lost worker registration remained after lease loss")
+	}
+	if !workers.has("shard-healthy") {
+		t.Fatal("unrelated healthy worker stopped after peer worker lost its lease")
+	}
+	if runCtx.Err() != nil {
+		t.Fatalf("run context error = %v, want live after shard-local lease loss", runCtx.Err())
+	}
+	select {
+	case err := <-workerErrCh:
+		t.Fatalf("workerErrCh received %v, want no run-wide error", err)
+	default:
+	}
+	if calls := lostLease.releaseCalls.Load(); calls != 0 {
+		t.Fatalf("lost lease Release calls = %d, want 0", calls)
+	}
+	if calls := healthyLease.calls; calls != 0 {
+		t.Fatalf("healthy lease Release calls = %d while worker remains live, want 0", calls)
+	}
+
+	lost := reporter.countersNamed(metricLeaseLost)
+	if len(lost) != 1 || lost[0].value != 1 {
+		t.Fatalf("lease_lost calls = %+v, want one increment", lost)
+	}
+	assertCounterTags(t, lost[0], map[string]string{
+		"stream": "stream",
+		"shard":  "shard-lost",
+	})
+	stops := reporter.countersNamed(metricWorkerStops)
+	if len(stops) != 1 {
+		t.Fatalf("worker_stops calls before final cleanup = %d, want 1", len(stops))
+	}
+	assertCounterTags(t, stops[0], map[string]string{
+		"stream":  "stream",
+		"shard":   "shard-lost",
+		"outcome": "clean",
+	})
+
+	cancelRun()
+	waitWorkerGroupDone(t, &workerWG)
+	if workers.has("shard-healthy") {
+		t.Fatal("healthy worker registration remained after final cancellation")
+	}
+}
+
 func TestStartRegisteredShardWorkersStartsEveryAcquiredLease(t *testing.T) {
 	t.Parallel()
 

@@ -21,6 +21,7 @@ const (
 	metricLeaseReleaseFailures  = "kinesis_consumer.lease_release_failures"
 	metricLeaseRenewals         = "kinesis_consumer.lease_renewals"
 	metricLeaseRenewalFailures  = "kinesis_consumer.lease_renewal_failures"
+	metricLeaseLost             = "kinesis_consumer.lease_lost"
 	metricHeartbeatFailures     = "kinesis_consumer.heartbeat_failures"
 	metricRebalanceMoves        = "kinesis_consumer.rebalance_moves"
 	metricRebalanceSkips        = "kinesis_consumer.rebalance_skips"
