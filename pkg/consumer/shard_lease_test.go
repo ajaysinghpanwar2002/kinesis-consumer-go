@@ -162,6 +162,23 @@ func (l *blockingReleaseLease) Release(ctx context.Context) error {
 	return ctx.Err()
 }
 
+type contextInspectingReleaseLease struct {
+	calls       int
+	ctxErr      error
+	hasDeadline bool
+}
+
+func (l *contextInspectingReleaseLease) Renew(context.Context, time.Duration) error {
+	return nil
+}
+
+func (l *contextInspectingReleaseLease) Release(ctx context.Context) error {
+	l.calls++
+	l.ctxErr = ctx.Err()
+	_, l.hasDeadline = ctx.Deadline()
+	return nil
+}
+
 type recordingRenewLease struct {
 	ctx   context.Context
 	ttl   time.Duration
@@ -734,31 +751,121 @@ func TestAcquireShardLeasesSkipsNotAcquiredAndNilLeases(t *testing.T) {
 	assertAcquireShardOrder(t, manager.calls, []string{"shard-1", "shard-2", "shard-3"})
 }
 
-func TestAcquireShardLeasesStopsOnAcquisitionError(t *testing.T) {
+func TestAcquireShardLeasesRollsBackPriorLeasesOnAcquisitionError(t *testing.T) {
 	t.Parallel()
 
-	errBoom := errors.New("boom")
+	tests := []struct {
+		name           string
+		failureIndex   int
+		wantAcquireIDs []string
+	}{
+		{name: "first", failureIndex: 0, wantAcquireIDs: []string{"shard-1"}},
+		{name: "middle", failureIndex: 1, wantAcquireIDs: []string{"shard-1", "shard-2"}},
+		{name: "last", failureIndex: 2, wantAcquireIDs: []string{"shard-1", "shard-2", "shard-3"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			errAcquire := errors.New("acquire boom")
+			releases := []*recordingReleaseLease{{}, {}, {}}
+			results := make([]acquireResult, 0, 3)
+			for i := range 3 {
+				if i == tt.failureIndex {
+					results = append(results, acquireResult{err: errAcquire})
+					continue
+				}
+				results = append(results, acquireResult{lease: releases[i], acquired: true})
+			}
+			manager := &recordingAcquireManager{results: results}
+			c := newTestAcquireConsumer(manager)
+			c.tuning.retryMaxAttempts = 1
+
+			got, err := c.acquireShardLeases(context.Background(), []string{"shard-1", "shard-2", "shard-3"})
+			if !errors.Is(err, errAcquire) {
+				t.Fatalf("acquireShardLeases() error = %v, want wraps %v", err, errAcquire)
+			}
+			if got != nil {
+				t.Fatalf("acquireShardLeases() leases = %v, want nil", got)
+			}
+			assertAcquireShardOrder(t, manager.calls, tt.wantAcquireIDs)
+
+			for i, shardLease := range releases {
+				wantCalls := 0
+				if i < tt.failureIndex {
+					wantCalls = 1
+				}
+				if shardLease.calls != wantCalls {
+					t.Errorf("lease %d Release calls = %d, want %d", i+1, shardLease.calls, wantCalls)
+				}
+			}
+		})
+	}
+}
+
+func TestAcquireShardLeasesJoinsEveryRollbackError(t *testing.T) {
+	t.Parallel()
+
+	errAcquire := errors.New("acquire boom")
+	errRelease1 := errors.New("release one boom")
+	errRelease2 := errors.New("release two boom")
+	lease1 := &recordingReleaseLease{err: errRelease1}
+	lease2 := &recordingReleaseLease{err: errRelease2}
 	manager := &recordingAcquireManager{
 		results: []acquireResult{
-			{lease: fakeShardLease{}, acquired: true},
-			{err: errBoom},
-			{lease: fakeShardLease{}, acquired: true},
+			{lease: lease1, acquired: true},
+			{lease: lease2, acquired: true},
+			{err: errAcquire},
 		},
 	}
 	c := newTestAcquireConsumer(manager)
 	c.tuning.retryMaxAttempts = 1
 
 	got, err := c.acquireShardLeases(context.Background(), []string{"shard-1", "shard-2", "shard-3"})
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("acquireShardLeases() error = %v, want wraps %v", err, errBoom)
-	}
-	if err == nil || err.Error() != "acquire shard leases shard-2: acquire shard lease shard-2: boom" {
-		t.Fatalf("acquireShardLeases() error = %v, want %q", err, "acquire shard leases shard-2: acquire shard lease shard-2: boom")
+	for _, want := range []error{errAcquire, errRelease1, errRelease2} {
+		if !errors.Is(err, want) {
+			t.Errorf("acquireShardLeases() error = %v, want wraps %v", err, want)
+		}
 	}
 	if got != nil {
 		t.Fatalf("acquireShardLeases() leases = %v, want nil", got)
 	}
-	assertAcquireShardOrder(t, manager.calls, []string{"shard-1", "shard-2"})
+	if lease1.calls != 1 || lease2.calls != 1 {
+		t.Fatalf("Release calls = (%d, %d), want (1, 1)", lease1.calls, lease2.calls)
+	}
+}
+
+func TestAcquireShardLeasesRollbackUsesFreshBoundedContext(t *testing.T) {
+	t.Parallel()
+
+	errAcquire := errors.New("acquire boom")
+	shardLease := &contextInspectingReleaseLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+			{err: errAcquire},
+		},
+	}
+	c := newTestAcquireConsumer(manager)
+	c.tuning.retryMaxAttempts = 1
+	c.tuning.shardLeaseReleaseTimeout = time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.acquireShardLeases(ctx, []string{"shard-1", "shard-2"})
+	if !errors.Is(err, errAcquire) {
+		t.Fatalf("acquireShardLeases() error = %v, want wraps %v", err, errAcquire)
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+	if shardLease.ctxErr != nil {
+		t.Fatalf("Release context error at call = %v, want nil", shardLease.ctxErr)
+	}
+	if !shardLease.hasDeadline {
+		t.Fatal("Release context has no deadline, want bounded rollback context")
+	}
 }
 
 func TestRenewShardLeaseNilLeaseNoop(t *testing.T) {

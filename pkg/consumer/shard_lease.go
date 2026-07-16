@@ -97,7 +97,11 @@ func (c *Consumer) acquireShardLeases(ctx context.Context, shardIDs []string) (m
 	for _, shardID := range shardIDs {
 		shardLease, acquired, err := c.acquireShardLeaseWithRetry(ctx, shardID)
 		if err != nil {
-			return nil, fmt.Errorf("acquire shard leases %s: %w", shardID, err)
+			acquireErr := fmt.Errorf("acquire shard leases %s: %w", shardID, err)
+			if rollbackErr := c.rollbackShardLeases(leases); rollbackErr != nil {
+				return nil, errors.Join(acquireErr, rollbackErr)
+			}
+			return nil, acquireErr
 		}
 		if !acquired || shardLease == nil {
 			continue
@@ -107,6 +111,16 @@ func (c *Consumer) acquireShardLeases(ctx context.Context, shardIDs []string) (m
 		c.logger.Debug("shard lease acquired", slog.String("shard", shardID), slog.String("owner", c.leaseOwner))
 	}
 	return leases, nil
+}
+
+func (c *Consumer) rollbackShardLeases(shardLeases map[string]lease.Lease) error {
+	var rollbackErrs []error
+	for shardID, shardLease := range shardLeases {
+		if err := c.releaseShardLeaseWithTimeout(shardID, shardLease); err != nil {
+			rollbackErrs = append(rollbackErrs, err)
+		}
+	}
+	return errors.Join(rollbackErrs...)
 }
 
 func (c *Consumer) renewShardLease(ctx context.Context, shardID string, shardLease lease.Lease) error {

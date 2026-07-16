@@ -8,9 +8,14 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/internal/backend"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 	consumerlease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
@@ -122,6 +127,79 @@ func TestManagerMaxLeasesGate(t *testing.T) {
 	if _, ok, err := mgr.Acquire(ctx, "stream", "shard-2", "owner-a", time.Minute); err != nil || !ok {
 		t.Fatalf("Acquire shard-2 after release ok=%v err=%v, want ok true", ok, err)
 	}
+}
+
+func TestConsumerTransactionalAcquireRollbackFreesMaxLeasesSlot(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t, WithMaxLeases(1))
+	errAcquire := errors.New("injected second acquire failure")
+	failingManager := &failNthAcquireManager{
+		Manager: mgr,
+		failOn:  2,
+		err:     errAcquire,
+	}
+	client := twoShardKinesisClient{}
+	c, err := consumer.New(
+		consumer.Config{StreamName: "stream", StartPosition: consumer.StartTrimHorizon},
+		client,
+		checkpoint.NewMemoryStore(),
+		func(context.Context, consumer.Record) error { return nil },
+		consumer.WithLeaseManager(failingManager),
+		consumer.WithRetry(1, time.Millisecond),
+		consumer.WithHeartbeat(10*time.Millisecond, 100*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("consumer.New: %v", err)
+	}
+
+	err = c.Start(context.Background())
+	if !errors.Is(err, errAcquire) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, errAcquire)
+	}
+	if failingManager.calls != 2 {
+		t.Fatalf("Acquire calls = %d, want 2", failingManager.calls)
+	}
+
+	probe, acquired, err := mgr.Acquire(context.Background(), "stream", "shard-3", "probe-owner", time.Minute)
+	if err != nil || !acquired || probe == nil {
+		t.Fatalf("Acquire after transactional rollback = (%v, %v, %v), want non-nil, true, nil", probe, acquired, err)
+	}
+	if err := probe.Release(context.Background()); err != nil {
+		t.Fatalf("release probe lease: %v", err)
+	}
+}
+
+type failNthAcquireManager struct {
+	consumerlease.Manager
+	failOn int
+	calls  int
+	err    error
+}
+
+func (m *failNthAcquireManager) Acquire(ctx context.Context, streamName, shardID, owner string, ttl time.Duration) (consumerlease.Lease, bool, error) {
+	m.calls++
+	if m.calls == m.failOn {
+		return nil, false, m.err
+	}
+	return m.Manager.Acquire(ctx, streamName, shardID, owner, ttl)
+}
+
+type twoShardKinesisClient struct{}
+
+func (twoShardKinesisClient) ListShards(context.Context, *kinesis.ListShardsInput, ...func(*kinesis.Options)) (*kinesis.ListShardsOutput, error) {
+	return &kinesis.ListShardsOutput{Shards: []types.Shard{
+		{ShardId: aws.String("shard-1")},
+		{ShardId: aws.String("shard-2")},
+	}}, nil
+}
+
+func (twoShardKinesisClient) GetShardIterator(context.Context, *kinesis.GetShardIteratorInput, ...func(*kinesis.Options)) (*kinesis.GetShardIteratorOutput, error) {
+	return &kinesis.GetShardIteratorOutput{}, nil
+}
+
+func (twoShardKinesisClient) GetRecords(context.Context, *kinesis.GetRecordsInput, ...func(*kinesis.Options)) (*kinesis.GetRecordsOutput, error) {
+	return &kinesis.GetRecordsOutput{}, nil
 }
 
 // The following three tests discriminate the release-frees-slot behavior under
