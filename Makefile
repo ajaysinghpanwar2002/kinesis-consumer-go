@@ -57,6 +57,38 @@ lint:
 	@echo "==> staticcheck $(INTEGRATION_DIR)/... (-tags integration)"
 	@( cd $(INTEGRATION_DIR) && $(STATICCHECK) -tags integration ./... )
 
+# Race-detector pass over the concurrency-heavy packages (worker/lease/drain
+# orchestration in pkg/consumer, the fire-and-forget UDP reporter in
+# pkg/metrics/statsd). Kept separate from `test`: the race runtime is several
+# times slower, so the fast local hook stays snappy while CI always runs this.
+RACE_PACKAGES ?= ./pkg/consumer ./pkg/metrics/statsd
+
+.PHONY: test-race
+test-race:
+	@echo "==> go test -race $(RACE_PACKAGES)"
+	@$(GO) test -race $(RACE_PACKAGES)
+
+# The two modules third parties actually import — the vulnerability-scanning
+# surface. examples/ and test/integration are never published, so a finding
+# reachable only from them cannot affect a consumer.
+PUBLISHED_MODULES ?= . pkg/backend/valkey
+
+# govulncheck is run through `go run @pinned` rather than a prebuilt binary for
+# the same reason as staticcheck above: the scanner must be built with THIS
+# repo's Go toolchain to analyze a `go 1.26` module, and pinning keeps local
+# and CI scans reproducible. Reports only findings reachable from the module's
+# call graph and exits non-zero on any, so CI fails on a reachable
+# vulnerability. Needs network access for the vulnerability DB (CI-only, like
+# lint; not part of the offline pre-commit hook).
+GOVULNCHECK ?= $(GO) run golang.org/x/vuln/cmd/govulncheck@v1.6.0
+
+.PHONY: vulncheck
+vulncheck:
+	@set -e; for m in $(PUBLISHED_MODULES); do \
+		echo "==> govulncheck $$m/..."; \
+		( cd "$$m" && $(GOVULNCHECK) ./... ); \
+	done
+
 # Fail if any Go file is not gofmt-clean. gofmt is file-based, so one pass at the
 # repo root covers every module.
 .PHONY: fmt-check

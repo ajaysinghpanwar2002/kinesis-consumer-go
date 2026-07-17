@@ -66,8 +66,12 @@ files. When you bump the release version, update both (see below).
    - `go.work`: both `replace ... vX.Y.Z => ...` lines.
 3. Update [CHANGELOG.md](../CHANGELOG.md): move items out of `Unreleased` into a
    new `vX.Y.Z` section with the date, and refresh the compare/tag links.
-4. Run the full gate: `make fmt-check vet build test` (and `make integration`
-   if coordination, checkpointing, or drain changed).
+4. Run the full gate:
+   `make fmt-check vet lint build test test-race integration-build vulncheck`
+   (and `make integration` if coordination, checkpointing, or drain changed).
+   `make vulncheck` must report zero findings reachable from the published
+   modules; run it on a patched (current) Go toolchain, since the scanner
+   also covers the standard library of the toolchain in use.
 5. Commit. The working tree must be clean before tagging.
 6. Tag and push both modules with the helper:
 

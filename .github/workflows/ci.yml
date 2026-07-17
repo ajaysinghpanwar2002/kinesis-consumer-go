@@ -3,8 +3,10 @@
 # integration suite. Deliberately infra-free — it never runs the integration
 # suite itself, which needs LocalStack + Valkey (that is the separate
 # integration workflow). It extends the pre-commit hook (make fmt-check + vet +
-# build + test): CI additionally runs `make lint` (staticcheck) and
-# `make integration-build`, which the fast local hook leaves out.
+# build + test): CI additionally runs `make lint` (staticcheck),
+# `make integration-build`, `make test-race` (race detector over the
+# concurrency-heavy packages), and `make vulncheck` (govulncheck over both
+# published modules), which the fast offline local hook leaves out.
 name: CI
 
 on:
@@ -43,6 +45,11 @@ jobs:
           # Single source of truth for the Go version (currently 1.26); stays
           # in lockstep with the module rather than a hardcoded literal here.
           go-version-file: go.mod
+          # Always resolve the newest patched 1.26.x rather than a stale
+          # runner-cached toolchain: govulncheck also scans the standard
+          # library of the toolchain in use, so "zero reachable findings"
+          # requires running on a patched Go.
+          check-latest: true
           # This is a multi-module workspace, so cache off every module's go.sum
           # plus the workspace sum file.
           cache-dependency-path: |
@@ -69,3 +76,9 @@ jobs:
 
       - name: unit tests
         run: make test
+
+      - name: race tests
+        run: make test-race
+
+      - name: govulncheck
+        run: make vulncheck
