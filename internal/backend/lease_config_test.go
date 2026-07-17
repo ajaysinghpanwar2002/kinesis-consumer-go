@@ -2,6 +2,7 @@ package backend
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -107,15 +108,46 @@ func TestFinalizeLeaseConfigDefaultsAndPreservation(t *testing.T) {
 	}
 }
 
-func TestLeaseKey(t *testing.T) {
-	if got := LeaseKey("kinesis-lease", "stream", "shard-1"); got != "kinesis-lease:stream:shard-1" {
-		t.Fatalf("LeaseKey = %q, want %q", got, "kinesis-lease:stream:shard-1")
+func TestLeaseCoordinationKeys(t *testing.T) {
+	keys := LeaseCoordinationKeys("kinesis-lease", "group:stream")
+	wantBase := "kinesis-lease:v2:{Z3JvdXA6c3RyZWFt}"
+	if keys.LeaseOwners != wantBase+":lease-owners" {
+		t.Fatalf("LeaseOwners = %q, want %q", keys.LeaseOwners, wantBase+":lease-owners")
+	}
+	if keys.LeaseExpirations != wantBase+":lease-expirations" {
+		t.Fatalf("LeaseExpirations = %q, want %q", keys.LeaseExpirations, wantBase+":lease-expirations")
+	}
+	if keys.Workers != wantBase+":workers" {
+		t.Fatalf("Workers = %q, want %q", keys.Workers, wantBase+":workers")
 	}
 }
 
-func TestWorkerKey(t *testing.T) {
-	if got := WorkerKey("kinesis-lease-worker", "stream", "owner-1"); got != "kinesis-lease-worker:stream:owner-1" {
-		t.Fatalf("WorkerKey = %q, want %q", got, "kinesis-lease-worker:stream:owner-1")
+func TestLeaseCoordinationKeysEncodeHashTagDelimiters(t *testing.T) {
+	keys := LeaseCoordinationKeys("prefix{}%7B", "group}:{other}:stream")
+	for name, key := range map[string]string{
+		"lease owners":      keys.LeaseOwners,
+		"lease expirations": keys.LeaseExpirations,
+		"workers":           keys.Workers,
+	} {
+		if strings.Count(key, "{") != 1 || strings.Count(key, "}") != 1 {
+			t.Fatalf("%s key %q contains an injectable hash tag", name, key)
+		}
+		if !strings.HasPrefix(key, "prefix%7B%7D%257B:v2:") {
+			t.Fatalf("%s key %q does not injectively escape the prefix", name, key)
+		}
+	}
+}
+
+func TestLeaseCoordinationKeysKeepEmptyIdentityInAHashTag(t *testing.T) {
+	keys := LeaseCoordinationKeys("prefix", "")
+	for name, key := range map[string]string{
+		"lease owners":      keys.LeaseOwners,
+		"lease expirations": keys.LeaseExpirations,
+		"workers":           keys.Workers,
+	} {
+		if !strings.Contains(key, "{-}") {
+			t.Fatalf("%s key %q has no non-empty hash tag", name, key)
+		}
 	}
 }
 

@@ -58,7 +58,7 @@ working default, so `New` with no options is valid.
 | `WithDLQRetry` | `maxAttempts int, backoff time.Duration` | `3, 1s` | DLQ publish attempts and linear base backoff (`sleep = attempt * backoff`). Independent from handler and coordination retries configured through `WithRetry`. | `maxAttempts >= 1`; `backoff > 0` |
 | `WithDLQAttemptTimeout` | `timeout time.Duration` | `10s` | Deadline applied separately to every `DLQPublisher.Publish` attempt. A context-ignoring call is abandoned at the deadline and its late result cannot enable checkpointing. | `timeout > 0` |
 | `WithBatchHandler` | `handler BatchHandlerFunc` | none | Switches to one handler call per GetRecords page instead of per record. Mutually exclusive with the positional record handler in `New`: pass one or the other — the positional handler must be nil when this is set, and `New` errors if both are provided. | non-nil |
-| `WithHeartbeat` | `interval, ttl time.Duration` | `5s, 20s` | Worker liveness heartbeat cadence and the lease/worker key TTL. Failed heartbeat sends are survivable while the worker key from the last successful send is live; once failures persist to `ttl - interval` past that success, `Start` returns the causal error wrapped in `ErrHeartbeatStale` — one full interval before peers can observe the key as expired and claim this worker's shards away. Heartbeat health (consecutive failures, last success, last error) is exposed via `Consumer.Health()`. | both whole-millisecond values `>= 1ms`; `interval < ttl`; `ttl + interval` must fit in `time.Duration`. Otherwise Valkey would truncate the configured TTL, or the lease watchdog deadline could overflow. Recommended: `ttl >= 3x interval` (the default is 4x) so a lease survives transient renew hiccups. |
+| `WithHeartbeat` | `interval, ttl time.Duration` | `5s, 20s` | Worker liveness heartbeat cadence and lease/worker expiration lifetime. Failed heartbeat sends are survivable while the indexed entry from the last successful send is live; once failures persist to `ttl - interval` past that success, `Start` returns the causal error wrapped in `ErrHeartbeatStale` — one full interval before peers can observe the entry as expired and claim this worker's shards away. Heartbeat health (consecutive failures, last success, last error) is exposed via `Consumer.Health()`. | both whole-millisecond values `>= 1ms`; `interval < ttl`; `ttl + interval` must fit in `time.Duration`. Otherwise Valkey would truncate the configured lifetime, or the lease watchdog deadline could overflow. Recommended: `ttl >= 3x interval` (the default is 4x) so a lease survives transient renew hiccups. |
 | `WithRebalance` | `minInterval, jitter, cooldown time.Duration, maxMoves int` | `10s, 10s, 10s, 2` | Rebalance timing (`minInterval + [0,jitter)` between ticks), per-shard cooldown after a move, and the max shard moves per tick. | `minInterval > 0`; `jitter >= 0`; `cooldown > 0`; `maxMoves >= 1` |
 | `WithShardSyncMaxStaleness` | `maxStaleness time.Duration` | `10x shardSyncInterval` (10m) | Bounds how long the consumer runs on a stale shard map. Failed shard-sync passes are survivable (existing workers keep delivering; discovery retries with capped backoff + jitter), but once the time since the last successful sync exceeds this bound, `Start` returns the causal error wrapped in `ErrShardSyncStale`. Fatal Kinesis authorization/configuration errors stop the consumer immediately regardless. Sync health (consecutive failures, last success, last error) is exposed via `Consumer.Health()`. | `> 0`; `>= shardSyncInterval` |
 | `WithGracefulDrain` | `timeout time.Duration` | off | On ctx cancel, workers finish in-flight work, checkpoint, and release leases before `Start` returns. `0` waits indefinitely. At a nonzero deadline, remaining workers are signaled to stop and `Start` returns `ErrDrainTimeout` without joining an uncooperative callback. Drains longer than `heartbeatTTL` are safe: the worker keeps heartbeating for the whole drain, and a shard a peer claims mid-drain counts as drained (not an error). One worker's failure lets the others finish before the deadline or error is returned. | `timeout >= 0` |
@@ -127,16 +127,27 @@ All coordination state is namespaced by consumer group and canonical stream
 name, so unrelated applications can consume the same stream through one
 Valkey without sharing progress or ownership:
 
-| Key | Format | Default prefix |
+| State | Format | Default prefix |
 | --- | --- | --- |
 | Checkpoint | `<checkpointPrefix>:<group>:<stream>:<shard>` | `kinesis-checkpoint` |
-| Lease | `<leasePrefix>:<group>:<stream>:<shard>` | `kinesis-lease` |
-| Worker heartbeat | `<leasePrefix>-worker:<group>:<stream>:<owner>` | `kinesis-lease-worker` |
+| Lease owners (hash) | `<escapedLeasePrefix>:v2:{<identity64>}:lease-owners` | `kinesis-lease` |
+| Lease expirations (sorted set) | `<escapedLeasePrefix>:v2:{<identity64>}:lease-expirations` | `kinesis-lease` |
+| Worker expirations (sorted set) | `<escapedLeasePrefix>:v2:{<identity64>}:workers` | `kinesis-lease` |
 
 `<group>` is `ConsumerGroup`. `<stream>` is the canonical Kinesis stream name:
 `StreamName` directly, or the name extracted from the `stream/<name>` resource
 of `StreamARN`. Name-only and ARN-only configurations for the same group and
 stream therefore share one coordination namespace.
+
+`<identity64>` is the unpadded base64url encoding of
+`<group>:<stream>`. Braces are the Redis Cluster hash tag: all three aggregate
+coordination structures for one identity route to one slot, so their Lua
+updates are atomic. Lease hashes map shard ID to owner; lease and worker sorted
+sets map their member to an absolute server-time expiration in milliseconds.
+Snapshots query only these aggregate keys, remove expired or inconsistent
+entries atomically, and do not scan unrelated database keys or cluster nodes.
+`<escapedLeasePrefix>` is the configured prefix with `%`, `{`, and `}` escaped
+as `%25`, `%7B`, and `%7D`; default and ordinary custom prefixes are unchanged.
 
 The default lease prefix is the same whether the manager is store-provided or
 built standalone with `valkeylease.NewManager`, so default-configured workers
@@ -145,7 +156,16 @@ the store derives `<checkpointPrefix>-lease` — any standalone manager in that
 deployment must be given the matching prefix explicitly, or its workers will
 lease in a separate namespace and process every shard twice.
 
-### Migration note: consumer-group key scheme
+### Migration note: indexed lease and heartbeat scheme
+
+The `v2` aggregate lease/heartbeat structures replace the earlier per-shard
+lease and per-worker heartbeat keys. This is a pre-v1 breaking format change
+with no legacy dual-read or dual-write. Lease and heartbeat state is ephemeral,
+but old and new workers do not coordinate: stop every old worker, upgrade the
+whole group, and then restart. Never perform a rolling mixed-version deployment.
+Checkpoints are unchanged and consumption resumes from the existing progress.
+
+### Historical migration note: consumer-group key scheme
 
 The consumer-group segment is a pre-v1 breaking key-format change. There is no
 legacy dual-read or automatic checkpoint migration because no published tag
@@ -167,5 +187,6 @@ a deployment that used the old default:
 - Do **not** roll the upgrade gradually: old and new workers would
   coordinate in different namespaces and dual-process every shard until the
   last old worker stops. Stop all workers, upgrade, then restart.
-- To defer the migration, pin the old namespace explicitly with
-  `WithLeasePrefix("kinesis-checkpoint-lease")`.
+- At the time, the old prefix could be pinned explicitly with
+  `WithLeasePrefix("kinesis-checkpoint-lease")`. Prefix selection does not
+  restore the pre-v2 per-member format described above.

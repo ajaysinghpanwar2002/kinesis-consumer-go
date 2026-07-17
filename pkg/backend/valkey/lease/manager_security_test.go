@@ -20,8 +20,8 @@ import (
 // release — on the given shard, returning the first error so callers can
 // either fail immediately or retry across a reconnect window. Retrying
 // callers must use a fresh shard ID per attempt: a partially-failed attempt
-// can leave its lease held, and miniredis TTLs only advance with FastForward,
-// so a reused shard would report "not acquired" forever.
+// can leave its lease held, so a reused shard would report "not acquired"
+// until its indexed expiration.
 func tryAcquireRoundtrip(mgr *Manager, shardID string) error {
 	ctx := context.Background()
 

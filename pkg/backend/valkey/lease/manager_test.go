@@ -4,19 +4,18 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
-
-	"github.com/alicebob/miniredis/v2"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/kinesis"
-	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
-	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/internal/backend"
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer"
 	consumerlease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 )
 
 func newTestManager(t *testing.T, opts ...Option) (*Manager, *miniredis.Miniredis) {
@@ -40,6 +39,17 @@ func newTestManager(t *testing.T, opts ...Option) (*Manager, *miniredis.Miniredi
 	})
 
 	return mgr, server
+}
+
+func seedIndexedLease(t *testing.T, mgr *Manager, streamName, shardID, owner string, ttl time.Duration) {
+	t.Helper()
+	keys := mgr.keys(streamName)
+	res, err := mgr.client.Do(context.Background(), mgr.client.B().Eval().Script(backend.LeaseAcquireScript).Numkeys(2).
+		Key(keys.LeaseOwners, keys.LeaseExpirations).
+		Arg(shardID, owner, strconv.FormatInt(ttl.Milliseconds(), 10)).Build()).ToInt64()
+	if err != nil || res != 1 {
+		t.Fatalf("seed indexed lease = (%d, %v), want (1, nil)", res, err)
+	}
 }
 
 func TestManagerAcquireClaimReleaseRenew(t *testing.T) {
@@ -142,15 +152,19 @@ func TestManagerConsumerGroupCoordinationKeysAreIsolated(t *testing.T) {
 		t.Fatalf("Workers group B = (%v, %v), want [worker-b]", workers, err)
 	}
 
-	for key, want := range map[string]string{
-		"lease-test:group-a:orders:shard-1":         "owner-a",
-		"lease-test:group-b:orders:shard-1":         "owner-b",
-		"lease-test-worker:group-a:orders:worker-a": "worker-a",
-		"lease-test-worker:group-b:orders:worker-b": "worker-b",
-	} {
-		if got, err := server.Get(key); err != nil || got != want {
-			t.Fatalf("Valkey key %q = (%q, %v), want (%q, nil)", key, got, err, want)
-		}
+	keysA := backend.LeaseCoordinationKeys("lease-test", "group-a:orders")
+	keysB := backend.LeaseCoordinationKeys("lease-test", "group-b:orders")
+	if got := server.HGet(keysA.LeaseOwners, "shard-1"); got != "owner-a" {
+		t.Fatalf("group A indexed lease owner = %q, want owner-a", got)
+	}
+	if got := server.HGet(keysB.LeaseOwners, "shard-1"); got != "owner-b" {
+		t.Fatalf("group B indexed lease owner = %q, want owner-b", got)
+	}
+	if _, err := server.ZScore(keysA.Workers, "worker-a"); err != nil {
+		t.Fatalf("group A indexed worker missing: %v", err)
+	}
+	if _, err := server.ZScore(keysB.Workers, "worker-b"); err != nil {
+		t.Fatalf("group B indexed worker missing: %v", err)
 	}
 
 	if err := leaseA.Release(ctx); err != nil {
@@ -269,14 +283,13 @@ func (twoShardKinesisClient) GetRecords(context.Context, *kinesis.GetRecordsInpu
 func TestManagerAcquireFailureFreesSlot(t *testing.T) {
 	t.Parallel()
 
-	mgr, server := newTestManager(t, WithMaxLeases(1))
+	mgr, _ := newTestManager(t, WithMaxLeases(1))
 	ctx := context.Background()
 
-	// Another worker already owns shard-1, so the bounded manager's SET NX
-	// fails after it has reserved its single slot; that slot must be freed.
-	if err := server.Set(backend.LeaseKey("lease-test", "stream", "shard-1"), "owner-x"); err != nil {
-		t.Fatalf("preset lease: %v", err)
-	}
+	// Another worker already owns shard-1, so the bounded manager's atomic
+	// acquire fails after it has reserved its single slot; that slot must be
+	// freed.
+	seedIndexedLease(t, mgr, "stream", "shard-1", "owner-x", time.Minute)
 	if l, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Minute); err != nil || ok || l != nil {
 		t.Fatalf("Acquire already-owned shard-1 = (%v, %v, %v), want (nil, false, nil)", l, ok, err)
 	}
@@ -288,14 +301,12 @@ func TestManagerAcquireFailureFreesSlot(t *testing.T) {
 func TestManagerClaimFailureFreesSlot(t *testing.T) {
 	t.Parallel()
 
-	mgr, server := newTestManager(t, WithMaxLeases(1))
+	mgr, _ := newTestManager(t, WithMaxLeases(1))
 	ctx := context.Background()
 
 	// Claim against the wrong expected owner returns res==0 after reserving the
 	// single slot; that slot must be freed.
-	if err := server.Set(backend.LeaseKey("lease-test", "stream", "shard-1"), "owner-x"); err != nil {
-		t.Fatalf("preset lease: %v", err)
-	}
+	seedIndexedLease(t, mgr, "stream", "shard-1", "owner-x", time.Minute)
 	if l, ok, err := mgr.Claim(ctx, "stream", "shard-1", "wrong-owner", "owner-a", time.Minute); err != nil || ok || l != nil {
 		t.Fatalf("Claim wrong owner = (%v, %v, %v), want (nil, false, nil)", l, ok, err)
 	}
@@ -309,6 +320,8 @@ func TestManagerRenewNotOwnedFreesSlot(t *testing.T) {
 
 	mgr, server := newTestManager(t, WithMaxLeases(1))
 	ctx := context.Background()
+	anchor := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	server.SetTime(anchor)
 
 	lease, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Second)
 	if err != nil || !ok {
@@ -317,7 +330,7 @@ func TestManagerRenewNotOwnedFreesSlot(t *testing.T) {
 
 	// The lease TTL lapses in Valkey, but the in-memory slot stays held until a
 	// renew observes the loss of ownership and releases it.
-	server.FastForward(2 * time.Second)
+	server.SetTime(anchor.Add(2 * time.Second))
 	if err := lease.Renew(ctx, time.Minute); !errors.Is(err, consumerlease.ErrNotOwned) {
 		t.Fatalf("Renew after expiry = %v, want ErrNotOwned", err)
 	}
@@ -355,6 +368,8 @@ func TestManagerHeartbeatExpiresWorker(t *testing.T) {
 
 	mgr, server := newTestManager(t)
 	ctx := context.Background()
+	anchor := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	server.SetTime(anchor)
 
 	if err := mgr.Heartbeat(ctx, "stream", "worker-a", time.Second); err != nil {
 		t.Fatalf("Heartbeat error: %v", err)
@@ -368,7 +383,7 @@ func TestManagerHeartbeatExpiresWorker(t *testing.T) {
 		t.Fatalf("workers = %v, want worker-a", owners)
 	}
 
-	server.FastForward(2 * time.Second)
+	server.SetTime(anchor.Add(2 * time.Second))
 	owners, err = mgr.Workers(ctx, "stream")
 	if err != nil {
 		t.Fatalf("Workers error: %v", err)
@@ -383,6 +398,8 @@ func TestManagerLeaseExpires(t *testing.T) {
 
 	mgr, server := newTestManager(t)
 	ctx := context.Background()
+	anchor := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	server.SetTime(anchor)
 
 	if _, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Second); err != nil || !ok {
 		t.Fatalf("Acquire error=%v ok=%v, want ok true", err, ok)
@@ -396,161 +413,13 @@ func TestManagerLeaseExpires(t *testing.T) {
 		t.Fatalf("owner = %q, want owner-a", owners["shard-1"])
 	}
 
-	server.FastForward(2 * time.Second)
+	server.SetTime(anchor.Add(2 * time.Second))
 	owners, err = mgr.List(ctx, "stream")
 	if err != nil {
 		t.Fatalf("List error: %v", err)
 	}
 	if _, ok := owners["shard-1"]; ok {
 		t.Fatalf("shard-1 still present after TTL expiry")
-	}
-}
-
-// multiNodeClient wraps a real valkey.Client but reports a fixed set of nodes
-// from Nodes(). It lets tests exercise scanKeys' cross-node fan-out without a
-// real cluster (miniredis is standalone-only, and valkey-go@v1.0.65 ships no
-// mock package). Every node in the map is itself a real client connected to
-// its own miniredis, so the per-node SCAN cursor walk and the dedup run
-// against real data.
-type multiNodeClient struct {
-	valkey.Client
-	nodes map[string]valkey.Client
-}
-
-func (c *multiNodeClient) Nodes() map[string]valkey.Client {
-	return c.nodes
-}
-
-// newRawClient opens a standalone client to addr matching how NewManager
-// builds its client (single connection, no client-side cache).
-func newRawClient(t *testing.T, addr string) valkey.Client {
-	t.Helper()
-
-	c, err := valkey.NewClient(valkey.ClientOption{
-		InitAddress:       []string{addr},
-		ForceSingleClient: true,
-		DisableCache:      true,
-	})
-	if err != nil {
-		t.Fatalf("valkey.NewClient(%q): %v", addr, err)
-	}
-	t.Cleanup(c.Close)
-	return c
-}
-
-// newMultiNodeManager builds a Manager whose client reports n distinct nodes,
-// each backed by its own miniredis server, and returns the manager alongside
-// those servers so tests can seed keys per node.
-func newMultiNodeManager(t *testing.T, n int) (*Manager, []*miniredis.Miniredis) {
-	t.Helper()
-
-	servers := make([]*miniredis.Miniredis, n)
-	nodes := make(map[string]valkey.Client, n)
-	var base valkey.Client
-	for i := range servers {
-		server, err := miniredis.Run()
-		if err != nil {
-			t.Fatalf("miniredis start: %v", err)
-		}
-		t.Cleanup(server.Close)
-		servers[i] = server
-
-		client := newRawClient(t, server.Addr())
-		if base == nil {
-			base = client
-		}
-		nodes[server.Addr()] = client
-	}
-
-	mgr := &Manager{
-		client:     &multiNodeClient{Client: base, nodes: nodes},
-		keyPrefix:  "lease-test",
-		workPrefix: "lease-test-worker",
-		slots:      backend.NewSlotTracker(0),
-	}
-	return mgr, servers
-}
-
-func TestScanKeysFansOutAcrossNodes(t *testing.T) {
-	t.Parallel()
-
-	mgr, servers := newMultiNodeManager(t, 2)
-	ctx := context.Background()
-
-	key1 := backend.LeaseKey("lease-test", "stream", "shard-1")
-	key2 := backend.LeaseKey("lease-test", "stream", "shard-2")
-	if err := servers[0].Set(key1, "owner-a"); err != nil {
-		t.Fatalf("seed node 0: %v", err)
-	}
-	if err := servers[1].Set(key2, "owner-b"); err != nil {
-		t.Fatalf("seed node 1: %v", err)
-	}
-
-	keys, err := mgr.scanKeys(ctx, "lease-test:stream:*")
-	if err != nil {
-		t.Fatalf("scanKeys error: %v", err)
-	}
-	slices.Sort(keys)
-	want := []string{key1, key2}
-	slices.Sort(want)
-	if !slices.Equal(keys, want) {
-		t.Fatalf("scanKeys = %v, want the union across both nodes %v", keys, want)
-	}
-}
-
-func TestScanKeysDeduplicatesAcrossNodes(t *testing.T) {
-	t.Parallel()
-
-	mgr, servers := newMultiNodeManager(t, 2)
-	ctx := context.Background()
-
-	// shared mimics a key visible on both a primary and its replica; unique
-	// lives on only one node.
-	shared := backend.LeaseKey("lease-test", "stream", "shard-1")
-	unique := backend.LeaseKey("lease-test", "stream", "shard-2")
-	if err := servers[0].Set(shared, "owner-a"); err != nil {
-		t.Fatalf("seed node 0 shared: %v", err)
-	}
-	if err := servers[1].Set(shared, "owner-a"); err != nil {
-		t.Fatalf("seed node 1 shared: %v", err)
-	}
-	if err := servers[1].Set(unique, "owner-b"); err != nil {
-		t.Fatalf("seed node 1 unique: %v", err)
-	}
-
-	keys, err := mgr.scanKeys(ctx, "lease-test:stream:*")
-	if err != nil {
-		t.Fatalf("scanKeys error: %v", err)
-	}
-	slices.Sort(keys)
-	want := []string{shared, unique}
-	slices.Sort(want)
-	if !slices.Equal(keys, want) {
-		t.Fatalf("scanKeys = %v, want deduplicated union %v", keys, want)
-	}
-}
-
-func TestWorkersFansOutAcrossNodes(t *testing.T) {
-	t.Parallel()
-
-	mgr, servers := newMultiNodeManager(t, 2)
-	ctx := context.Background()
-
-	if err := servers[0].Set(backend.WorkerKey("lease-test-worker", "stream", "worker-a"), "worker-a"); err != nil {
-		t.Fatalf("seed node 0: %v", err)
-	}
-	if err := servers[1].Set(backend.WorkerKey("lease-test-worker", "stream", "worker-b"), "worker-b"); err != nil {
-		t.Fatalf("seed node 1: %v", err)
-	}
-
-	owners, err := mgr.Workers(ctx, "stream")
-	if err != nil {
-		t.Fatalf("Workers error: %v", err)
-	}
-	slices.Sort(owners)
-	want := []string{"worker-a", "worker-b"}
-	if !slices.Equal(owners, want) {
-		t.Fatalf("workers = %v, want owners from both nodes %v", owners, want)
 	}
 }
 

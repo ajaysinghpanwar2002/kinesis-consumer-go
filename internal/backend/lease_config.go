@@ -2,8 +2,10 @@ package backend
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -73,14 +75,36 @@ func FinalizeLeaseConfig(cfg LeaseConfig, backendName string) (LeaseConfig, erro
 	return cfg, nil
 }
 
-// LeaseKey formats the key used to store a shard lease owner.
-func LeaseKey(prefix, streamName, shardID string) string {
-	return fmt.Sprintf("%s:%s:%s", prefix, streamName, shardID)
+// CoordinationKeys are the versioned aggregate keys used to coordinate one
+// consumer group and stream. Identity is base64url-encoded inside a cluster
+// hash tag so arbitrary Manager callers cannot inject braces and split the
+// multi-key lease scripts across slots.
+type CoordinationKeys struct {
+	LeaseOwners      string
+	LeaseExpirations string
+	Workers          string
 }
 
-// WorkerKey formats the key used to record a live worker heartbeat.
-func WorkerKey(prefix, streamName, owner string) string {
-	return fmt.Sprintf("%s:%s:%s", prefix, streamName, owner)
+// LeaseCoordinationKeys returns the v2 aggregate coordination keys. All keys
+// share one Redis Cluster hash tag and therefore route to the same slot.
+func LeaseCoordinationKeys(prefix, coordinationIdentity string) CoordinationKeys {
+	identity := base64.RawURLEncoding.EncodeToString([]byte(coordinationIdentity))
+	if identity == "" {
+		// Redis ignores an empty hash tag ("{}"), which would let the suffixes
+		// route to different slots. A one-character token cannot collide with
+		// non-empty raw base64url input, whose shortest encoding is two bytes.
+		identity = "-"
+	}
+	// Escape prefix delimiters injectively so a custom prefix cannot introduce
+	// an earlier (or empty) hash tag. Percent is escaped first by NewReplacer's
+	// single-pass matching, keeping literal "%7B" distinct from literal "{".
+	escapedPrefix := strings.NewReplacer("%", "%25", "{", "%7B", "}", "%7D").Replace(prefix)
+	base := fmt.Sprintf("%s:v2:{%s}", escapedPrefix, identity)
+	return CoordinationKeys{
+		LeaseOwners:      base + ":lease-owners",
+		LeaseExpirations: base + ":lease-expirations",
+		Workers:          base + ":workers",
+	}
 }
 
 // SetLeaseKeyPrefix overrides the lease key prefix, rejecting an empty value.
@@ -143,37 +167,152 @@ func SetLeaseMaxLeases(cfg *LeaseConfig, maxLeases int) error {
 	return nil
 }
 
-// Lua scripts run by the lease Manager. Each checks that the caller still owns
-// the key (its value equals the caller's owner token) before mutating it, which
-// keeps claim/renew/release safe against concurrent owners. They are inert
-// strings here and are validated end-to-end by the Manager's miniredis tests.
+// Lua scripts run by the lease Manager. Lease owners live in a hash and their
+// absolute expiration times live in a sorted set; worker expirations live in a
+// second sorted set. All expiry calculations use Valkey server time. The
+// scripts are inert strings here and are validated end-to-end by the Manager's
+// miniredis tests.
 const (
-	// LeaseClaimScript transfers a lease to a new owner only if the current
-	// value equals the expected owner. KEYS[1]=lease key,
-	// ARGV[1]=expected owner, ARGV[2]=ttl ms, ARGV[3]=new owner.
+	leaseNowMilliseconds = `
+local time = redis.call("time")
+local now = (time[1] * 1000) + math.floor(time[2] / 1000)
+`
+
+	// LeaseAcquireScript creates a lease only when no live lease exists.
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset,
+	// ARGV[1]=shard, ARGV[2]=owner, ARGV[3]=ttl ms.
+	LeaseAcquireScript = leaseNowMilliseconds + `
+local expiration = redis.call("zscore", KEYS[2], ARGV[1])
+local current_owner = redis.call("hget", KEYS[1], ARGV[1])
+if expiration and tonumber(expiration) > now and current_owner then
+  return 0
+end
+redis.call("hdel", KEYS[1], ARGV[1])
+redis.call("zrem", KEYS[2], ARGV[1])
+redis.call("hset", KEYS[1], ARGV[1], ARGV[2])
+redis.call("zadd", KEYS[2], now + tonumber(ARGV[3]), ARGV[1])
+local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
+redis.call("pexpireat", KEYS[1], latest[2])
+redis.call("pexpireat", KEYS[2], latest[2])
+return 1
+`
+
+	// LeaseClaimScript transfers a live lease only if its owner matches.
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset,
+	// ARGV[1]=shard, ARGV[2]=expected owner, ARGV[3]=ttl ms,
+	// ARGV[4]=new owner.
 	LeaseClaimScript = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
-  redis.call("psetex", KEYS[1], ARGV[2], ARGV[3])
+` + leaseNowMilliseconds + `
+local expiration = redis.call("zscore", KEYS[2], ARGV[1])
+local current_owner = redis.call("hget", KEYS[1], ARGV[1])
+if expiration and tonumber(expiration) > now and current_owner == ARGV[2] then
+  redis.call("hset", KEYS[1], ARGV[1], ARGV[4])
+  redis.call("zadd", KEYS[2], now + tonumber(ARGV[3]), ARGV[1])
+  local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
+  redis.call("pexpireat", KEYS[1], latest[2])
+  redis.call("pexpireat", KEYS[2], latest[2])
   return 1
+end
+if not current_owner or not expiration or tonumber(expiration) <= now then
+  redis.call("hdel", KEYS[1], ARGV[1])
+  redis.call("zrem", KEYS[2], ARGV[1])
 end
 return 0
 `
 
 	// LeaseRenewScript extends the TTL only if the caller still owns the lease.
-	// KEYS[1]=lease key, ARGV[1]=owner, ARGV[2]=ttl ms.
-	LeaseRenewScript = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
-  return redis.call("pexpire", KEYS[1], ARGV[2])
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset,
+	// ARGV[1]=shard, ARGV[2]=owner, ARGV[3]=ttl ms.
+	LeaseRenewScript = leaseNowMilliseconds + `
+local expiration = redis.call("zscore", KEYS[2], ARGV[1])
+local current_owner = redis.call("hget", KEYS[1], ARGV[1])
+if expiration and tonumber(expiration) > now and current_owner == ARGV[2] then
+  redis.call("zadd", KEYS[2], now + tonumber(ARGV[3]), ARGV[1])
+  local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
+  redis.call("pexpireat", KEYS[1], latest[2])
+  redis.call("pexpireat", KEYS[2], latest[2])
+  return 1
+end
+if not current_owner or not expiration or tonumber(expiration) <= now then
+  redis.call("hdel", KEYS[1], ARGV[1])
+  redis.call("zrem", KEYS[2], ARGV[1])
 end
 return 0
 `
 
 	// LeaseReleaseScript deletes the lease only if the caller still owns it.
-	// KEYS[1]=lease key, ARGV[1]=owner.
-	LeaseReleaseScript = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
-  return redis.call("del", KEYS[1])
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset,
+	// ARGV[1]=shard, ARGV[2]=owner.
+	LeaseReleaseScript = leaseNowMilliseconds + `
+local expiration = redis.call("zscore", KEYS[2], ARGV[1])
+local current_owner = redis.call("hget", KEYS[1], ARGV[1])
+if expiration and tonumber(expiration) > now and current_owner == ARGV[2] then
+  redis.call("hdel", KEYS[1], ARGV[1])
+  redis.call("zrem", KEYS[2], ARGV[1])
+  local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
+  if #latest > 0 then
+    redis.call("pexpireat", KEYS[1], latest[2])
+    redis.call("pexpireat", KEYS[2], latest[2])
+  end
+  return 1
+end
+if not current_owner or not expiration or tonumber(expiration) <= now then
+  redis.call("hdel", KEYS[1], ARGV[1])
+  redis.call("zrem", KEYS[2], ARGV[1])
 end
 return 0
+`
+
+	// LeaseListScript returns a flat shard/owner array containing only live
+	// leases and removes expired or one-sided hash/zset entries atomically.
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset.
+	LeaseListScript = leaseNowMilliseconds + `
+local result = {}
+local indexed = redis.call("zrange", KEYS[2], 0, -1, "withscores")
+for i = 1, #indexed, 2 do
+  local shard = indexed[i]
+  local expiration = tonumber(indexed[i + 1])
+  local owner = redis.call("hget", KEYS[1], shard)
+  if owner and expiration > now then
+    result[#result + 1] = shard
+    result[#result + 1] = owner
+  else
+    redis.call("hdel", KEYS[1], shard)
+    redis.call("zrem", KEYS[2], shard)
+  end
+end
+local owned = redis.call("hkeys", KEYS[1])
+for i = 1, #owned do
+  if not redis.call("zscore", KEYS[2], owned[i]) then
+    redis.call("hdel", KEYS[1], owned[i])
+  end
+end
+local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
+if #latest > 0 then
+  redis.call("pexpireat", KEYS[1], latest[2])
+  redis.call("pexpireat", KEYS[2], latest[2])
+end
+return result
+`
+
+	// WorkerHeartbeatScript records an absolute worker expiration using server
+	// time. KEYS[1]=workers zset, ARGV[1]=owner, ARGV[2]=ttl ms.
+	WorkerHeartbeatScript = leaseNowMilliseconds + `
+redis.call("zadd", KEYS[1], now + tonumber(ARGV[2]), ARGV[1])
+local latest = redis.call("zrevrange", KEYS[1], 0, 0, "withscores")
+redis.call("pexpireat", KEYS[1], latest[2])
+return 1
+`
+
+	// WorkerListScript removes expired workers and returns only live owners.
+	// KEYS[1]=workers zset.
+	WorkerListScript = leaseNowMilliseconds + `
+redis.call("zremrangebyscore", KEYS[1], "-inf", now)
+local result = redis.call("zrange", KEYS[1], 0, -1)
+local latest = redis.call("zrevrange", KEYS[1], 0, 0, "withscores")
+if #latest > 0 then
+  redis.call("pexpireat", KEYS[1], latest[2])
+end
+return result
 `
 )

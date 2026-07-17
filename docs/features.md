@@ -103,9 +103,9 @@ spread across them.
 - **Worker heartbeats:** each worker periodically records liveness
   (`WithHeartbeat`, default 5s interval / 20s TTL). Heartbeat state sizes each
   worker's fair share; a worker whose heartbeat lapses is treated as inactive.
-  Failed sends are survivable while the worker key from the last successful
+  Failed sends are survivable while the indexed entry from the last successful
   send is live, but once failures persist to one heartbeat interval before
-  that key's TTL lapses, the consumer stops with `ErrHeartbeatStale` — before
+  that entry expires, the consumer stops with `ErrHeartbeatStale` — before
   peers can treat it as dead and claim its shards away while it is still
   processing. Heartbeat health — consecutive failures, last success, last
   error — is exposed via `Consumer.Health()`.
@@ -125,7 +125,7 @@ spread across them.
     and a shard this worker just shed is not re-acquired before its cooldown
     expires.
 - **Reclaim of failed workers:** a shard held by an inactive worker is reclaimed
-  after its lease key's TTL lapses (the shard becomes unowned and is acquired on
+  after its indexed lease expiration lapses (the shard becomes unowned and is acquired on
   a later tick).
 
 ### Ownership transfer windows
@@ -267,10 +267,17 @@ can share one Valkey without colliding:
 
 - Checkpoints: `<checkpointPrefix>:<group>:<stream>:<shard>` (default prefix
   `kinesis-checkpoint`; override with `WithKeyPrefix`).
-- Leases: `<leasePrefix>:<group>:<stream>:<shard>`, where `leasePrefix`
-  defaults to `kinesis-lease` (a custom checkpoint prefix derives an adjacent
-  lease prefix unless explicitly overridden).
-- Worker heartbeats: `<leasePrefix>-worker:<group>:<stream>:<owner>`.
+- Lease owners and expirations: per-identity hash/sorted-set structures under
+  `<leasePrefix>:v2:{<identity64>}:lease-*`, where `leasePrefix` defaults to
+  `kinesis-lease` (a custom checkpoint prefix derives an adjacent lease prefix
+  unless explicitly overridden).
+- Worker heartbeat expirations:
+  `<leasePrefix>:v2:{<identity64>}:workers`.
+
+`<identity64>` is unpadded base64url of `<group>:<stream>`. Its Redis Cluster
+hash tag keeps one identity's coordination keys in one slot. Atomic snapshot
+scripts remove expired/inconsistent entries and read only the target identity;
+they never perform a database-wide or cluster-node SCAN.
 
 ## Observability
 

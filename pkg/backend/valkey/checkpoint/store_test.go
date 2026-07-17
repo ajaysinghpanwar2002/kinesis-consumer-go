@@ -262,19 +262,19 @@ func TestStoreLeaseManagerDefaultPrefix(t *testing.T) {
 	}
 
 	// The default checkpoint prefix maps to the shared standalone lease
-	// default, so leases are written under "kinesis-lease" — the same
-	// namespace a default standalone manager uses. Assert the raw key to
+	// default, so indexed leases are written under "kinesis-lease" — the same
+	// namespace a default standalone manager uses. Assert the raw owner hash to
 	// prove the store wired its lease prefix into the manager.
-	key := backend.LeaseKey("kinesis-lease", "stream", "shard-1")
-	if got, err := server.Get(key); err != nil || got != "owner-1" {
-		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", key, got, err)
+	keys := backend.LeaseCoordinationKeys("kinesis-lease", "stream")
+	if got := server.HGet(keys.LeaseOwners, "shard-1"); got != "owner-1" {
+		t.Fatalf("lease owner = %q, want owner-1", got)
 	}
 
 	if err := lease.Release(ctx); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
-	if _, err := server.Get(key); err == nil {
-		t.Fatalf("lease key %q still present after Release", key)
+	if got := server.HGet(keys.LeaseOwners, "shard-1"); got != "" {
+		t.Fatalf("lease owner still present after Release: %q", got)
 	}
 }
 
@@ -288,15 +288,15 @@ func TestStoreLeaseManagerWithLeasePrefix(t *testing.T) {
 		t.Fatalf("Acquire = (ok=%v, err=%v), want (true, nil)", ok, err)
 	}
 
-	key := backend.LeaseKey("custom-lease", "stream", "shard-1")
-	if got, err := server.Get(key); err != nil || got != "owner-1" {
-		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", key, got, err)
+	keys := backend.LeaseCoordinationKeys("custom-lease", "stream")
+	if got := server.HGet(keys.LeaseOwners, "shard-1"); got != "owner-1" {
+		t.Fatalf("custom lease owner = %q, want owner-1", got)
 	}
 
 	// The default lease key must not be used when a prefix is set.
-	derived := backend.LeaseKey("kinesis-lease", "stream", "shard-1")
-	if _, err := server.Get(derived); err == nil {
-		t.Fatalf("unexpected lease at default-derived key %q", derived)
+	defaultKeys := backend.LeaseCoordinationKeys("kinesis-lease", "stream")
+	if got := server.HGet(defaultKeys.LeaseOwners, "shard-1"); got != "" {
+		t.Fatalf("unexpected lease at default-derived key %q", defaultKeys.LeaseOwners)
 	}
 }
 
@@ -318,9 +318,9 @@ func TestStoreLeaseManagerNamespaceIndependentFromCheckpoints(t *testing.T) {
 	if got, err := server.Get(checkpointKey); err != nil || got != "seq-1" {
 		t.Fatalf("server.Get(%q) = (%q, %v), want (\"seq-1\", nil)", checkpointKey, got, err)
 	}
-	leaseKey := backend.LeaseKey("kinesis-lease", "stream", "shard-1")
-	if got, err := server.Get(leaseKey); err != nil || got != "owner-1" {
-		t.Fatalf("server.Get(%q) = (%q, %v), want (\"owner-1\", nil)", leaseKey, got, err)
+	leaseKeys := backend.LeaseCoordinationKeys("kinesis-lease", "stream")
+	if got := server.HGet(leaseKeys.LeaseOwners, "shard-1"); got != "owner-1" {
+		t.Fatalf("lease owner = %q, want owner-1", got)
 	}
 }
 

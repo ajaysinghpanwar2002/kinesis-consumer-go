@@ -32,6 +32,9 @@ line but may still change in a future minor version (see
   release the lease).
 - Pluggable `checkpoint.Store` and `lease.Manager` interfaces with documented
   contracts, plus a built-in Valkey backend (standalone and cluster).
+- Expiry-aware, per-group/stream Valkey lease and worker indexes with atomic
+  owner checks, single-slot cluster routing, and snapshot command counts
+  independent of unrelated database keys.
 - Opt-in structured logging via `log/slog` (silent by default) and opt-in
   metrics via a dependency-free UDP statsd reporter with packaged Telegraf,
   InfluxDB, and Grafana assets (silent by default).
