@@ -2,6 +2,9 @@ package consumer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,8 +36,20 @@ const (
 	handlerKindBatch  = "batch"
 )
 
+const (
+	defaultDLQRetryAttempts  = 3
+	defaultDLQRetryBackoff   = time.Second
+	defaultDLQAttemptTimeout = 10 * time.Second
+	idempotencyKeyPrefix     = "kcg-dlq-v1:"
+)
+
 // PoisonRecord is sent to a DLQ when a record is considered poison.
 type PoisonRecord struct {
+	// IdempotencyKey is stable for one source record and handler mode across
+	// DLQ retries, source replays, and Consumer rebuilds. DLQ delivery remains
+	// at-least-once; downstream publishers and consumers should deduplicate on
+	// this key rather than treating a Publish call as exactly-once.
+	IdempotencyKey             string     `json:"idempotency_key"`
 	StreamName                 string     `json:"stream_name,omitempty"`
 	StreamARN                  string     `json:"stream_arn,omitempty"`
 	ConsumerGroup              string     `json:"consumer_group"`
@@ -53,9 +68,10 @@ type PoisonRecord struct {
 }
 
 // DLQPublisher publishes poison records to a dead-letter destination. Publish
-// must honor ctx promptly and be safe for concurrent calls from shard workers.
-// If Publish ignores cancellation, Start may return while the call is still
-// running; a late success cannot advance the source checkpoint.
+// must honor ctx promptly, be safe for concurrent calls (including overlapping
+// retries of the same IdempotencyKey), and tolerate duplicate keys. If Publish
+// ignores cancellation or its attempt timeout, the call may continue after the
+// consumer abandons it; a late success cannot advance the source checkpoint.
 type DLQPublisher interface {
 	Publish(ctx context.Context, record PoisonRecord) error
 }
@@ -90,6 +106,27 @@ func (c *Consumer) effectiveFailurePolicy() FailurePolicy {
 		return FailurePolicyFailFast
 	}
 	return c.failurePolicy
+}
+
+func (c *Consumer) effectiveDLQRetryAttempts() int {
+	if c == nil || c.dlqRetryAttempts < 1 {
+		return 1
+	}
+	return c.dlqRetryAttempts
+}
+
+func (c *Consumer) effectiveDLQRetryBackoff(attempt int) time.Duration {
+	if c == nil || c.dlqRetryBackoff <= 0 || attempt < 1 {
+		return 0
+	}
+	return time.Duration(attempt) * c.dlqRetryBackoff
+}
+
+func (c *Consumer) effectiveDLQAttemptTimeout() time.Duration {
+	if c == nil || c.dlqAttemptTimeout <= 0 {
+		return defaultDLQAttemptTimeout
+	}
+	return c.dlqAttemptTimeout
 }
 
 func (c *Consumer) handleRecordWithRetry(ctx context.Context, shardID string, record Record) error {
@@ -206,8 +243,12 @@ func (c *Consumer) applyFailurePolicy(
 		}
 		for i, record := range records {
 			poison := c.newPoisonRecord(shardID, handlerKind, attempts, cause, record, len(records), i)
-			if err := c.dlqPublisher.Publish(ctx, poison); err != nil {
-				return fmt.Errorf("%w; dlq publish: %w", failFastErr, err)
+			dlqAttempts, err := c.publishPoisonRecordWithRetry(ctx, poison)
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				return fmt.Errorf("%w; dlq publish failed after %d attempts: %w", failFastErr, dlqAttempts, err)
 			}
 			c.reporter.Counter(metricDLQRecordsPublished, 1, c.shardTags(shardID))
 		}
@@ -221,6 +262,53 @@ func (c *Consumer) applyFailurePolicy(
 		return nil
 	default:
 		return failFastErr
+	}
+}
+
+func (c *Consumer) publishPoisonRecordWithRetry(ctx context.Context, poison PoisonRecord) (int, error) {
+	maxAttempts := c.effectiveDLQRetryAttempts()
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return attempt - 1, err
+		}
+		if attempt > 1 {
+			if err := sleepWithContext(ctx, c.effectiveDLQRetryBackoff(attempt-1)); err != nil {
+				return attempt - 1, err
+			}
+		}
+
+		lastErr = c.publishPoisonRecordAttempt(ctx, poison)
+		if lastErr == nil {
+			return attempt, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return attempt, err
+		}
+	}
+	return maxAttempts, lastErr
+}
+
+func (c *Consumer) publishPoisonRecordAttempt(ctx context.Context, poison PoisonRecord) error {
+	attemptCtx, cancel := context.WithTimeout(ctx, c.effectiveDLQAttemptTimeout())
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		result <- c.dlqPublisher.Publish(attemptCtx, poison)
+	}()
+
+	select {
+	case err := <-result:
+		// Attempt timeout or parent cancellation wins over a racing late
+		// success. The caller's page-level fence provides the same protection
+		// against cancellation after this return.
+		if attemptErr := attemptCtx.Err(); attemptErr != nil {
+			return attemptErr
+		}
+		return err
+	case <-attemptCtx.Done():
+		return attemptCtx.Err()
 	}
 }
 
@@ -242,14 +330,16 @@ func (c *Consumer) newPoisonRecord(
 	payload := make([]byte, len(record.Data))
 	copy(payload, record.Data)
 
-	var streamName, streamARN, consumerGroup string
+	var streamName, streamARN, consumerGroup, canonicalStreamName string
 	if c != nil {
 		streamName = c.cfg.StreamName
 		streamARN = c.cfg.StreamARN
 		consumerGroup = c.cfg.ConsumerGroup
+		canonicalStreamName = c.canonicalStreamName()
 	}
 
 	return PoisonRecord{
+		IdempotencyKey:             poisonRecordIdempotencyKey(consumerGroup, canonicalStreamName, shardID, aws.ToString(record.SequenceNumber), handlerKind),
 		StreamName:                 streamName,
 		StreamARN:                  streamARN,
 		ConsumerGroup:              consumerGroup,
@@ -266,4 +356,15 @@ func (c *Consumer) newPoisonRecord(
 		RecordIndexInBatch:         batchIndex,
 		RecordSequenceInBatchOrder: batchIndex,
 	}
+}
+
+func poisonRecordIdempotencyKey(consumerGroup, streamName, shardID, sequenceNumber, handlerKind string) string {
+	hash := sha256.New()
+	var length [8]byte
+	for _, field := range []string{consumerGroup, streamName, shardID, sequenceNumber, handlerKind} {
+		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
+		_, _ = hash.Write(length[:])
+		_, _ = hash.Write([]byte(field))
+	}
+	return idempotencyKeyPrefix + hex.EncodeToString(hash.Sum(nil))
 }

@@ -20,7 +20,8 @@ No Java, no MultiLangDaemon.
 - Shard leasing with heartbeats and fair-share rebalancing.
 - Shard-aware checkpointing and reshard gating.
 - Record or batch handlers with configurable batching and retry.
-- Pluggable DLQ publisher interface for poison records.
+- Pluggable, bounded/retrying DLQ publisher interface with stable poison-record
+  idempotency keys for downstream deduplication.
 - Optional graceful drain mode on shutdown (finish in-flight work, checkpoint, release lease).
 - Pluggable checkpoint stores and lease managers.
 - Opt-in structured logging via `log/slog` (silent by default).

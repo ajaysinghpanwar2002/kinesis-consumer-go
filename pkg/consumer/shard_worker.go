@@ -104,6 +104,15 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 		}
 		return err
 	}
+	// A caller/run stop can make a context-aware handler or DLQ attempt return
+	// context.Canceled before Start's runCtx.Done branch wins its select. That
+	// cancellation is the requested worker stop, not an independent fatal
+	// worker error. Only normalize it when the parent worker context is also
+	// canceled; a handler that returns context.Canceled while its context is
+	// live still follows retries/failure policy and remains a real error.
+	if errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled) {
+		err = nil
+	}
 	if releaseErr := c.releaseShardLeaseWithTimeout(shardID, shardLease); releaseErr != nil && err == nil {
 		err = releaseErr
 	}

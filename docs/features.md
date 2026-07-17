@@ -207,13 +207,20 @@ DLQ semantics.
 
 - `WithDLQPublisher(DLQPublisher)` plugs in any destination implementing
   `Publish(ctx, PoisonRecord) error`.
-- `PoisonRecord` carries stream name/ARN, consumer group, shard ID, sequence
-  number, partition key, approximate arrival timestamp, a copied payload, the
-  handler error text, handler kind (`record` or `batch`), attempt count, failure
-  time, and batch index fields.
+- `WithDLQRetry(maxAttempts, backoff)` (default 3 attempts, 1s linear-backoff
+  base) controls DLQ delivery independently from `WithRetry`.
+- `WithDLQAttemptTimeout(timeout)` (default 10s) bounds each individual
+  `Publish` attempt, including a publisher that ignores its context.
+- `PoisonRecord` carries a stable idempotency key, stream name/ARN, consumer
+  group, shard ID, sequence number, partition key, approximate arrival
+  timestamp, a copied payload, the handler error text, handler kind (`record`
+  or `batch`), attempt count, failure time, and batch index fields.
 - For a failed batch, every record in the page is published as its own
   `PoisonRecord` with batch metadata (there is no per-record isolation in batch
   mode).
+- Delivery is at-least-once, not atomic fan-out. If publishing record N fails,
+  the successfully published prefix is not checkpointed as progress; a replay
+  republishes it. Downstream systems must deduplicate on `IdempotencyKey`.
 
 ## Per-shard concurrency
 
@@ -290,6 +297,8 @@ Every knob has a working default, so a consumer runs with no options at all.
 | `WithRetry(maxAttempts, backoff)` | 3, 1s | Handler retry attempts and linear base backoff |
 | `WithShardConcurrency(n)` | 1 | Concurrent record-handler calls per shard |
 | `WithFailurePolicy(policy)` | `fail-fast` | Post-retry poison handling |
+| `WithDLQRetry(maxAttempts, backoff)` | 3, 1s | DLQ-only publish retry attempts and linear base backoff |
+| `WithDLQAttemptTimeout(timeout)` | 10s | Per-attempt DLQ publish deadline |
 | `WithHeartbeat(interval, ttl)` | 5s, 20s | Worker liveness cadence and lease/worker TTL; persistent heartbeat failure stops the consumer one interval before the TTL lapses |
 | `WithShardSyncMaxStaleness(maxStaleness)` | 10x sync interval (10m) | How long a failing shard sync may go before the consumer stops |
 | `WithRebalance(min, jitter, cooldown, maxMoves)` | 10s, 10s, 10s, 2 | Rebalance timing and move bounds |

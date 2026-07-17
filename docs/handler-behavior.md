@@ -42,12 +42,13 @@ consumer passed to the handler is done (consumer shutdown, lease loss, or a
 concurrent-page abort), the consumer stops immediately and does not apply the
 failure policy.
 
-Handlers and DLQ publishers must honor that context promptly. Go cannot
-forcibly terminate a callback: after a nonzero graceful-drain deadline or an
-ordinary non-graceful cancellation, `Start` returns even if a callback is still
-running. If that callback later reports success, the consumer discards the late
-result before checkpointing; the record remains eligible for at-least-once
-redelivery. A zero graceful-drain timeout intentionally waits indefinitely.
+Handlers must honor that context promptly. Go cannot forcibly terminate a
+callback: after a nonzero graceful-drain deadline or an ordinary non-graceful
+cancellation, `Start` returns even if a callback is still running. If that
+callback later reports success, the consumer discards the late result before
+checkpointing; the record remains eligible for at-least-once redelivery. A zero
+graceful-drain timeout intentionally waits indefinitely. DLQ calls have their
+own bounded-attempt behavior described below.
 
 A handler that merely *returns* an error matching `context.Canceled` or
 `context.DeadlineExceeded` — for example an `http.Client` timeout or a
@@ -88,16 +89,30 @@ func (publisher) Publish(ctx context.Context, record consumer.PoisonRecord) erro
 opts := []consumer.Option{
     consumer.WithFailurePolicy(consumer.FailurePolicySendToDLQ),
     consumer.WithDLQPublisher(publisher{}),
+    consumer.WithDLQRetry(3, time.Second),
+    consumer.WithDLQAttemptTimeout(10 * time.Second),
 }
 ```
 
-If DLQ publishing fails, the consumer returns an error that includes both the
-handler failure and the DLQ publish failure.
+DLQ delivery has settings independent from handler and coordination retries:
+
+- `WithDLQRetry(maxAttempts, backoff)` defaults to 3 attempts and a 1 second
+  linear-backoff base. Before attempt N, the consumer sleeps
+  `(N-1) * backoff`.
+- `WithDLQAttemptTimeout(timeout)` defaults to 10 seconds and gives each
+  `Publish` call its own child context and deadline.
+- Parent cancellation stops delivery without another attempt. A per-attempt
+  deadline is retryable while attempts remain.
+
+If all DLQ attempts fail, the consumer returns an error that includes both the
+handler failure and the final DLQ publish failure. The failed source page is not
+checkpointed.
 
 ## Poison Record Metadata
 
 The DLQ publisher receives a `consumer.PoisonRecord`. The record includes:
 
+- A stable `IdempotencyKey` for downstream deduplication.
 - Stream name and ARN when configured, plus the required consumer group.
 - Shard ID, sequence number, partition key, approximate arrival timestamp, and a
   copied payload.
@@ -110,13 +125,28 @@ For record handlers, one poison record is published for the failed record. For
 batch handlers, every record in the failed batch is published with batch
 metadata.
 
+`IdempotencyKey` has the form `kcg-dlq-v1:<sha256>` and hashes unambiguously
+length-delimited values for consumer group, canonical stream name, shard ID,
+sequence number, and handler kind. It is therefore stable across DLQ attempts,
+source replay, Consumer rebuilds, equivalent name/ARN stream configuration,
+failure timestamps, batch position, handler error text, and payload changes.
+Record and batch handler failures intentionally have different keys.
+
 DLQ publishing is part of handler processing. A publisher must honor `ctx`
 promptly, return useful errors, and be safe for concurrent and repeated calls.
-The consumer is
-at-least-once — replays after a crash and brief dual delivery during shard
-ownership transfers are both possible (see the ownership transfer windows in
-[features.md](features.md)) — so handlers and downstream DLQ handling should
-tolerate duplicates.
+When a publisher ignores its context, the consumer stops waiting at the attempt
+deadline. The extension goroutine may continue, but its late success cannot make
+the page checkpointable; a retry can overlap it and use the same idempotency
+key.
+
+DLQ delivery is at-least-once, never exactly-once or atomic across a failed
+batch. If record N fails after records 1 through N-1 were published, no source
+checkpoint is saved for the page. A restart replays the page and republishes the
+successful prefix. A publisher can also commit a record and lose its response,
+causing an ordinary retry. Downstream DLQ systems must deduplicate on
+`IdempotencyKey`; the library does not claim atomic fan-out. Source replays after
+a crash and brief dual delivery during ownership transfers add the same
+duplicate possibility (see [features.md](features.md)).
 
 ## Shard Concurrency and Ordering
 

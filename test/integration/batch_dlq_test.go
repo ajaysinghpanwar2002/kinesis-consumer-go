@@ -143,6 +143,9 @@ func TestBatchDLQFansOutWholePage(t *testing.T) {
 	ordinals := make([]int, 0, len(published))
 	sawPoison := false
 	for _, pr := range published {
+		if pr.IdempotencyKey == "" {
+			t.Error("poison IdempotencyKey is empty; want stable downstream deduplication key")
+		}
 		if _, dup := byIndex[pr.RecordIndexInBatch]; dup {
 			t.Fatalf("duplicate RecordIndexInBatch %d in DLQ fan-out", pr.RecordIndexInBatch)
 		}

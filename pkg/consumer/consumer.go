@@ -26,6 +26,9 @@ type Consumer struct {
 	batchHandler         BatchHandlerFunc
 	failurePolicy        FailurePolicy
 	dlqPublisher         DLQPublisher
+	dlqRetryAttempts     int
+	dlqRetryBackoff      time.Duration
+	dlqAttemptTimeout    time.Duration
 	leaseManager         lease.Manager
 	leaseOwner           string
 	streamName           string
@@ -435,6 +438,9 @@ func New(cfg Config, client KinesisAPI, store checkpoint.Store, handler HandlerF
 		batchHandler:         batchHandler,
 		failurePolicy:        opt.failurePolicy,
 		dlqPublisher:         opt.dlqPublisher,
+		dlqRetryAttempts:     opt.dlqRetryAttempts,
+		dlqRetryBackoff:      opt.dlqRetryBackoff,
+		dlqAttemptTimeout:    opt.dlqAttemptTimeout,
 		leaseManager:         leaseManager,
 		leaseOwner:           leaseOwner,
 		streamName:           streamName,

@@ -37,6 +37,15 @@ func TestDefaultOptions(t *testing.T) {
 	if cfg.dlqPublisher != nil {
 		t.Fatalf("dlqPublisher = %v, want nil", cfg.dlqPublisher)
 	}
+	if cfg.dlqRetryAttempts != defaultDLQRetryAttempts {
+		t.Fatalf("dlqRetryAttempts = %d, want %d", cfg.dlqRetryAttempts, defaultDLQRetryAttempts)
+	}
+	if cfg.dlqRetryBackoff != defaultDLQRetryBackoff {
+		t.Fatalf("dlqRetryBackoff = %v, want %v", cfg.dlqRetryBackoff, defaultDLQRetryBackoff)
+	}
+	if cfg.dlqAttemptTimeout != defaultDLQAttemptTimeout {
+		t.Fatalf("dlqAttemptTimeout = %v, want %v", cfg.dlqAttemptTimeout, defaultDLQAttemptTimeout)
+	}
 	if cfg.tuning != wantTuning {
 		t.Fatalf("tuning = %+v, want %+v", cfg.tuning, wantTuning)
 	}
@@ -200,6 +209,21 @@ func TestOptionValidation(t *testing.T) {
 			want: "dlq publisher cannot be nil",
 		},
 		{
+			name: "dlq retry attempts",
+			opt:  WithDLQRetry(0, time.Second),
+			want: "dlq maxAttempts must be >= 1",
+		},
+		{
+			name: "dlq retry backoff",
+			opt:  WithDLQRetry(1, 0),
+			want: "dlq backoff must be > 0",
+		},
+		{
+			name: "dlq attempt timeout",
+			opt:  WithDLQAttemptTimeout(0),
+			want: "dlq attempt timeout must be > 0",
+		},
+		{
 			name: "graceful drain timeout",
 			opt:  WithGracefulDrain(-1 * time.Second),
 			want: "graceful drain timeout cannot be negative",
@@ -263,7 +287,9 @@ func TestOptionsApplyValues(t *testing.T) {
 		WithHeartbeat(13*time.Second, 14*time.Second),
 		WithFailurePolicy(FailurePolicySendToDLQ),
 		WithDLQPublisher(noopDLQPublisher{}),
-		WithGracefulDrain(15 * time.Second),
+		WithDLQRetry(13, 14*time.Second),
+		WithDLQAttemptTimeout(15 * time.Second),
+		WithGracefulDrain(16 * time.Second),
 	})
 	if err != nil {
 		t.Fatalf("applyOptions() error = %v, want nil", err)
@@ -287,11 +313,17 @@ func TestOptionsApplyValues(t *testing.T) {
 	if cfg.dlqPublisher == nil {
 		t.Fatal("dlqPublisher = nil, want publisher")
 	}
+	if cfg.dlqRetryAttempts != 13 || cfg.dlqRetryBackoff != 14*time.Second {
+		t.Fatalf("dlq retry = %d/%v, want 13/%v", cfg.dlqRetryAttempts, cfg.dlqRetryBackoff, 14*time.Second)
+	}
+	if cfg.dlqAttemptTimeout != 15*time.Second {
+		t.Fatalf("dlqAttemptTimeout = %v, want %v", cfg.dlqAttemptTimeout, 15*time.Second)
+	}
 	if !cfg.shutdown.gracefulDrain {
 		t.Fatal("gracefulDrain = false, want true")
 	}
-	if cfg.shutdown.gracefulDrainTimeout != 15*time.Second {
-		t.Fatalf("gracefulDrainTimeout = %v, want %v", cfg.shutdown.gracefulDrainTimeout, 15*time.Second)
+	if cfg.shutdown.gracefulDrainTimeout != 16*time.Second {
+		t.Fatalf("gracefulDrainTimeout = %v, want %v", cfg.shutdown.gracefulDrainTimeout, 16*time.Second)
 	}
 
 	if cfg.tuning.retryMaxAttempts != 2 {

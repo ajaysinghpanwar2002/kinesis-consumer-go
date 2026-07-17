@@ -13,14 +13,17 @@ import (
 type Option func(*options) error
 
 type options struct {
-	batchHandler  BatchHandlerFunc
-	failurePolicy FailurePolicy
-	dlqPublisher  DLQPublisher
-	lease         leaseOptions
-	shutdown      shutdownOptions
-	tuning        tuningConfig
-	logger        *slog.Logger
-	reporter      metrics.Reporter
+	batchHandler      BatchHandlerFunc
+	failurePolicy     FailurePolicy
+	dlqPublisher      DLQPublisher
+	dlqRetryAttempts  int
+	dlqRetryBackoff   time.Duration
+	dlqAttemptTimeout time.Duration
+	lease             leaseOptions
+	shutdown          shutdownOptions
+	tuning            tuningConfig
+	logger            *slog.Logger
+	reporter          metrics.Reporter
 }
 
 type leaseOptions struct {
@@ -34,8 +37,11 @@ type shutdownOptions struct {
 
 func defaultOptions() options {
 	return options{
-		failurePolicy: FailurePolicyFailFast,
-		tuning:        defaultTuning(),
+		failurePolicy:     FailurePolicyFailFast,
+		dlqRetryAttempts:  defaultDLQRetryAttempts,
+		dlqRetryBackoff:   defaultDLQRetryBackoff,
+		dlqAttemptTimeout: defaultDLQAttemptTimeout,
+		tuning:            defaultTuning(),
 		// Discard by default so the library stays silent unless the caller
 		// opts in via WithLogger. A non-nil logger is always present so call
 		// sites never need a nil check.
@@ -236,6 +242,38 @@ func WithDLQPublisher(publisher DLQPublisher) Option {
 			return errors.New("dlq publisher cannot be nil")
 		}
 		cfg.dlqPublisher = publisher
+		return nil
+	}
+}
+
+// WithDLQRetry overrides poison-record publish attempts and linear backoff.
+// These settings are independent from WithRetry, which controls handler and
+// coordination retries. The default is 3 attempts with a 1 second base
+// backoff; the sleep before attempt n is (n-1)*backoff.
+func WithDLQRetry(maxAttempts int, backoff time.Duration) Option {
+	return func(cfg *options) error {
+		if maxAttempts < 1 {
+			return errors.New("dlq maxAttempts must be >= 1")
+		}
+		if backoff <= 0 {
+			return errors.New("dlq backoff must be > 0")
+		}
+		cfg.dlqRetryAttempts = maxAttempts
+		cfg.dlqRetryBackoff = backoff
+		return nil
+	}
+}
+
+// WithDLQAttemptTimeout bounds each call to DLQPublisher.Publish. The default
+// is 10 seconds. When a publisher ignores its context, the consumer abandons
+// that attempt at the deadline; the publisher call may continue in a detached
+// goroutine, but its late result cannot make the source page checkpointable.
+func WithDLQAttemptTimeout(timeout time.Duration) Option {
+	return func(cfg *options) error {
+		if timeout <= 0 {
+			return errors.New("dlq attempt timeout must be > 0")
+		}
+		cfg.dlqAttemptTimeout = timeout
 		return nil
 	}
 }

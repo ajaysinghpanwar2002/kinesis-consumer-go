@@ -595,7 +595,7 @@ func TestHandleRecordsPageSendToDLQPublishErrorFails(t *testing.T) {
 	if !errors.Is(err, errDLQ) {
 		t.Fatalf("handleRecordsPage() error = %v, want wraps %v", err, errDLQ)
 	}
-	want := "handle records page shard-1: record handler: record handler failed after 1 attempts: boom; dlq publish: dlq unavailable"
+	want := "handle records page shard-1: record handler: record handler failed after 1 attempts: boom; dlq publish failed after 1 attempts: dlq unavailable"
 	if err == nil || err.Error() != want {
 		t.Fatalf("handleRecordsPage() error = %v, want %q", err, want)
 	}

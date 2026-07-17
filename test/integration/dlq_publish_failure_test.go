@@ -108,6 +108,7 @@ func TestDLQPublishFailureFailsConsumer(t *testing.T) {
 	cons, err := consumer.New(cfg, client, store, handler,
 		consumer.WithFailurePolicy(consumer.FailurePolicySendToDLQ),
 		consumer.WithDLQPublisher(dlq),
+		consumer.WithDLQRetry(1, time.Millisecond),
 		consumer.WithRetry(1, time.Millisecond), // 1 attempt: backoff must be > 0 by validation but is unused
 		consumer.WithBatching(10, 1),
 		consumer.WithShardConcurrency(1), // sequential ordered handling makes the exact call-count assertions deterministic

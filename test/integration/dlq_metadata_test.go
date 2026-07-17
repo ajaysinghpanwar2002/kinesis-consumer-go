@@ -140,6 +140,9 @@ func TestDLQCapturesPoisonAndContinues(t *testing.T) {
 	got := published[0]
 
 	// (2) Full metadata on the captured poison record.
+	if got.IdempotencyKey == "" {
+		t.Error("poison IdempotencyKey is empty; want stable downstream deduplication key")
+	}
 	if got.StreamName != stream {
 		t.Errorf("poison StreamName = %q; want %q", got.StreamName, stream)
 	}

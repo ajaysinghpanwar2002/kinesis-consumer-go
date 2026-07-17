@@ -55,6 +55,8 @@ working default, so `New` with no options is valid.
 | `WithShardConcurrency` | `concurrency int` | `1` | Concurrent record-handler calls within one shard page. `> 1` improves throughput but breaks strict per-shard ordering. Record handlers only. | `>= 1` |
 | `WithFailurePolicy` | `policy FailurePolicy` | `FailurePolicyFailFast` | What happens to a record/batch after retries are exhausted (see values below). | must be a valid policy |
 | `WithDLQPublisher` | `publisher DLQPublisher` | none | Destination for poison records; **required** when the policy is `FailurePolicySendToDLQ`. | non-nil |
+| `WithDLQRetry` | `maxAttempts int, backoff time.Duration` | `3, 1s` | DLQ publish attempts and linear base backoff (`sleep = attempt * backoff`). Independent from handler and coordination retries configured through `WithRetry`. | `maxAttempts >= 1`; `backoff > 0` |
+| `WithDLQAttemptTimeout` | `timeout time.Duration` | `10s` | Deadline applied separately to every `DLQPublisher.Publish` attempt. A context-ignoring call is abandoned at the deadline and its late result cannot enable checkpointing. | `timeout > 0` |
 | `WithBatchHandler` | `handler BatchHandlerFunc` | none | Switches to one handler call per GetRecords page instead of per record. Mutually exclusive with the positional record handler in `New`: pass one or the other — the positional handler must be nil when this is set, and `New` errors if both are provided. | non-nil |
 | `WithHeartbeat` | `interval, ttl time.Duration` | `5s, 20s` | Worker liveness heartbeat cadence and the lease/worker key TTL. Failed heartbeat sends are survivable while the worker key from the last successful send is live; once failures persist to `ttl - interval` past that success, `Start` returns the causal error wrapped in `ErrHeartbeatStale` — one full interval before peers can observe the key as expired and claim this worker's shards away. Heartbeat health (consecutive failures, last success, last error) is exposed via `Consumer.Health()`. | both whole-millisecond values `>= 1ms`; `interval < ttl`; `ttl + interval` must fit in `time.Duration`. Otherwise Valkey would truncate the configured TTL, or the lease watchdog deadline could overflow. Recommended: `ttl >= 3x interval` (the default is 4x) so a lease survives transient renew hiccups. |
 | `WithRebalance` | `minInterval, jitter, cooldown time.Duration, maxMoves int` | `10s, 10s, 10s, 2` | Rebalance timing (`minInterval + [0,jitter)` between ticks), per-shard cooldown after a move, and the max shard moves per tick. | `minInterval > 0`; `jitter >= 0`; `cooldown > 0`; `maxMoves >= 1` |
@@ -80,9 +82,11 @@ DLQ semantics, including `PoisonRecord` metadata.
 Handlers, batch handlers, DLQ publishers, Kinesis wrappers, checkpoint stores,
 lease managers, and leases can be called concurrently and must honor every
 supplied context promptly. A callback that ignores cancellation cannot be
-forcibly terminated; after a nonzero drain deadline (or ordinary non-graceful
-cancellation), `Start` returns while that callback finishes in its worker
-goroutine. Any late handler/DLQ success is discarded before checkpointing.
+forcibly terminated. The consumer abandons a DLQ call at its attempt deadline,
+and shutdown can similarly abandon handlers; those extension goroutines may
+finish later, but their late results are discarded before checkpointing. A DLQ
+retry can overlap an abandoned attempt of the same `PoisonRecord.IdempotencyKey`,
+so publishers must be concurrency-safe and downstream delivery must deduplicate.
 
 Custom `slog.Handler` and `metrics.Reporter` implementations must also be
 concurrency-safe and return promptly. Those synchronous observability APIs do

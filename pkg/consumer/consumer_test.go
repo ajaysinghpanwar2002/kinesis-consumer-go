@@ -202,6 +202,8 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 		WithBatching(4, 5),
 		WithFailurePolicy(FailurePolicySendToDLQ),
 		WithDLQPublisher(noopDLQPublisher{}),
+		WithDLQRetry(7, 8*time.Second),
+		WithDLQAttemptTimeout(9*time.Second),
 		WithGracefulDrain(6*time.Second),
 	)
 	if err != nil {
@@ -236,6 +238,12 @@ func TestNewAppliesDefaultsAndOptions(t *testing.T) {
 	}
 	if c.dlqPublisher == nil {
 		t.Fatal("dlqPublisher = nil, want publisher")
+	}
+	if c.dlqRetryAttempts != 7 || c.dlqRetryBackoff != 8*time.Second {
+		t.Fatalf("dlq retry = %d/%v, want 7/%v", c.dlqRetryAttempts, c.dlqRetryBackoff, 8*time.Second)
+	}
+	if c.dlqAttemptTimeout != 9*time.Second {
+		t.Fatalf("dlqAttemptTimeout = %v, want %v", c.dlqAttemptTimeout, 9*time.Second)
 	}
 	if c.leaseManager != leaseMgr {
 		t.Fatalf("leaseManager was not retained")
