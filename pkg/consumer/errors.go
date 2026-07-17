@@ -11,3 +11,8 @@ var ErrDrainTimeout = errors.New("graceful drain timed out")
 // no shards to consume. The returned error also names the stream in its
 // message; match it with errors.Is.
 var ErrNoShards = errors.New("no shards found")
+
+// ErrConsumerClosed is returned from Start when the Consumer has been closed:
+// either Close was called before Start, or Close stopped a running Start.
+// Match it with errors.Is.
+var ErrConsumerClosed = errors.New("consumer is closed")

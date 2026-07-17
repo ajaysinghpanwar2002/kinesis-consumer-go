@@ -145,7 +145,10 @@ func (s *Store) Delete(ctx context.Context, streamName, shardID string) error {
 // connection config, writing lease keys under the store's lease prefix. It
 // satisfies lease.Provider, so a consumer configured with only this store
 // acquires shard leasing automatically. The returned manager owns a separate
-// Valkey client and pings on construction; callers must Close it.
+// Valkey client and pings on construction. When the consumer auto-creates the
+// manager through lease.Provider it owns the manager and releases it via
+// Consumer.Close; callers invoking this method directly must Close the
+// manager themselves.
 func (s *Store) LeaseManager() (consumerlease.Manager, error) {
 	opts := []valkeylease.Option{
 		valkeylease.WithKeyPrefix(s.cfg.LeasePrefix),

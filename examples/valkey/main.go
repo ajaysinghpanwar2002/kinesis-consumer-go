@@ -162,6 +162,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("create consumer: %v", err)
 	}
+	// The consumer auto-created its lease manager from the store (with its own
+	// Valkey client); Close releases it. The store itself stays caller-owned
+	// and is closed by the defer above.
+	defer cons.Close()
 
 	log.Printf("starting consumer on %s (region %s) with valkey at %s",
 		streamKey(*streamName, *streamARN), *region, *valkeyAddr)

@@ -103,6 +103,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("create consumer: %v", err)
 	}
+	// Close releases the lease manager the consumer auto-created from the
+	// store; the store itself stays yours and is closed by the defer above.
+	defer cons.Close()
 
 	log.Println("starting consumer; press Ctrl-C to stop")
 	if err := cons.Start(ctx); err != nil {

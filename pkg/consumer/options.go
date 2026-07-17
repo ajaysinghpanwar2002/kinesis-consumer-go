@@ -131,6 +131,10 @@ func WithShardConcurrency(concurrency int) Option {
 }
 
 // WithLeaseManager enables shard leasing for multi-consumer coordination.
+//
+// A manager supplied here stays caller-owned: the consumer never closes it,
+// not even from Consumer.Close. Omit this option with a store that implements
+// lease.Provider to let the consumer create — and own — the manager itself.
 func WithLeaseManager(manager lease.Manager) Option {
 	return func(cfg *options) error {
 		if manager == nil {
