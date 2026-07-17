@@ -246,6 +246,171 @@ func TestStartAfterCloseReturnsErrConsumerClosed(t *testing.T) {
 	manager.assertLifecycleClean(t)
 }
 
+func TestConcurrentStartReturnsErrConsumerAlreadyStarted(t *testing.T) {
+	t.Parallel()
+
+	manager := &closableLeaseManager{}
+	client := &blockingListShardsClient{listStarted: make(chan struct{})}
+	c, err := New(
+		Config{StreamName: "stream", ConsumerGroup: "group"},
+		client,
+		fakeProviderStore{manager: manager},
+		func(context.Context, Record) error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil", err)
+	}
+
+	acceptedDone := runStart(context.Background(), c)
+	<-client.listStarted
+
+	const contenders = 8
+	gate := make(chan struct{})
+	errs := make(chan error, contenders)
+	var wg sync.WaitGroup
+	for range contenders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-gate
+			errs <- c.Start(context.Background())
+		}()
+	}
+	close(gate)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if !errors.Is(err, ErrConsumerAlreadyStarted) {
+			t.Fatalf("concurrent Start() error = %v, want %v", err, ErrConsumerAlreadyStarted)
+		}
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+	waitStartDone(t, acceptedDone, ErrConsumerClosed)
+	if got := manager.closeCount(); got != 1 {
+		t.Fatalf("lease manager Close calls = %d, want 1", got)
+	}
+	manager.assertLifecycleClean(t)
+}
+
+func TestSequentialStartReturnsErrConsumerAlreadyStarted(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+		},
+	}
+	manager := newRecordingHeartbeatManager()
+	c := newTestStartConsumer(client, manager)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	acceptedDone := runStart(ctx, c)
+	_ = waitHeartbeat(t, manager)
+	cancel()
+	waitStartDone(t, acceptedDone, nil)
+
+	if err := c.Start(context.Background()); !errors.Is(err, ErrConsumerAlreadyStarted) {
+		t.Fatalf("sequential Start() error = %v, want %v", err, ErrConsumerAlreadyStarted)
+	}
+	if got := len(client.calls); got != 1 {
+		t.Fatalf("ListShards calls = %d, want 1 (rejected Start must do no dependency work)", got)
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close() error = %v, want nil", err)
+	}
+	if err := c.Start(context.Background()); !errors.Is(err, ErrConsumerAlreadyStarted) {
+		t.Fatalf("Start() after run and Close error = %v, want %v", err, ErrConsumerAlreadyStarted)
+	}
+}
+
+func TestFailedStartStillConsumesSingleUseConsumer(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{}
+	c := newTestStartConsumer(client, newRecordingHeartbeatManager())
+
+	if err := c.Start(context.Background()); !errors.Is(err, ErrNoShards) {
+		t.Fatalf("first Start() error = %v, want %v", err, ErrNoShards)
+	}
+	if err := c.Start(context.Background()); !errors.Is(err, ErrConsumerAlreadyStarted) {
+		t.Fatalf("second Start() error = %v, want %v", err, ErrConsumerAlreadyStarted)
+	}
+	if got := len(client.calls); got != 1 {
+		t.Fatalf("ListShards calls = %d, want 1 (rejected Start must do no dependency work)", got)
+	}
+}
+
+func TestStartAndCloseRacePreservesLifecycleState(t *testing.T) {
+	const attempts = 50
+	for attempt := range attempts {
+		manager := &closableLeaseManager{}
+		client := &blockingListShardsClient{listStarted: make(chan struct{})}
+		c, err := New(
+			Config{StreamName: "stream", ConsumerGroup: "group"},
+			client,
+			fakeProviderStore{manager: manager},
+			func(context.Context, Record) error { return nil },
+		)
+		if err != nil {
+			t.Fatalf("attempt %d: New() error = %v, want nil", attempt, err)
+		}
+
+		gate := make(chan struct{})
+		startDone := make(chan error, 1)
+		closeDone := make(chan error, 1)
+		go func() {
+			<-gate
+			startDone <- c.Start(context.Background())
+		}()
+		go func() {
+			<-gate
+			closeDone <- c.Close()
+		}()
+		close(gate)
+
+		select {
+		case err := <-startDone:
+			if !errors.Is(err, ErrConsumerClosed) {
+				t.Fatalf("attempt %d: racing Start() error = %v, want %v", attempt, err, ErrConsumerClosed)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("attempt %d: timed out waiting for Start", attempt)
+		}
+		select {
+		case err := <-closeDone:
+			if err != nil {
+				t.Fatalf("attempt %d: racing Close() error = %v, want nil", attempt, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("attempt %d: timed out waiting for Close", attempt)
+		}
+
+		startWasClaimed := false
+		select {
+		case <-client.listStarted:
+			startWasClaimed = true
+		default:
+		}
+		againErr := c.Start(context.Background())
+		if startWasClaimed {
+			if !errors.Is(againErr, ErrConsumerAlreadyStarted) {
+				t.Fatalf("attempt %d: reused Start() error = %v, want %v", attempt, againErr, ErrConsumerAlreadyStarted)
+			}
+		} else if !errors.Is(againErr, ErrConsumerClosed) {
+			t.Fatalf("attempt %d: Start() after Close won race = %v, want %v", attempt, againErr, ErrConsumerClosed)
+		}
+		if got := manager.closeCount(); got != 1 {
+			t.Fatalf("attempt %d: lease manager Close calls = %d, want 1", attempt, got)
+		}
+		manager.assertLifecycleClean(t)
+	}
+}
+
 func TestCloseDuringStartStopsRunAndClosesManagerAfterLastUse(t *testing.T) {
 	tests := []struct {
 		name     string

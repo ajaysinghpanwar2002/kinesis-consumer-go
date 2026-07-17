@@ -49,13 +49,16 @@ type Consumer struct {
 	syncHealth      healthSignalState
 	heartbeatHealth healthSignalState
 
-	// lifecycleMu guards the closed/run state shared between Start and Close.
-	lifecycleMu sync.Mutex
-	closed      bool
-	closeDone   chan struct{}
-	closeErr    error
-	runCancel   context.CancelFunc
-	runDone     chan struct{}
+	// lifecycleMu guards the closed/start/run state shared between Start and
+	// Close. startClaimed is permanent: endRun clears only the active handles,
+	// never permission to reuse this Consumer.
+	lifecycleMu  sync.Mutex
+	closed       bool
+	startClaimed bool
+	closeDone    chan struct{}
+	closeErr     error
+	runCancel    context.CancelFunc
+	runDone      chan struct{}
 
 	processShardRecordsPassFn func(context.Context, string, int, string) (string, int, string, error)
 	processShardRecordsLoopFn func(context.Context, string) (string, int, error)
@@ -66,11 +69,10 @@ type Consumer struct {
 // clean shutdown that returns nil after any graceful drain — or a fatal error
 // stops the consumer and is returned.
 //
-// A Consumer is single-use. Start installs no re-entry guard: calling it more
-// than once concurrently runs duplicate heartbeat and rebalance loops under
-// the same owner identity and double-processes shards. Reusing a Consumer for
-// a second run after Start returns is likewise unsupported; construct a fresh
-// Consumer with New to run again.
+// A Consumer is single-use. The first Start call claims it permanently;
+// concurrent or sequential calls after that return ErrConsumerAlreadyStarted,
+// even after the first run has returned. Construct a fresh Consumer with New
+// to run again.
 //
 // Start returns ErrConsumerClosed when the Consumer has been closed — whether
 // Close was called before Start or Close stopped this run mid-flight.
@@ -287,7 +289,9 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 // lease manager is closed; that Start call returns ErrConsumerClosed. If the
 // caller's ctx was already cancelled and a graceful drain is in progress,
 // Close waits for the drain to finish rather than cutting it short. After
-// Close, any Start call returns ErrConsumerClosed.
+// Close, the first Start call returns ErrConsumerClosed. Once a Start call has
+// claimed the Consumer, later Start calls return ErrConsumerAlreadyStarted,
+// including after Close.
 //
 // A worker abandoned by the bounded shutdown (stuck in an uncooperative
 // callback that ignores its context) may outlive Close; its late lease
@@ -328,14 +332,19 @@ func (c *Consumer) Close() error {
 	return err
 }
 
-// beginRun registers a run with the lifecycle state so Close can stop it,
-// rejecting the run when the Consumer is already closed.
+// beginRun permanently claims the Consumer's single Start and registers its
+// active run so Close can stop it. A previous Start takes precedence over the
+// closed state so reuse has one stable result even after Close.
 func (c *Consumer) beginRun(ctx context.Context) (context.Context, context.CancelFunc, chan struct{}, error) {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
+	if c.startClaimed {
+		return nil, nil, nil, ErrConsumerAlreadyStarted
+	}
 	if c.closed {
 		return nil, nil, nil, ErrConsumerClosed
 	}
+	c.startClaimed = true
 	runCtx, cancel := context.WithCancel(ctx)
 	runDone := make(chan struct{})
 	c.runCancel = cancel

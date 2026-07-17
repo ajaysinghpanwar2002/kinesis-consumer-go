@@ -17,6 +17,12 @@ var ErrNoShards = errors.New("no shards found")
 // Match it with errors.Is.
 var ErrConsumerClosed = errors.New("consumer is closed")
 
+// ErrConsumerAlreadyStarted is returned from every concurrent or sequential
+// Start call after the first Start has claimed the Consumer. A Consumer is
+// single-use even when its first run has already returned; construct a fresh
+// Consumer with New for another run. Match it with errors.Is.
+var ErrConsumerAlreadyStarted = errors.New("consumer has already been started")
+
 // ErrHeartbeatStale is returned (wrapped) from Start when the worker-liveness
 // heartbeat has kept failing until one heartbeat interval before the last
 // successful heartbeat's TTL lapses — the point after which peers may treat
