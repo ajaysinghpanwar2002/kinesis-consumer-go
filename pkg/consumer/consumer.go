@@ -43,8 +43,11 @@ type Consumer struct {
 	// caller-owned and is never recorded here.
 	ownedLeaseManagerCloser io.Closer
 
-	// syncHealth backs Health().ShardSync; written by the orchestration loop.
-	syncHealth shardSyncHealthState
+	// syncHealth backs Health().ShardSync (written by the orchestration
+	// loop); heartbeatHealth backs Health().Heartbeat (written by the
+	// heartbeat loop).
+	syncHealth      healthSignalState
+	heartbeatHealth healthSignalState
 
 	// lifecycleMu guards the closed/run state shared between Start and Close.
 	lifecycleMu sync.Mutex
@@ -71,6 +74,12 @@ type Consumer struct {
 //
 // Start returns ErrConsumerClosed when the Consumer has been closed — whether
 // Close was called before Start or Close stopped this run mid-flight.
+//
+// Start returns the causal failure wrapped in ErrHeartbeatStale when the
+// worker-liveness heartbeat keeps failing until one heartbeat interval
+// before the last successful heartbeat's TTL lapses: past that point peers
+// may treat this worker as dead and claim its shards away, so the run stops
+// inside the safety margin instead of dual-processing.
 func (c *Consumer) Start(ctx context.Context) (err error) {
 	runCtx, cancel, runDone, beginErr := c.beginRun(ctx)
 	if beginErr != nil {
@@ -104,18 +113,48 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 	// shards away mid-drain.
 	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
 	heartbeatDone := make(chan struct{})
+	// heartbeatFatal carries a heartbeat-validity loss (ErrHeartbeatStale) to
+	// the run-exit paths below. It is dedicated (not workerErrCh, which does
+	// not exist yet when the loop starts) and published before the cancel so
+	// the woken run always observes the causal error.
+	heartbeatFatal := make(chan error, 1)
 	go func() {
 		defer close(heartbeatDone)
-		c.workerHeartbeatLoop(heartbeatCtx)
+		c.workerHeartbeatLoop(heartbeatCtx, func(hbErr error) {
+			select {
+			case heartbeatFatal <- hbErr:
+			default:
+			}
+			cancel()
+		})
 	}()
 	defer func() {
 		stopHeartbeat()
 		<-heartbeatDone
 	}()
+	takeHeartbeatFatal := func() error {
+		select {
+		case hbErr := <-heartbeatFatal:
+			return hbErr
+		default:
+			return nil
+		}
+	}
+	// normalizeInternalCancel maps a context.Canceled failure caused by an
+	// internal run cancellation (caller ctx still live) back to its cause:
+	// heartbeat-validity loss first, then Close (via closeInterruptedStartup).
+	normalizeInternalCancel := func(err error) error {
+		if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			if hbErr := takeHeartbeatFatal(); hbErr != nil {
+				return hbErr
+			}
+		}
+		return c.closeInterruptedStartup(ctx, err)
+	}
 
 	shards, err := c.listShards(runCtx)
 	if err != nil {
-		return c.closeInterruptedStartup(ctx, err)
+		return normalizeInternalCancel(err)
 	}
 	if len(shards) == 0 {
 		return fmt.Errorf("%w for stream %s", ErrNoShards, c.canonicalStreamName())
@@ -140,7 +179,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 		workerErrCh,
 		cancel,
 	); err != nil {
-		return c.closeInterruptedStartup(ctx, err)
+		return normalizeInternalCancel(err)
 	}
 
 	orchestrationDone := make(chan struct{})
@@ -180,12 +219,26 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 		cancel()
 		<-orchestrationDone
 		stopAndReapShardWorkers(workers, &workerWG)
-		return err
+		// A published heartbeat-validity loss is the root cause of whatever
+		// the workers it cancelled reported while stopping — the cancellation
+		// echoed back as context.Canceled, or cleanup like a lease release
+		// failing against the same dead backend. Return the causal heartbeat
+		// error, never a consequence, whichever branch wins the exit race.
+		if hbErr := takeHeartbeatFatal(); hbErr != nil {
+			return hbErr
+		}
+		return normalizeInternalCancel(err)
 	case <-runCtx.Done():
 		cancel()
 		<-orchestrationDone
 		if ctx.Err() == nil {
 			stopAndReapShardWorkers(workers, &workerWG)
+			// Heartbeat-validity loss is checked before worker errors: the
+			// stale heartbeat is the root cause and the force-stopped
+			// workers' failures its consequence.
+			if hbErr := takeHeartbeatFatal(); hbErr != nil {
+				return hbErr
+			}
 			select {
 			case err := <-workerErrCh:
 				return err

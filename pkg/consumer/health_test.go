@@ -26,6 +26,15 @@ func TestHealthZeroValueConsumer(t *testing.T) {
 	if health.ShardSync.LastError != nil {
 		t.Fatalf("LastError = %v, want nil", health.ShardSync.LastError)
 	}
+	if health.Heartbeat.ConsecutiveFailures != 0 {
+		t.Fatalf("Heartbeat.ConsecutiveFailures = %d, want 0", health.Heartbeat.ConsecutiveFailures)
+	}
+	if !health.Heartbeat.LastSuccess.IsZero() {
+		t.Fatalf("Heartbeat.LastSuccess = %v, want zero", health.Heartbeat.LastSuccess)
+	}
+	if health.Heartbeat.LastError != nil {
+		t.Fatalf("Heartbeat.LastError = %v, want nil", health.Heartbeat.LastError)
+	}
 }
 
 func TestHealthShardSyncTransitions(t *testing.T) {
@@ -73,6 +82,31 @@ func TestHealthShardSyncTransitions(t *testing.T) {
 	}
 }
 
+func TestHealthMapsSignalsToTheirFields(t *testing.T) {
+	t.Parallel()
+
+	// The two signals share one state type; the snapshot must not cross
+	// wires between them.
+	errBeat := errors.New("beat")
+	c := &Consumer{}
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+
+	c.heartbeatHealth.recordFailure(errBeat)
+	c.heartbeatHealth.recordFailure(errBeat)
+	c.syncHealth.recordSuccess(now)
+
+	health := c.Health()
+	if health.Heartbeat.ConsecutiveFailures != 2 || !errors.Is(health.Heartbeat.LastError, errBeat) {
+		t.Fatalf("Heartbeat = %+v, want 2 consecutive failures wrapping %v", health.Heartbeat, errBeat)
+	}
+	if health.ShardSync.ConsecutiveFailures != 0 || health.ShardSync.LastError != nil {
+		t.Fatalf("ShardSync = %+v, want healthy", health.ShardSync)
+	}
+	if !health.ShardSync.LastSuccess.Equal(now) {
+		t.Fatalf("ShardSync.LastSuccess = %v, want %v", health.ShardSync.LastSuccess, now)
+	}
+}
+
 func TestHealthIsSafeForConcurrentUse(t *testing.T) {
 	t.Parallel()
 
@@ -88,6 +122,8 @@ func TestHealthIsSafeForConcurrentUse(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				c.syncHealth.recordFailure(errBoom)
 				c.syncHealth.recordSuccess(now)
+				c.heartbeatHealth.recordFailure(errBoom)
+				c.heartbeatHealth.recordSuccess(now)
 			}
 		}()
 		go func() {

@@ -103,6 +103,12 @@ spread across them.
 - **Worker heartbeats:** each worker periodically records liveness
   (`WithHeartbeat`, default 5s interval / 20s TTL). Heartbeat state sizes each
   worker's fair share; a worker whose heartbeat lapses is treated as inactive.
+  Failed sends are survivable while the worker key from the last successful
+  send is live, but once failures persist to one heartbeat interval before
+  that key's TTL lapses, the consumer stops with `ErrHeartbeatStale` — before
+  peers can treat it as dead and claim its shards away while it is still
+  processing. Heartbeat health — consecutive failures, last success, last
+  error — is exposed via `Consumer.Health()`.
 - **Fair-share rebalancing** (`WithRebalance`): workers converge toward an even
   shard split. Rebalancing is damped to avoid thrash:
   - a randomized interval (min + jitter, default 10s + 10s),
@@ -284,7 +290,7 @@ Every knob has a working default, so a consumer runs with no options at all.
 | `WithRetry(maxAttempts, backoff)` | 3, 1s | Handler retry attempts and linear base backoff |
 | `WithShardConcurrency(n)` | 1 | Concurrent record-handler calls per shard |
 | `WithFailurePolicy(policy)` | `fail-fast` | Post-retry poison handling |
-| `WithHeartbeat(interval, ttl)` | 5s, 20s | Worker liveness cadence and lease/worker TTL |
+| `WithHeartbeat(interval, ttl)` | 5s, 20s | Worker liveness cadence and lease/worker TTL; persistent heartbeat failure stops the consumer one interval before the TTL lapses |
 | `WithShardSyncMaxStaleness(maxStaleness)` | 10x sync interval (10m) | How long a failing shard sync may go before the consumer stops |
 | `WithRebalance(min, jitter, cooldown, maxMoves)` | 10s, 10s, 10s, 2 | Rebalance timing and move bounds |
 | `WithGracefulDrain(timeout)` | off | Drain in-flight work on shutdown |

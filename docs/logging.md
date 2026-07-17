@@ -70,7 +70,7 @@ nothing per record, per poll, or per rebalance tick.
 | `shard lease release failed` | Warn | `shard`, `error` | The bounded release failed or timed out. Logged here because the caller discards the release error when the worker already failed, so this Warn can be the only record of it. |
 | `shard lease renew failed; will retry` | Warn | `shard`, `since_last_renew`, `ttl`, `error` | A transient renew failure. The loop retries on subsequent heartbeat ticks while the TTL budget since the last successful renew lasts. `ErrNotOwned` and budget exhaustion are not retried; `ErrNotOwned` becomes the clean shard-local completion logged by the Info event above, while budget exhaustion surfaces through the worker-stop Warn. |
 | `shard lease validity expired; stopping worker` | Warn | `shard`, `since_last_renew`, `ttl` | The local lease-validity watchdog fired: no successful renew within the TTL on the local clock and no error from the renew loop either — the backend `Renew` call is presumed hung. The worker is stopped (fenced), because the backend lease has lapsed and a peer may already own the shard; continuing would risk dual processing. Surfaces through the worker-stop Warn like other terminal renew failures. |
-| `worker heartbeat failed` | Warn | `owner`, `error` | A worker-liveness heartbeat send failed (live context). Sustained failures make peers treat this worker as dead and steadily claim its shards away — this Warn is the victim's only diagnostic. |
+| `worker heartbeat failed` | Warn | `owner`, `consecutive_failures`, `staleness`, `error` | A worker-liveness heartbeat send failed (live context). Failures are survivable while the worker key from the last successful send is live; `staleness` is the time since that success. Once failures persist to one heartbeat interval before the key's TTL lapses — the point after which peers may treat this worker as dead and claim its shards away — the consumer stops with `ErrHeartbeatStale` instead of dual-processing, surfacing through the terminal `consumer stopped` Error. |
 
 `ErrNotOwned` is a shard-local ownership transition in every mode: it logs the
 Info event above and the worker stops cleanly without failing `Start`.
@@ -123,7 +123,8 @@ events whose error the caller swallows or retries away, so the site-level
 Warn is the only record: `shard lease release failed`,
 `shard lease renew failed; will retry`, `get records failed; backing off`,
 `worker heartbeat failed`, `rebalance pass failed`, and `shard sync failed`
-(until the staleness bound turns the latter into a terminal error).
+(until their staleness bounds turn the heartbeat and shard-sync Warns into
+terminal errors).
 
 - **Checkpoint save failures, DLQ publish failures, and fail-fast handler
   errors** have no dedicated event; they surface through the worker and
@@ -158,8 +159,12 @@ Warn is the only record: `shard lease release failed`,
   - `shard lease validity expired; stopping worker` — a lease-backend call
     hung past the TTL; the worker was fenced to prevent dual processing.
     Check backend connectivity/timeouts.
-  - `worker heartbeat failed` — sustained occurrences mean this worker will
-    lose its shards to peers despite being healthy.
+  - `worker heartbeat failed` — sustained occurrences mean worker liveness is
+    degraded: peers still see the last successful heartbeat, but the consumer
+    stops with `ErrHeartbeatStale` one heartbeat interval before that
+    heartbeat's TTL lapses (before peers can claim its shards away). The
+    `staleness` attribute (also exposed via `Consumer.Health`) shows how
+    close it is.
   - `rebalance pass failed` — sustained occurrences mean shard distribution
     has stopped converging.
   - `shard sync failed` — sustained occurrences mean shard discovery is

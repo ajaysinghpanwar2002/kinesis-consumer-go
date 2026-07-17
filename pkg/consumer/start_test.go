@@ -702,6 +702,220 @@ func TestStartReturnsShardSyncStaleErrorAfterPersistentRefreshFailure(t *testing
 	}
 }
 
+func TestStartReturnsHeartbeatStaleErrorAfterPersistentHeartbeatFailure(t *testing.T) {
+	t.Parallel()
+
+	// Heartbeats that keep failing on a live run must stop it with the
+	// causal error before peers can treat this worker as dead.
+	errBoom := errors.New("heartbeat boom")
+	manager := newRecordingHeartbeatManager()
+	manager.err = errBoom
+	c := newTestStartConsumer(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, ErrHeartbeatStale) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, ErrHeartbeatStale)
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want preserves cause %v", err, errBoom)
+	}
+	health := c.Health().Heartbeat
+	if health.ConsecutiveFailures < 1 {
+		t.Fatalf("Health().Heartbeat.ConsecutiveFailures = %d, want >= 1", health.ConsecutiveFailures)
+	}
+	if !errors.Is(health.LastError, errBoom) {
+		t.Fatalf("Health().Heartbeat.LastError = %v, want wraps %v", health.LastError, errBoom)
+	}
+}
+
+func TestStartReturnsHeartbeatStaleErrorDuringInitialShardListing(t *testing.T) {
+	t.Parallel()
+
+	// Validity can lapse while Start is still inside its initial shard
+	// listing; the cancellation it causes must surface as the heartbeat
+	// error, not a bare context.Canceled.
+	errBoom := errors.New("heartbeat boom")
+	manager := newRecordingHeartbeatManager()
+	manager.err = errBoom
+	client := &blockingListShardsClient{listStarted: make(chan struct{})}
+	c := newTestStartConsumer(client, manager)
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, ErrHeartbeatStale) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, ErrHeartbeatStale)
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want preserves cause %v", err, errBoom)
+	}
+}
+
+// switchableHeartbeatAcquireManager acquires like its embedded
+// recordingAcquireManager while letting the test flip heartbeat sends
+// between success and failure mid-run.
+type switchableHeartbeatAcquireManager struct {
+	*recordingAcquireManager
+
+	hbMu  sync.Mutex
+	hbErr error
+}
+
+func (m *switchableHeartbeatAcquireManager) Heartbeat(context.Context, string, string, time.Duration) error {
+	m.hbMu.Lock()
+	defer m.hbMu.Unlock()
+	return m.hbErr
+}
+
+func (m *switchableHeartbeatAcquireManager) setHeartbeatErr(err error) {
+	m.hbMu.Lock()
+	defer m.hbMu.Unlock()
+	m.hbErr = err
+}
+
+func TestStartReturnsHeartbeatStaleErrorWhenWorkerEchoesCancellation(t *testing.T) {
+	t.Parallel()
+
+	// The heartbeat-triggered cancellation propagates into running workers,
+	// which can push the resulting context.Canceled into workerErrCh and win
+	// the exit race against runCtx.Done(). The echo must not mask the causal
+	// heartbeat error.
+	errBoom := errors.New("heartbeat boom")
+	shardLease := &recordingReleaseLease{}
+	manager := &switchableHeartbeatAcquireManager{
+		recordingAcquireManager: &recordingAcquireManager{
+			result:   shardLease,
+			acquired: true,
+		},
+	}
+	manager.setHeartbeatErr(errBoom)
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		<-ctx.Done()
+		return "", 0, ctx.Err()
+	}
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, ErrHeartbeatStale) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, ErrHeartbeatStale)
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want preserves cause %v", err, errBoom)
+	}
+}
+
+func TestStartReturnsHeartbeatStaleErrorWhenWorkerCleanupFails(t *testing.T) {
+	t.Parallel()
+
+	// A heartbeat-triggered shutdown can also surface as a non-cancellation
+	// worker error: here processing exits cleanly but the lease release fails
+	// against the same dead backend. The cleanup error must not mask the
+	// causal heartbeat error either.
+	errBoom := errors.New("heartbeat boom")
+	errRelease := errors.New("release failed")
+	shardLease := &recordingReleaseLease{err: errRelease}
+	manager := &switchableHeartbeatAcquireManager{
+		recordingAcquireManager: &recordingAcquireManager{
+			result:   shardLease,
+			acquired: true,
+		},
+	}
+	manager.setHeartbeatErr(errBoom)
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, ErrHeartbeatStale) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, ErrHeartbeatStale)
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want preserves cause %v", err, errBoom)
+	}
+	if errors.Is(err, errRelease) {
+		t.Fatalf("Start() error = %v, want the causal heartbeat error, not the release consequence", err)
+	}
+}
+
+func TestStartGracefulDrainIgnoresHeartbeatValidityLossDuringDrain(t *testing.T) {
+	t.Parallel()
+
+	// Once the caller's ctx is cancelled and a graceful drain is running,
+	// heartbeat-validity loss is part of shutdown, not a run failure: the
+	// drain result must stay nil.
+	errBoom := errors.New("heartbeat boom")
+	shardLease := &recordingReleaseLease{}
+	manager := &switchableHeartbeatAcquireManager{
+		recordingAcquireManager: &recordingAcquireManager{
+			result:   shardLease,
+			acquired: true,
+			callCh:   make(chan acquireCall, 1),
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		manager,
+	)
+	c.gracefulDrain = true
+	c.drainTimeout = 5 * time.Second
+
+	workerStarted := make(chan struct{})
+	finishWorker := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = ctx
+		_ = shardID
+		close(workerStarted)
+		<-finishWorker
+		return "", 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	_ = waitAcquireCall(t, manager.recordingAcquireManager)
+	<-workerStarted
+	cancel()
+	waitForTrue(t, c.isDraining, "drain to begin")
+
+	// Fail every heartbeat and hold the drain until the validity deadline
+	// (lastSuccess + ttl - interval) is well past: the loop keeps beating
+	// through the drain, so its staleness signal must have fired by then.
+	manager.setHeartbeatErr(errBoom)
+	waitForTrue(t, func() bool {
+		health := c.Health().Heartbeat
+		return health.LastError != nil && time.Since(health.LastSuccess) >= 2*c.tuning.heartbeatTTL
+	}, "heartbeat validity to lapse during drain")
+
+	close(finishWorker)
+	waitStartDone(t, done, nil)
+
+	if failures := c.Health().Heartbeat.ConsecutiveFailures; failures < 1 {
+		t.Fatalf("Health().Heartbeat.ConsecutiveFailures = %d, want >= 1", failures)
+	}
+}
+
 func TestStartSuppressesContextCanceledFromInFlightPeriodicRefresh(t *testing.T) {
 	t.Parallel()
 

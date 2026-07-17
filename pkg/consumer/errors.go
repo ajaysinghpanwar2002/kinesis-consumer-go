@@ -17,6 +17,15 @@ var ErrNoShards = errors.New("no shards found")
 // Match it with errors.Is.
 var ErrConsumerClosed = errors.New("consumer is closed")
 
+// ErrHeartbeatStale is returned (wrapped) from Start when the worker-liveness
+// heartbeat has kept failing until one heartbeat interval before the last
+// successful heartbeat's TTL lapses — the point after which peers may treat
+// this worker as dead and claim its shards away while it is still processing.
+// The run stops inside that safety margin instead of dual-processing. The
+// returned error also preserves the causal heartbeat failure; match the
+// sentinel with errors.Is and inspect the cause with errors.Is/errors.As.
+var ErrHeartbeatStale = errors.New("worker heartbeat stale")
+
 // ErrShardSyncStale is returned (wrapped) from Start when periodic shard
 // discovery has kept failing for longer than the configured maximum staleness
 // (WithShardSyncMaxStaleness) and the consumer can no longer trust its shard
