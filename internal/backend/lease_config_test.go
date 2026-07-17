@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -10,7 +11,7 @@ func TestDefaultLeaseConfig(t *testing.T) {
 	if cfg.Addr != "localhost:6379" {
 		t.Fatalf("Addr = %q, want %q", cfg.Addr, "localhost:6379")
 	}
-	if (cfg != LeaseConfig{Addr: "localhost:6379"}) {
+	if !reflect.DeepEqual(cfg, LeaseConfig{Addr: "localhost:6379"}) {
 		t.Fatalf("DefaultLeaseConfig set unexpected fields: %+v", cfg)
 	}
 }
@@ -99,7 +100,7 @@ func TestFinalizeLeaseConfigDefaultsAndPreservation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FinalizeLeaseConfig(%+v) error = %v", tt.in, err)
 			}
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("FinalizeLeaseConfig(%+v) = %+v, want %+v", tt.in, got, tt.want)
 			}
 		})

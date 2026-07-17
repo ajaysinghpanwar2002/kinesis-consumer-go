@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -10,7 +11,7 @@ func TestDefaultCheckpointConfig(t *testing.T) {
 
 	got := DefaultCheckpointConfig("localhost:6379")
 	want := CheckpointConfig{Addr: "localhost:6379"}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("DefaultCheckpointConfig = %+v, want %+v", got, want)
 	}
 }
@@ -125,7 +126,7 @@ func TestFinalizeCheckpointConfigDefaultsAndPreservation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FinalizeCheckpointConfig error = %v, want nil", err)
 			}
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("FinalizeCheckpointConfig = %+v, want %+v", got, tt.want)
 			}
 		})

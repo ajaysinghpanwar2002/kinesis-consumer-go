@@ -30,6 +30,12 @@ var (
 // Config controls how the checkpoint store connects and where it writes keys.
 type Config = backend.CheckpointConfig
 
+// CredentialsFn supplies AUTH credentials dynamically. It is invoked on each
+// connection attempt (initial dial and every reconnect), so rotated
+// credentials are picked up without rebuilding the store. An empty username
+// authenticates the default user. It must be safe for concurrent use.
+type CredentialsFn = backend.CredentialsFn
+
 // Option customizes a Valkey-backed checkpoint store.
 type Option func(*Config) error
 
@@ -154,8 +160,18 @@ func (s *Store) LeaseManager() (consumerlease.Manager, error) {
 		valkeylease.WithKeyPrefix(s.cfg.LeasePrefix),
 		valkeylease.WithPingTimeout(s.cfg.PingTimeout),
 	}
-	if s.cfg.UseTLS {
+	// Connection security propagates so a secured store yields an equally
+	// secured auto-created manager. CloneTLSConfig hands the manager its own
+	// copy; WithTLS stays for the config-less TLS case.
+	if tlsConfig := s.cfg.CloneTLSConfig(); tlsConfig != nil {
+		opts = append(opts, valkeylease.WithTLSConfig(tlsConfig))
+	} else if s.cfg.UseTLS {
 		opts = append(opts, valkeylease.WithTLS())
+	}
+	if s.cfg.Credentials != nil {
+		opts = append(opts, valkeylease.WithCredentialsProvider(s.cfg.Credentials))
+	} else if s.cfg.Password != "" {
+		opts = append(opts, valkeylease.WithAuth(s.cfg.Username, s.cfg.Password))
 	}
 	if s.cfg.UseCluster {
 		opts = append(opts, valkeylease.WithCluster())
@@ -186,6 +202,35 @@ func WithTLS() Option {
 	return func(cfg *Config) error {
 		cfg.UseTLS = true
 		return nil
+	}
+}
+
+// WithTLSConfig enables TLS using the caller's TLS configuration (for example
+// a custom RootCAs pool or ServerName). The config is cloned immediately, so
+// later caller mutation does not affect the store; nil is rejected.
+func WithTLSConfig(tlsConfig *tls.Config) Option {
+	return func(cfg *Config) error {
+		return backend.SetCheckpointTLSConfig(cfg, tlsConfig)
+	}
+}
+
+// WithAuth authenticates with static credentials. The password is required;
+// an empty username authenticates the default user (password-only
+// deployments). The password is never logged, and formatting the store's
+// config redacts it. Mutually exclusive with WithCredentialsProvider.
+func WithAuth(username, password string) Option {
+	return func(cfg *Config) error {
+		return backend.SetCheckpointAuth(cfg, username, password)
+	}
+}
+
+// WithCredentialsProvider authenticates with dynamically supplied credentials.
+// fn is invoked on each connection attempt (initial dial and every reconnect),
+// so rotated credentials are picked up without rebuilding the store; nil is
+// rejected. Mutually exclusive with WithAuth.
+func WithCredentialsProvider(fn CredentialsFn) Option {
+	return func(cfg *Config) error {
+		return backend.SetCheckpointCredentialsFn(cfg, fn)
 	}
 }
 
@@ -229,16 +274,30 @@ func WithDB(db int) Option {
 }
 
 func newClient(cfg Config) (valkey.Client, error) {
-	var tlsConfig *tls.Config
-	if cfg.UseTLS {
+	// CloneTLSConfig hands out a private copy (already cloned once at the
+	// option boundary), so no two clients share a mutable tls.Config.
+	tlsConfig := cfg.CloneTLSConfig()
+	if cfg.UseTLS && tlsConfig == nil {
 		tlsConfig = &tls.Config{}
 	}
 
 	opts := valkey.ClientOption{
 		InitAddress:       []string{cfg.Addr},
 		TLSConfig:         tlsConfig,
+		Username:          cfg.Username,
+		Password:          cfg.Password,
 		ForceSingleClient: !cfg.UseCluster,
 		DisableCache:      true,
+	}
+	if cfg.Credentials != nil {
+		fn := cfg.Credentials
+		opts.AuthCredentialsFn = func(valkey.AuthCredentialsContext) (valkey.AuthCredentials, error) {
+			username, password, err := fn()
+			if err != nil {
+				return valkey.AuthCredentials{}, err
+			}
+			return valkey.AuthCredentials{Username: username, Password: password}, nil
+		}
 	}
 	if !cfg.UseCluster {
 		opts.SelectDB = cfg.DB

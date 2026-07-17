@@ -5,6 +5,7 @@
 package backend
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"time"
@@ -24,8 +25,11 @@ const defaultPingTimeout = 5 * time.Second
 
 // CheckpointConfig describes how a Redis-family checkpoint store connects and
 // where it writes keys. It is shared by concrete backends so their connection
-// options behave identically.
+// options behave identically. The embedded connection-security fields
+// (Username, Password, Credentials, TLSConfig) are set only through their
+// setters so secrets and TLS configs are validated and cloned consistently.
 type CheckpointConfig struct {
+	authConfig
 	Addr        string
 	UseTLS      bool
 	UseCluster  bool
@@ -33,6 +37,22 @@ type CheckpointConfig struct {
 	KeyPrefix   string
 	PingTimeout time.Duration
 	LeasePrefix string
+}
+
+// String renders the config for logs and errors with the password redacted
+// and the credentials provider reduced to a presence marker, so formatting a
+// config can never leak a secret.
+func (c CheckpointConfig) String() string {
+	return fmt.Sprintf(
+		"CheckpointConfig{Addr:%s Username:%s Password:%s Credentials:%s TLSConfig:%v UseTLS:%t UseCluster:%t DB:%d KeyPrefix:%s PingTimeout:%s LeasePrefix:%s}",
+		c.Addr, c.Username, c.redactedStaticPassword(), c.redactedCredentials(), c.TLSConfig != nil,
+		c.UseTLS, c.UseCluster, c.DB, c.KeyPrefix, c.PingTimeout, c.LeasePrefix,
+	)
+}
+
+// GoString redacts %#v formatting the same way String redacts %v/%+v.
+func (c CheckpointConfig) GoString() string {
+	return c.String()
 }
 
 // DefaultCheckpointConfig returns a config with only the address populated.
@@ -53,6 +73,9 @@ func FinalizeCheckpointConfig(cfg CheckpointConfig, backendName string) (Checkpo
 	}
 	if cfg.UseCluster && cfg.DB != 0 {
 		return CheckpointConfig{}, fmt.Errorf("%s db is not supported with cluster mode", backendName)
+	}
+	if err := cfg.authConfig.validate(backendName); err != nil {
+		return CheckpointConfig{}, err
 	}
 	if cfg.KeyPrefix == "" {
 		cfg.KeyPrefix = defaultCheckpointKeyPrefix
@@ -113,6 +136,29 @@ func SetCheckpointPingTimeout(cfg *CheckpointConfig, timeout time.Duration) erro
 		return errors.New("ping timeout must be > 0")
 	}
 	cfg.PingTimeout = timeout
+	return nil
+}
+
+// SetCheckpointAuth records static AUTH credentials. The password is
+// required; an empty username authenticates the default user
+// (password-only deployments).
+func SetCheckpointAuth(cfg *CheckpointConfig, username, password string) error {
+	return cfg.setAuth(username, password)
+}
+
+// SetCheckpointCredentialsFn records a dynamic credential provider, rejecting
+// nil. Mutually exclusive with static credentials (enforced at finalize).
+func SetCheckpointCredentialsFn(cfg *CheckpointConfig, fn CredentialsFn) error {
+	return cfg.setCredentialsFn(fn)
+}
+
+// SetCheckpointTLSConfig stores a clone of the caller's TLS config (nil
+// rejected) and enables TLS.
+func SetCheckpointTLSConfig(cfg *CheckpointConfig, tlsConfig *tls.Config) error {
+	if err := cfg.setTLSConfig(tlsConfig); err != nil {
+		return err
+	}
+	cfg.UseTLS = true
 	return nil
 }
 

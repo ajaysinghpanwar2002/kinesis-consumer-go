@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"time"
@@ -9,8 +10,11 @@ import (
 // LeaseConfig describes how a Redis-family lease manager connects and where it
 // writes keys. It is shared by concrete backends so their connection options
 // behave identically. MaxLeases bounds how many leases one manager will hold at
-// once; a value <= 0 means unlimited.
+// once; a value <= 0 means unlimited. The embedded connection-security fields
+// (Username, Password, Credentials, TLSConfig) are set only through their
+// setters so secrets and TLS configs are validated and cloned consistently.
 type LeaseConfig struct {
+	authConfig
 	Addr        string
 	UseTLS      bool
 	UseCluster  bool
@@ -18,6 +22,22 @@ type LeaseConfig struct {
 	KeyPrefix   string
 	PingTimeout time.Duration
 	MaxLeases   int
+}
+
+// String renders the config for logs and errors with the password redacted
+// and the credentials provider reduced to a presence marker, so formatting a
+// config can never leak a secret.
+func (c LeaseConfig) String() string {
+	return fmt.Sprintf(
+		"LeaseConfig{Addr:%s Username:%s Password:%s Credentials:%s TLSConfig:%v UseTLS:%t UseCluster:%t DB:%d KeyPrefix:%s PingTimeout:%s MaxLeases:%d}",
+		c.Addr, c.Username, c.redactedStaticPassword(), c.redactedCredentials(), c.TLSConfig != nil,
+		c.UseTLS, c.UseCluster, c.DB, c.KeyPrefix, c.PingTimeout, c.MaxLeases,
+	)
+}
+
+// GoString redacts %#v formatting the same way String redacts %v/%+v.
+func (c LeaseConfig) GoString() string {
+	return c.String()
 }
 
 // DefaultLeaseConfig returns a config with only the address populated.
@@ -40,6 +60,9 @@ func FinalizeLeaseConfig(cfg LeaseConfig, backendName string) (LeaseConfig, erro
 	}
 	if cfg.UseCluster && cfg.DB != 0 {
 		return LeaseConfig{}, fmt.Errorf("%s db is not supported with cluster mode", backendName)
+	}
+	if err := cfg.authConfig.validate(backendName); err != nil {
+		return LeaseConfig{}, err
 	}
 	if cfg.KeyPrefix == "" {
 		cfg.KeyPrefix = defaultLeasePrefix
@@ -76,6 +99,28 @@ func SetLeasePingTimeout(cfg *LeaseConfig, timeout time.Duration) error {
 		return errors.New("ping timeout must be > 0")
 	}
 	cfg.PingTimeout = timeout
+	return nil
+}
+
+// SetLeaseAuth records static AUTH credentials. The password is required; an
+// empty username authenticates the default user (password-only deployments).
+func SetLeaseAuth(cfg *LeaseConfig, username, password string) error {
+	return cfg.setAuth(username, password)
+}
+
+// SetLeaseCredentialsFn records a dynamic credential provider, rejecting nil.
+// Mutually exclusive with static credentials (enforced at finalize).
+func SetLeaseCredentialsFn(cfg *LeaseConfig, fn CredentialsFn) error {
+	return cfg.setCredentialsFn(fn)
+}
+
+// SetLeaseTLSConfig stores a clone of the caller's TLS config (nil rejected)
+// and enables TLS.
+func SetLeaseTLSConfig(cfg *LeaseConfig, tlsConfig *tls.Config) error {
+	if err := cfg.setTLSConfig(tlsConfig); err != nil {
+		return err
+	}
+	cfg.UseTLS = true
 	return nil
 }
 

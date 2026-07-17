@@ -29,6 +29,12 @@ var (
 // Config controls how the lease manager connects and where it writes keys.
 type Config = backend.LeaseConfig
 
+// CredentialsFn supplies AUTH credentials dynamically. It is invoked on each
+// connection attempt (initial dial and every reconnect), so rotated
+// credentials are picked up without rebuilding the manager. An empty username
+// authenticates the default user. It must be safe for concurrent use.
+type CredentialsFn = backend.CredentialsFn
+
 // Option customizes a Valkey-backed lease manager.
 type Option func(*Config) error
 
@@ -326,6 +332,35 @@ func WithTLS() Option {
 	}
 }
 
+// WithTLSConfig enables TLS using the caller's TLS configuration (for example
+// a custom RootCAs pool or ServerName). The config is cloned immediately, so
+// later caller mutation does not affect the manager; nil is rejected.
+func WithTLSConfig(tlsConfig *tls.Config) Option {
+	return func(cfg *Config) error {
+		return backend.SetLeaseTLSConfig(cfg, tlsConfig)
+	}
+}
+
+// WithAuth authenticates with static credentials. The password is required;
+// an empty username authenticates the default user (password-only
+// deployments). The password is never logged, and formatting the manager's
+// config redacts it. Mutually exclusive with WithCredentialsProvider.
+func WithAuth(username, password string) Option {
+	return func(cfg *Config) error {
+		return backend.SetLeaseAuth(cfg, username, password)
+	}
+}
+
+// WithCredentialsProvider authenticates with dynamically supplied credentials.
+// fn is invoked on each connection attempt (initial dial and every reconnect),
+// so rotated credentials are picked up without rebuilding the manager; nil is
+// rejected. Mutually exclusive with WithAuth.
+func WithCredentialsProvider(fn CredentialsFn) Option {
+	return func(cfg *Config) error {
+		return backend.SetLeaseCredentialsFn(cfg, fn)
+	}
+}
+
 // WithCluster configures the manager to use a Valkey cluster endpoint.
 func WithCluster() Option {
 	return func(cfg *Config) error {
@@ -377,16 +412,30 @@ func isNil(err error) bool {
 }
 
 func newClient(cfg Config) (valkey.Client, error) {
-	var tlsConfig *tls.Config
-	if cfg.UseTLS {
+	// CloneTLSConfig hands out a private copy (already cloned once at the
+	// option boundary), so no two clients share a mutable tls.Config.
+	tlsConfig := cfg.CloneTLSConfig()
+	if cfg.UseTLS && tlsConfig == nil {
 		tlsConfig = &tls.Config{}
 	}
 
 	opts := valkey.ClientOption{
 		InitAddress:       []string{cfg.Addr},
 		TLSConfig:         tlsConfig,
+		Username:          cfg.Username,
+		Password:          cfg.Password,
 		ForceSingleClient: !cfg.UseCluster,
 		DisableCache:      true,
+	}
+	if cfg.Credentials != nil {
+		fn := cfg.Credentials
+		opts.AuthCredentialsFn = func(valkey.AuthCredentialsContext) (valkey.AuthCredentials, error) {
+			username, password, err := fn()
+			if err != nil {
+				return valkey.AuthCredentials{}, err
+			}
+			return valkey.AuthCredentials{Username: username, Password: password}, nil
+		}
 	}
 	if !cfg.UseCluster {
 		opts.SelectDB = cfg.DB
