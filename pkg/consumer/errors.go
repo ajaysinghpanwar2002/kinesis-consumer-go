@@ -16,3 +16,10 @@ var ErrNoShards = errors.New("no shards found")
 // either Close was called before Start, or Close stopped a running Start.
 // Match it with errors.Is.
 var ErrConsumerClosed = errors.New("consumer is closed")
+
+// ErrShardSyncStale is returned (wrapped) from Start when periodic shard
+// discovery has kept failing for longer than the configured maximum staleness
+// (WithShardSyncMaxStaleness) and the consumer can no longer trust its shard
+// map. The returned error also preserves the causal sync failure; match the
+// sentinel with errors.Is and inspect the cause with errors.Is/errors.As.
+var ErrShardSyncStale = errors.New("shard discovery stale")

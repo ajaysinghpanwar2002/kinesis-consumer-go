@@ -332,46 +332,20 @@ func TestStartAcquiresChildWhenParentCheckpointCompletesDuringRefresh(t *testing
 	waitStartDone(t, done, nil)
 }
 
-func TestStartReturnsPeriodicRefreshListError(t *testing.T) {
+func TestStartSurvivesTransientPeriodicRefreshListError(t *testing.T) {
 	t.Parallel()
 
+	// One failed periodic refresh must not stop delivery: the shard-1 worker
+	// keeps running through the failure, and the next successful refresh
+	// discovers and acquires shard-2 (recovery).
 	errBoom := errors.New("boom")
 	shardLease := &recordingReleaseLease{}
-	manager := &recordingAcquireManager{
-		results: []acquireResult{
-			{lease: shardLease, acquired: true},
-		},
-	}
-	c := newTestStartConsumerWithLeaseManager(
-		&fakeKinesisClient{
-			outs: []*kinesis.ListShardsOutput{
-				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
-			},
-			errs: []error{nil, errBoom},
-		},
-		manager,
-	)
-	c.tuning.shardSyncInterval = time.Millisecond
-
-	err := c.Start(context.Background())
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("Start() error = %v, want wraps %v", err, errBoom)
-	}
-	if err == nil || err.Error() != "list shards: boom" {
-		t.Fatalf("Start() error = %v, want %q", err, "list shards: boom")
-	}
-}
-
-func TestStartReturnsPeriodicRefreshAcquisitionError(t *testing.T) {
-	t.Parallel()
-
-	errBoom := errors.New("boom")
-	shardLease := &recordingReleaseLease{}
+	recoveredLease := &recordingReleaseLease{}
 	manager := &recordingAcquireManager{
 		callCh: make(chan acquireCall, 3),
 		results: []acquireResult{
 			{lease: shardLease, acquired: true},
-			{err: errBoom},
+			{lease: recoveredLease, acquired: true},
 		},
 	}
 	c := newTestStartConsumerWithLeaseManager(
@@ -383,19 +357,348 @@ func TestStartReturnsPeriodicRefreshAcquisitionError(t *testing.T) {
 					{ShardId: aws.String("shard-2")},
 				}},
 			},
+			errs: []error{nil, errBoom, nil},
+		},
+		manager,
+	)
+	c.tuning.shardSyncInterval = time.Millisecond
+
+	var workerForceStopped atomic.Bool
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		<-ctx.Done()
+		workerForceStopped.Store(true)
+		return "", 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	first := waitAcquireCall(t, manager)
+	if first.shardID != "shard-1" {
+		t.Fatalf("first acquired shard = %q, want shard-1", first.shardID)
+	}
+	// The failed refresh happens between these two acquisitions; reaching the
+	// recovered shard-2 acquisition proves the loop survived it.
+	second := waitAcquireCall(t, manager)
+	if second.shardID != "shard-2" {
+		t.Fatalf("recovered acquired shard = %q, want shard-2", second.shardID)
+	}
+	if workerForceStopped.Load() {
+		t.Fatal("shard-1 worker was stopped by a transient refresh failure")
+	}
+	health := c.Health().ShardSync
+	if health.LastSuccess.IsZero() {
+		t.Fatal("Health().ShardSync.LastSuccess = zero, want anchored")
+	}
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartSurvivesTransientPeriodicRefreshAcquisitionError(t *testing.T) {
+	t.Parallel()
+
+	// A failed sync lease acquisition is a lease-backend blip, not a fatal
+	// run error: the next sync attempt retries the same shard and succeeds.
+	errBoom := errors.New("boom")
+	shardLease := &recordingReleaseLease{}
+	recoveredLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 4),
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+			{err: errBoom},
+			{lease: recoveredLease, acquired: true},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+				// The failing pass consumes the second listing and its
+				// candidate map is discarded, so the recovery pass must
+				// rediscover shard-2 from a fresh listing.
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+			},
 		},
 		manager,
 	)
 	c.tuning.shardSyncInterval = time.Millisecond
 	c.tuning.retryMaxAttempts = 1
 
-	err := c.Start(context.Background())
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("Start() error = %v, want wraps %v", err, errBoom)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	first := waitAcquireCall(t, manager)
+	if first.shardID != "shard-1" {
+		t.Fatalf("first acquired shard = %q, want shard-1", first.shardID)
 	}
-	want := "acquire shard leases shard-2: acquire shard lease shard-2: boom"
-	if err == nil || err.Error() != want {
-		t.Fatalf("Start() error = %v, want %q", err, want)
+	failed := waitAcquireCall(t, manager)
+	if failed.shardID != "shard-2" {
+		t.Fatalf("failing acquired shard = %q, want shard-2", failed.shardID)
+	}
+	recovered := waitAcquireCall(t, manager)
+	if recovered.shardID != "shard-2" {
+		t.Fatalf("recovered acquired shard = %q, want shard-2", recovered.shardID)
+	}
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+// failAfterFirstListClient serves one successful ListShards, then fails every
+// later call with a fixed error — a persistently broken periodic refresh.
+type failAfterFirstListClient struct {
+	fakeKinesisClient
+
+	calls atomic.Int32
+	out   *kinesis.ListShardsOutput
+	err   error
+}
+
+func (c *failAfterFirstListClient) ListShards(context.Context, *kinesis.ListShardsInput, ...func(*kinesis.Options)) (*kinesis.ListShardsOutput, error) {
+	if c.calls.Add(1) == 1 {
+		return c.out, nil
+	}
+	return nil, c.err
+}
+
+// flakyReadinessStore fails checkpoint Gets for one shard a fixed number of
+// times, then behaves like an empty store.
+type flakyReadinessStore struct {
+	mu        sync.Mutex
+	failShard string
+	failErr   error
+	remaining int
+}
+
+func (s *flakyReadinessStore) Get(_ context.Context, _, shardID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if shardID == s.failShard && s.remaining > 0 {
+		s.remaining--
+		return "", s.failErr
+	}
+	return "", nil
+}
+
+func (*flakyReadinessStore) Save(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*flakyReadinessStore) Delete(context.Context, string, string) error {
+	return nil
+}
+
+func TestStartSurvivesTransientRefreshCheckpointReadError(t *testing.T) {
+	t.Parallel()
+
+	// A transient checkpoint failure during the readiness check of a refresh
+	// pass must not stop delivery; the retried pass recovers and acquires the
+	// newly discovered shard.
+	errBoom := errors.New("boom")
+	shardLease := &recordingReleaseLease{}
+	recoveredLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		callCh: make(chan acquireCall, 3),
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+			{lease: recoveredLease, acquired: true},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+				// The failing pass consumes the second listing and its
+				// candidate map is discarded, so the recovery pass must
+				// rediscover shard-2 from a fresh listing.
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.store = &flakyReadinessStore{failShard: "shard-2", failErr: errBoom, remaining: 1}
+	c.tuning.shardSyncInterval = time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	first := waitAcquireCall(t, manager)
+	if first.shardID != "shard-1" {
+		t.Fatalf("first acquired shard = %q, want shard-1", first.shardID)
+	}
+	second := waitAcquireCall(t, manager)
+	if second.shardID != "shard-2" {
+		t.Fatalf("recovered acquired shard = %q, want shard-2", second.shardID)
+	}
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+// flakyListLeaseManager grants leases like recordingAcquireManager but fails
+// lease listing with a queued error sequence.
+type flakyListLeaseManager struct {
+	*recordingAcquireManager
+
+	mu       sync.Mutex
+	listErrs []error
+}
+
+func (m *flakyListLeaseManager) List(context.Context, string) (map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.listErrs) > 0 {
+		err := m.listErrs[0]
+		m.listErrs = m.listErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+func TestStartSurvivesTransientRefreshLeaseListError(t *testing.T) {
+	t.Parallel()
+
+	// A transient lease-backend listing failure during a refresh pass must
+	// not stop delivery; the retried pass recovers and acquires the newly
+	// discovered shard.
+	errBoom := errors.New("boom")
+	shardLease := &recordingReleaseLease{}
+	recoveredLease := &recordingReleaseLease{}
+	manager := &flakyListLeaseManager{
+		recordingAcquireManager: &recordingAcquireManager{
+			callCh: make(chan acquireCall, 3),
+			results: []acquireResult{
+				{lease: shardLease, acquired: true},
+				{lease: recoveredLease, acquired: true},
+			},
+		},
+		// The initial acquisition's List succeeds; the first refresh pass
+		// fails once; everything after recovers.
+		listErrs: []error{nil, errBoom},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+				// The failing pass consumes the second listing and its
+				// candidate map is discarded, so the recovery pass must
+				// rediscover shard-2 from a fresh listing.
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+				{Shards: []types.Shard{
+					{ShardId: aws.String("shard-1")},
+					{ShardId: aws.String("shard-2")},
+				}},
+			},
+		},
+		manager,
+	)
+	c.tuning.shardSyncInterval = time.Millisecond
+	c.tuning.retryMaxAttempts = 1
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+
+	first := waitAcquireCall(t, manager.recordingAcquireManager)
+	if first.shardID != "shard-1" {
+		t.Fatalf("first acquired shard = %q, want shard-1", first.shardID)
+	}
+	second := waitAcquireCall(t, manager.recordingAcquireManager)
+	if second.shardID != "shard-2" {
+		t.Fatalf("recovered acquired shard = %q, want shard-2", second.shardID)
+	}
+
+	cancel()
+	waitStartDone(t, done, nil)
+}
+
+func TestStartReturnsFatalPeriodicRefreshAuthError(t *testing.T) {
+	t.Parallel()
+
+	// Broken authorization is not survivable: no retry can repair it, so the
+	// run stops immediately instead of riding the staleness bound.
+	authErr := &types.AccessDeniedException{Message: aws.String("denied")}
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+		},
+	}
+	c := newTestStartConsumerWithLeaseManager(
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+			errs: []error{nil, authErr},
+		},
+		manager,
+	)
+	c.tuning.shardSyncInterval = time.Millisecond
+
+	err := c.Start(context.Background())
+	var gotAuth *types.AccessDeniedException
+	if !errors.As(err, &gotAuth) {
+		t.Fatalf("Start() error = %v, want wraps *types.AccessDeniedException", err)
+	}
+}
+
+func TestStartReturnsShardSyncStaleErrorAfterPersistentRefreshFailure(t *testing.T) {
+	t.Parallel()
+
+	// Discovery that keeps failing past the staleness bound must eventually
+	// surface the causal error through Start.
+	errBoom := errors.New("boom")
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+		},
+	}
+	// The initial listing succeeds; every periodic refresh after it fails.
+	client := &failAfterFirstListClient{
+		out: &kinesis.ListShardsOutput{
+			Shards: []types.Shard{{ShardId: aws.String("shard-1")}},
+		},
+		err: errBoom,
+	}
+	c := newTestStartConsumerWithLeaseManager(client, manager)
+	c.tuning.shardSyncInterval = time.Millisecond
+	c.tuning.shardSyncMaxStaleness = 50 * time.Millisecond
+
+	err := c.Start(context.Background())
+	if !errors.Is(err, ErrShardSyncStale) {
+		t.Fatalf("Start() error = %v, want wraps %v", err, ErrShardSyncStale)
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Start() error = %v, want preserves cause %v", err, errBoom)
+	}
+	health := c.Health().ShardSync
+	if health.ConsecutiveFailures < 1 {
+		t.Fatalf("Health().ShardSync.ConsecutiveFailures = %d, want >= 1", health.ConsecutiveFailures)
+	}
+	if !errors.Is(health.LastError, errBoom) {
+		t.Fatalf("Health().ShardSync.LastError = %v, want wraps %v", health.LastError, errBoom)
 	}
 }
 

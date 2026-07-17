@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
+	"github.com/aws/smithy-go"
 )
 
 func TestRefreshAndRebalanceShardWorkersLoopRunsRebalanceOnTick(t *testing.T) {
@@ -221,13 +222,205 @@ func TestRefreshAndRebalanceShardWorkersLoopSkipsRebalanceErrorAndContinues(t *t
 	}
 }
 
-func TestRefreshAndRebalanceShardWorkersLoopReturnsRefreshError(t *testing.T) {
+func TestRefreshAndRebalanceShardWorkersLoopSurvivesTransientRefreshError(t *testing.T) {
 	t.Parallel()
 
 	errBoom := errors.New("boom")
 	manager := &recordingRebalanceOnceManager{}
 	c := newTestRebalanceOnceConsumer(manager)
-	c.client = &fakeKinesisClient{err: errBoom}
+	logHandler := newCapturingHandler()
+	reporter := &recordingReporter{}
+	c.logger = slog.New(logHandler)
+	c.reporter = reporter
+	client := &fakeKinesisClient{
+		errs:       []error{errBoom, nil},
+		listCallCh: make(chan kinesis.ListShardsInput, 3),
+	}
+	c.client = client
+	knownShards := map[string]types.Shard{}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRefreshAndRebalanceShardWorkersLoop(
+		ctx,
+		c,
+		time.Millisecond,
+		fixedRebalanceDelay(time.Hour),
+		knownShards,
+		newShardCompletionState(),
+		nil,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+
+	// The first refresh fails; reaching a second ListShards call proves the
+	// loop retried instead of returning, and a third call proves the second
+	// (recovery) pass fully completed and recorded its success.
+	waitListShardsCall(t, client.listCallCh)
+	waitListShardsCall(t, client.listCallCh)
+	waitListShardsCall(t, client.listCallCh)
+	health := c.Health().ShardSync
+	if health.ConsecutiveFailures != 0 || health.LastError != nil || health.LastSuccess.IsZero() {
+		t.Fatalf("recovered health = %+v, want 0 consecutive failures, nil error, non-zero last success", health)
+	}
+
+	cancel()
+	waitRefreshAndRebalanceShardWorkersLoopDone(t, done, nil)
+	waitWorkerGroupDone(t, &workerWG)
+
+	// The failed pass is survivable but never silent: one failure counter and
+	// one structured warn carrying the retry diagnostics.
+	failures := reporter.countersNamed(metricShardSyncFailures)
+	if len(failures) != 1 {
+		t.Fatalf("shard_sync_failures calls = %d, want 1", len(failures))
+	}
+	assertCounterTags(t, failures[0], map[string]string{"stream": "stream"})
+	var warns []capturedRecord
+	for _, rec := range logHandler.snapshot() {
+		if rec.message == "shard sync failed" {
+			warns = append(warns, rec)
+		}
+	}
+	if len(warns) != 1 {
+		t.Fatalf("shard sync warn logs = %d, want 1", len(warns))
+	}
+	if warns[0].level != slog.LevelWarn {
+		t.Fatalf("shard sync log level = %v, want %v", warns[0].level, slog.LevelWarn)
+	}
+	for _, attr := range []string{"error", "consecutive_failures", "staleness", "retry_delay"} {
+		if warns[0].attrs[attr] == "" {
+			t.Fatalf("shard sync log attribute %q missing", attr)
+		}
+	}
+}
+
+func TestRefreshAndRebalanceShardWorkersLoopKeepsShardMapAcrossFailedPasses(t *testing.T) {
+	t.Parallel()
+
+	// A pass that lists successfully but then fails (readiness read error)
+	// must not leak its partial discovery into the shared shard map: the last
+	// successfully synced map — here just shard-old — is what rebalance ticks
+	// keep seeing.
+	errBoom := errors.New("boom")
+	manager := &recordingRebalanceOnceManager{
+		workerOwners: []string{"self"},
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	c.store = &flakyReadinessStore{failShard: "shard-new", failErr: errBoom, remaining: 1 << 30}
+	c.client = &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{Shards: []types.Shard{{ShardId: aws.String("shard-new")}}},
+			{Shards: []types.Shard{{ShardId: aws.String("shard-new")}}},
+		},
+	}
+	knownShards := readyShardWorkerMap("shard-old")
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRefreshAndRebalanceShardWorkersLoop(
+		ctx,
+		c,
+		time.Millisecond,
+		fixedRebalanceDelay(time.Hour),
+		knownShards,
+		newShardCompletionState(),
+		nil,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+
+	waitForTrue(t, func() bool {
+		return c.Health().ShardSync.ConsecutiveFailures >= 2
+	}, "two failing sync passes")
+	cancel()
+	waitRefreshAndRebalanceShardWorkersLoopDone(t, done, nil)
+	waitWorkerGroupDone(t, &workerWG)
+
+	if _, ok := knownShards["shard-new"]; ok {
+		t.Fatal("failed sync passes leaked shard-new into the shared shard map")
+	}
+	if _, ok := knownShards["shard-old"]; !ok {
+		t.Fatal("shard-old missing: the last known shard map was not preserved")
+	}
+}
+
+func TestRefreshAndRebalanceShardWorkersLoopCommitsShardMapAfterRecoveredPass(t *testing.T) {
+	t.Parallel()
+
+	// Once a pass completes end to end, its discovery commits: after one
+	// failed pass, the recovered pass rediscovers shard-new and it lands in
+	// the shared shard map.
+	errBoom := errors.New("boom")
+	manager := &recordingRebalanceOnceManager{
+		workerOwners: []string{"self"},
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	c.store = &flakyReadinessStore{failShard: "shard-new", failErr: errBoom, remaining: 1}
+	client := &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{Shards: []types.Shard{{ShardId: aws.String("shard-new")}}},
+			{Shards: []types.Shard{{ShardId: aws.String("shard-new")}}},
+		},
+		listCallCh: make(chan kinesis.ListShardsInput, 3),
+	}
+	c.client = client
+	knownShards := map[string]types.Shard{}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRefreshAndRebalanceShardWorkersLoop(
+		ctx,
+		c,
+		time.Millisecond,
+		fixedRebalanceDelay(time.Hour),
+		knownShards,
+		newShardCompletionState(),
+		nil,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+
+	// Pass 1 lists and fails at readiness; pass 2 relists and commits. A
+	// third ListShards call proves pass 2 fully completed.
+	waitListShardsCall(t, client.listCallCh)
+	waitListShardsCall(t, client.listCallCh)
+	waitListShardsCall(t, client.listCallCh)
+	cancel()
+	waitRefreshAndRebalanceShardWorkersLoopDone(t, done, nil)
+	waitWorkerGroupDone(t, &workerWG)
+
+	if _, ok := knownShards["shard-new"]; !ok {
+		t.Fatal("recovered sync pass did not commit shard-new to the shared shard map")
+	}
+	health := c.Health().ShardSync
+	if health.ConsecutiveFailures != 0 || health.LastError != nil {
+		t.Fatalf("recovered health = %+v, want healthy", health)
+	}
+}
+
+func TestRefreshAndRebalanceShardWorkersLoopReturnsFatalClientFaultRefreshError(t *testing.T) {
+	t.Parallel()
+
+	authErr := &smithy.GenericAPIError{
+		Code:    "AccessDeniedException",
+		Message: "denied",
+		Fault:   smithy.FaultClient,
+	}
+	manager := &recordingRebalanceOnceManager{}
+	c := newTestRebalanceOnceConsumer(manager)
+	c.client = &fakeKinesisClient{err: authErr}
 	knownShards := map[string]types.Shard{}
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup
@@ -249,9 +442,111 @@ func TestRefreshAndRebalanceShardWorkersLoopReturnsRefreshError(t *testing.T) {
 		cancel,
 	)
 
-	err := waitRefreshAndRebalanceShardWorkersLoopDone(t, done, errBoom)
-	if err == nil || err.Error() != "list shards: boom" {
-		t.Fatalf("refreshAndRebalanceShardWorkersLoop() error = %v, want %q", err, "list shards: boom")
+	err := waitRefreshAndRebalanceShardWorkersLoopDone(t, done, authErr)
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "AccessDeniedException" {
+		t.Fatalf("refreshAndRebalanceShardWorkersLoop() error = %v, want access-denied client fault", err)
+	}
+}
+
+func TestRefreshAndRebalanceShardWorkersLoopReturnsStaleErrorPastMaxStaleness(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingRebalanceOnceManager{}
+	c := newTestRebalanceOnceConsumer(manager)
+	c.client = &fakeKinesisClient{err: errBoom}
+	c.tuning.shardSyncMaxStaleness = time.Minute
+	knownShards := map[string]types.Shard{}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	// The first now() call anchors the staleness clock; every later call is
+	// two minutes on, so the first failed pass is already past the bound.
+	base := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	var nowCalls atomic.Int32
+	stalledNow := func() time.Time {
+		if nowCalls.Add(1) == 1 {
+			return base
+		}
+		return base.Add(2 * time.Minute)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.refreshAndRebalanceShardWorkersLoop(
+			ctx,
+			time.Millisecond,
+			fixedRebalanceDelay(time.Hour),
+			knownShards,
+			newShardCompletionState(),
+			nil,
+			workers,
+			&workerWG,
+			workerErrCh,
+			cancel,
+			stalledNow,
+		)
+	}()
+
+	err := waitRefreshAndRebalanceShardWorkersLoopDone(t, done, ErrShardSyncStale)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("refreshAndRebalanceShardWorkersLoop() error = %v, want preserves cause %v", err, errBoom)
+	}
+	want := "shard discovery stale for 2m0s (max 1m0s): list shards: boom"
+	if err == nil || err.Error() != want {
+		t.Fatalf("refreshAndRebalanceShardWorkersLoop() error = %q, want %q", err, want)
+	}
+}
+
+func TestRefreshAndRebalanceShardWorkersLoopShutdownDuringFailingSyncReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	manager := &recordingRebalanceOnceManager{}
+	c := newTestRebalanceOnceConsumer(manager)
+	c.client = &fakeKinesisClient{err: errBoom}
+	knownShards := map[string]types.Shard{}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRefreshAndRebalanceShardWorkersLoop(
+		ctx,
+		c,
+		time.Millisecond,
+		fixedRebalanceDelay(time.Hour),
+		knownShards,
+		newShardCompletionState(),
+		nil,
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+
+	waitForTrue(t, func() bool {
+		return c.Health().ShardSync.ConsecutiveFailures >= 1
+	}, "a failing sync pass to be recorded")
+
+	// Ordinary shutdown while discovery is unhealthy is still a clean stop,
+	// never misreported as a sync failure.
+	cancel()
+	waitRefreshAndRebalanceShardWorkersLoopDone(t, done, nil)
+	waitWorkerGroupDone(t, &workerWG)
+}
+
+func waitListShardsCall(t *testing.T, calls <-chan kinesis.ListShardsInput) {
+	t.Helper()
+
+	select {
+	case <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ListShards call")
 	}
 }
 

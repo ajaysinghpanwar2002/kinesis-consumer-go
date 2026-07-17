@@ -26,6 +26,7 @@ const (
 	metricRebalanceMoves        = "kinesis_consumer.rebalance_moves"
 	metricRebalanceSkips        = "kinesis_consumer.rebalance_skips"
 	metricRebalancePassFailures = "kinesis_consumer.rebalance_pass_failures"
+	metricShardSyncFailures     = "kinesis_consumer.shard_sync_failures"
 	metricShardsCompleted       = "kinesis_consumer.shards_completed"
 	metricWorkerStarts          = "kinesis_consumer.worker_starts"
 	metricWorkerStops           = "kinesis_consumer.worker_stops"

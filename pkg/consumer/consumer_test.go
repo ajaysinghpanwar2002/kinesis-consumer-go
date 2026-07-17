@@ -338,6 +338,62 @@ func TestNewAcceptsCustomKinesisAPI(t *testing.T) {
 	}
 }
 
+func TestNewShardSyncMaxStaleness(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{}
+	store := fakeCheckpointStore{}
+	handler := func(context.Context, Record) error { return nil }
+	leaseMgr := fakeLeaseManager{}
+
+	t.Run("default derives from sync interval", func(t *testing.T) {
+		t.Parallel()
+		c, err := New(
+			Config{StreamName: "stream", ConsumerGroup: "group"},
+			client, store, handler,
+			WithLeaseManager(leaseMgr),
+			WithPolling(time.Second, 2*time.Second),
+		)
+		if err != nil {
+			t.Fatalf("New() error = %v, want nil", err)
+		}
+		if got := c.tuning.shardSyncMaxStaleness; got != 20*time.Second {
+			t.Fatalf("shardSyncMaxStaleness = %v, want %v (10x sync interval)", got, 20*time.Second)
+		}
+	})
+
+	t.Run("explicit value retained", func(t *testing.T) {
+		t.Parallel()
+		c, err := New(
+			Config{StreamName: "stream", ConsumerGroup: "group"},
+			client, store, handler,
+			WithLeaseManager(leaseMgr),
+			WithShardSyncMaxStaleness(5*time.Minute),
+		)
+		if err != nil {
+			t.Fatalf("New() error = %v, want nil", err)
+		}
+		if got := c.tuning.shardSyncMaxStaleness; got != 5*time.Minute {
+			t.Fatalf("shardSyncMaxStaleness = %v, want %v", got, 5*time.Minute)
+		}
+	})
+
+	t.Run("below sync interval rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := New(
+			Config{StreamName: "stream", ConsumerGroup: "group"},
+			client, store, handler,
+			WithLeaseManager(leaseMgr),
+			WithPolling(time.Second, 10*time.Second),
+			WithShardSyncMaxStaleness(5*time.Second),
+		)
+		want := "shard sync max staleness must be >= shardSyncInterval"
+		if err == nil || err.Error() != want {
+			t.Fatalf("New() error = %v, want %q", err, want)
+		}
+	})
+}
+
 func TestNewUsesLeaseProviderStore(t *testing.T) {
 	t.Parallel()
 

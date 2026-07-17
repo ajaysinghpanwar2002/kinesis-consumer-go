@@ -205,6 +205,16 @@ func TestOptionValidation(t *testing.T) {
 			want: "graceful drain timeout cannot be negative",
 		},
 		{
+			name: "shard sync max staleness zero",
+			opt:  WithShardSyncMaxStaleness(0),
+			want: "shard sync max staleness must be > 0",
+		},
+		{
+			name: "shard sync max staleness negative",
+			opt:  WithShardSyncMaxStaleness(-time.Second),
+			want: "shard sync max staleness must be > 0",
+		},
+		{
 			name: "nil logger",
 			opt:  WithLogger(nil),
 			want: "logger cannot be nil",

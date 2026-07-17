@@ -182,6 +182,26 @@ func WithIdleTimeBetweenReads(d time.Duration) Option {
 	}
 }
 
+// WithShardSyncMaxStaleness bounds how long the consumer keeps running on a
+// stale shard map. Periodic shard-sync failures (Kinesis listing, checkpoint
+// readiness reads, lease listing) are survivable: existing workers keep
+// delivering and discovery is retried with capped backoff. But once the time
+// since the last successful sync exceeds this bound, resharding may have
+// become invisible, so Start returns the causal error wrapped in
+// ErrShardSyncStale.
+//
+// The default is 10x the shard sync interval (10m with default polling). The
+// value must be at least the shard sync interval configured via WithPolling.
+func WithShardSyncMaxStaleness(maxStaleness time.Duration) Option {
+	return func(cfg *options) error {
+		if maxStaleness <= 0 {
+			return errors.New("shard sync max staleness must be > 0")
+		}
+		cfg.tuning.shardSyncMaxStaleness = maxStaleness
+		return nil
+	}
+}
+
 // WithHeartbeat configures the worker heartbeat interval and TTL. Both values
 // must be whole milliseconds because the built-in Valkey backend stores TTLs
 // with millisecond precision.

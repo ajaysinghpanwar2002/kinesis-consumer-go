@@ -13,6 +13,7 @@ type tuningConfig struct {
 	pollInterval             time.Duration
 	idleTimeBetweenReads     time.Duration
 	shardSyncInterval        time.Duration
+	shardSyncMaxStaleness    time.Duration
 	retryMaxAttempts         int
 	retryBackoff             time.Duration
 	checkpointEvery          int
@@ -60,6 +61,13 @@ func (t tuningConfig) validate() error {
 	}
 	if t.shardSyncInterval < time.Second {
 		return errors.New("shardSyncInterval must be >= 1s")
+	}
+	// Zero means "derive the default in New" (and, for direct construction,
+	// "staleness policy disabled"); an explicit value below the sync interval
+	// would declare the shard map stale before a single failed pass could
+	// even be retried.
+	if t.shardSyncMaxStaleness != 0 && t.shardSyncMaxStaleness < t.shardSyncInterval {
+		return errors.New("shard sync max staleness must be >= shardSyncInterval")
 	}
 	if t.retryMaxAttempts < 1 {
 		return errors.New("retry max attempts must be >= 1")

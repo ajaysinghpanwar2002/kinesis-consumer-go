@@ -2,8 +2,8 @@ package consumer
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -151,12 +151,21 @@ func (c *Consumer) refreshAndStartReadyShardWorkers(
 	workerErrCh chan<- error,
 	stopRun context.CancelFunc,
 ) error {
-	if err := c.refreshKnownShards(ctx, knownShards); err != nil {
+	// The whole pass runs against a candidate copy and commits only after
+	// every step succeeds: knownShards is the survivable-sync contract's
+	// "last known shard map", also read by rebalance ticks, so a failure
+	// mid-pass must not expose a partially synced view. The next attempt
+	// rediscovers everything from Kinesis, so nothing is lost by discarding
+	// the candidate.
+	candidate := make(map[string]types.Shard, len(knownShards))
+	maps.Copy(candidate, knownShards)
+
+	if err := c.refreshKnownShards(ctx, candidate); err != nil {
 		return err
 	}
-	return c.acquireAndStartReadyShardWorkers(
+	if err := c.acquireAndStartReadyShardWorkers(
 		ctx,
-		knownShards,
+		candidate,
 		completionState,
 		cooldown,
 		now,
@@ -164,49 +173,10 @@ func (c *Consumer) refreshAndStartReadyShardWorkers(
 		workerWG,
 		workerErrCh,
 		stopRun,
-	)
-}
-
-func (c *Consumer) refreshAndStartReadyShardWorkersLoop(
-	ctx context.Context,
-	interval time.Duration,
-	knownShards map[string]types.Shard,
-	completionState *shardCompletionState,
-	cooldown map[string]time.Time,
-	now func() time.Time,
-	workers *shardWorkerSet,
-	workerWG *sync.WaitGroup,
-	workerErrCh chan<- error,
-	stopRun context.CancelFunc,
-) error {
-	if now == nil {
-		now = time.Now
+	); err != nil {
+		return err
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return nil
-			}
-			return ctx.Err()
-		case <-ticker.C:
-			if err := c.refreshAndStartReadyShardWorkers(
-				ctx,
-				knownShards,
-				completionState,
-				cooldown,
-				now(),
-				workers,
-				workerWG,
-				workerErrCh,
-				stopRun,
-			); err != nil {
-				return err
-			}
-		}
-	}
+	maps.Copy(knownShards, candidate)
+	return nil
 }

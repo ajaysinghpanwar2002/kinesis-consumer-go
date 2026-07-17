@@ -770,123 +770,14 @@ func TestRefreshAndStartReadyShardWorkersReturnsAcquireErrorAfterRefresh(t *test
 		t.Fatalf("refreshAndStartReadyShardWorkers() error = %v, want %q", err, want)
 	}
 	assertAcquireShardOrder(t, manager.calls, []string{"new"})
-	if got := aws.ToString(knownShards["new"].ShardId); got != "new" {
-		t.Fatalf("knownShards[new].ShardId = %q, want new", got)
+	// The pass failed after listing, so its discovery must not commit: the
+	// shared map still reflects the last successful sync.
+	if _, ok := knownShards["new"]; ok {
+		t.Fatal("failed refresh pass committed shard new into the shared shard map")
 	}
 	if workers.has("new") {
 		t.Fatal("workers.has(new) = true, want false")
 	}
-}
-
-func TestRefreshAndStartReadyShardWorkersLoopRunsOnTickAndStopsOnCancel(t *testing.T) {
-	t.Parallel()
-
-	manager := &recordingAcquireManager{
-		callCh: make(chan acquireCall, 1),
-		results: []acquireResult{
-			{acquired: false},
-		},
-	}
-	c := newTestReadyShardWorkerConsumer(manager, nil)
-	c.client = &fakeKinesisClient{
-		outs: []*kinesis.ListShardsOutput{
-			{Shards: []types.Shard{testShard("new", "", "")}},
-		},
-	}
-	knownShards := map[string]types.Shard{}
-	workers := newShardWorkerSet()
-	var workerWG sync.WaitGroup
-	workerErrCh := make(chan error, 1)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := runRefreshAndStartReadyShardWorkersLoop(
-		ctx,
-		c,
-		time.Millisecond,
-		knownShards,
-		newShardCompletionState(),
-		nil,
-		time.Now(),
-		workers,
-		&workerWG,
-		workerErrCh,
-		cancel,
-	)
-
-	_ = waitAcquireCall(t, manager)
-	cancel()
-	waitRefreshAndStartReadyShardWorkersLoopDone(t, done, nil)
-	if got := aws.ToString(knownShards["new"].ShardId); got != "new" {
-		t.Fatalf("knownShards[new].ShardId = %q, want new", got)
-	}
-	if workers.has("new") {
-		t.Fatal("workers.has(new) = true, want false")
-	}
-}
-
-func TestRefreshAndStartReadyShardWorkersLoopReturnsRefreshError(t *testing.T) {
-	t.Parallel()
-
-	errBoom := errors.New("boom")
-	manager := &recordingAcquireManager{}
-	c := newTestReadyShardWorkerConsumer(manager, nil)
-	c.client = &fakeKinesisClient{err: errBoom}
-	knownShards := map[string]types.Shard{}
-	workers := newShardWorkerSet()
-	var workerWG sync.WaitGroup
-	workerErrCh := make(chan error, 1)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := runRefreshAndStartReadyShardWorkersLoop(
-		ctx,
-		c,
-		time.Millisecond,
-		knownShards,
-		newShardCompletionState(),
-		nil,
-		time.Now(),
-		workers,
-		&workerWG,
-		workerErrCh,
-		cancel,
-	)
-
-	err := waitRefreshAndStartReadyShardWorkersLoopDone(t, done, errBoom)
-	if err == nil || err.Error() != "list shards: boom" {
-		t.Fatalf("refreshAndStartReadyShardWorkersLoop() error = %v, want %q", err, "list shards: boom")
-	}
-	assertAcquireShardOrder(t, manager.calls, nil)
-}
-
-func TestRefreshAndStartReadyShardWorkersLoopReturnsDeadlineExceeded(t *testing.T) {
-	t.Parallel()
-
-	manager := &recordingAcquireManager{}
-	c := newTestReadyShardWorkerConsumer(manager, nil)
-	c.client = &fakeKinesisClient{}
-	knownShards := map[string]types.Shard{}
-	workers := newShardWorkerSet()
-	var workerWG sync.WaitGroup
-	workerErrCh := make(chan error, 1)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	done := runRefreshAndStartReadyShardWorkersLoop(
-		ctx,
-		c,
-		time.Hour,
-		knownShards,
-		newShardCompletionState(),
-		nil,
-		time.Now(),
-		workers,
-		&workerWG,
-		workerErrCh,
-		cancel,
-	)
-
-	_ = waitRefreshAndStartReadyShardWorkersLoopDone(t, done, context.DeadlineExceeded)
 }
 
 func newTestRegisteredShardWorkerConsumer(processErr error) *Consumer {
@@ -925,52 +816,6 @@ func readyShardWorkerMap(shardIDs ...string) map[string]types.Shard {
 		shards[shardID] = types.Shard{ShardId: aws.String(shardID)}
 	}
 	return shards
-}
-
-func runRefreshAndStartReadyShardWorkersLoop(
-	ctx context.Context,
-	c *Consumer,
-	interval time.Duration,
-	knownShards map[string]types.Shard,
-	completionState *shardCompletionState,
-	cooldown map[string]time.Time,
-	now time.Time,
-	workers *shardWorkerSet,
-	workerWG *sync.WaitGroup,
-	workerErrCh chan<- error,
-	stopRun context.CancelFunc,
-) <-chan error {
-	done := make(chan error, 1)
-	go func() {
-		done <- c.refreshAndStartReadyShardWorkersLoop(
-			ctx,
-			interval,
-			knownShards,
-			completionState,
-			cooldown,
-			func() time.Time { return now },
-			workers,
-			workerWG,
-			workerErrCh,
-			stopRun,
-		)
-	}()
-	return done
-}
-
-func waitRefreshAndStartReadyShardWorkersLoopDone(t *testing.T, done <-chan error, want error) error {
-	t.Helper()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, want) {
-			t.Fatalf("refreshAndStartReadyShardWorkersLoop() error = %v, want %v", err, want)
-		}
-		return err
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for refreshAndStartReadyShardWorkersLoop to return")
-		return nil
-	}
 }
 
 func waitWorkerGroupDone(t *testing.T, workerWG *sync.WaitGroup) {

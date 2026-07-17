@@ -43,6 +43,9 @@ type Consumer struct {
 	// caller-owned and is never recorded here.
 	ownedLeaseManagerCloser io.Closer
 
+	// syncHealth backs Health().ShardSync; written by the orchestration loop.
+	syncHealth shardSyncHealthState
+
 	// lifecycleMu guards the closed/run state shared between Start and Close.
 	lifecycleMu sync.Mutex
 	closed      bool
@@ -341,6 +344,11 @@ func New(cfg Config, client KinesisAPI, store checkpoint.Store, handler HandlerF
 
 	if err := opt.tuning.validate(); err != nil {
 		return nil, err
+	}
+	// Derived (not fixed in defaultTuning) so a WithPolling override scales
+	// the staleness bound with it instead of racing a fixed default.
+	if opt.tuning.shardSyncMaxStaleness == 0 {
+		opt.tuning.shardSyncMaxStaleness = 10 * opt.tuning.shardSyncInterval
 	}
 	if opt.failurePolicy == FailurePolicySendToDLQ && opt.dlqPublisher == nil {
 		return nil, errors.New("dlq publisher is required when failure policy is send-to-dlq")

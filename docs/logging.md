@@ -89,7 +89,8 @@ because a hung `Renew` produces no error to carry the diagnosis.
 | `rebalance shard claimed` | Info | `shard`, `donor` | A claim action took the shard from an over-fair-share donor. |
 | `rebalance claim skipped` | Debug | `shard`, `donor` | The claim found the donor no longer owns the lease (not an error). |
 | `rebalance shard shed` | Info | `shard`, `owned`, `high` | This consumer stopped a worker to shed ownership above the fair-share `high` bound. |
-| `rebalance pass failed` | Warn | `error` | A rebalance pass returned an error (live context) and was skipped; the next tick retries. Shard-sync errors are not logged here — they stop the consumer, because broken shard discovery makes resharding invisible. |
+| `rebalance pass failed` | Warn | `error` | A rebalance pass returned an error (live context) and was skipped; the next tick retries. Shard-sync failures log separately (below) because they carry the staleness bound. |
+| `shard sync failed` | Warn | `error`, `consecutive_failures`, `staleness`, `retry_delay` | A periodic shard-sync pass failed (live context). Existing workers keep delivering; discovery retries after `retry_delay` (capped exponential backoff + jitter, never later than the sync interval). `staleness` is the time since the last successful sync — once it exceeds `WithShardSyncMaxStaleness`, the consumer stops with `ErrShardSyncStale` instead of logging this Warn. Fatal authorization/configuration errors stop the consumer immediately without this Warn. |
 
 Quiet passes — a balanced snapshot with no actions and no shedding — log
 nothing, and per-candidate cooldown skips are not logged; cooldown influence
@@ -121,17 +122,19 @@ terminal `consumer stopped` Error repeats the cause. The exceptions are the
 events whose error the caller swallows or retries away, so the site-level
 Warn is the only record: `shard lease release failed`,
 `shard lease renew failed; will retry`, `get records failed; backing off`,
-`worker heartbeat failed`, and `rebalance pass failed`.
+`worker heartbeat failed`, `rebalance pass failed`, and `shard sync failed`
+(until the staleness bound turns the latter into a terminal error).
 
 - **Checkpoint save failures, DLQ publish failures, and fail-fast handler
   errors** have no dedicated event; they surface through the worker and
   consumer stop events above.
 - **Per-attempt handler retries** and **expired-iterator recovery** are
   silent.
-- **Shard-sync (shard discovery) errors** are not logged at their site: they
-  stop the consumer and surface through the terminal `consumer stopped`
-  Error. Rebalance-pass failures, by contrast, are retried at the next tick
-  and warn in place (`rebalance pass failed`).
+- **Shard-sync (shard discovery) errors** warn in place (`shard sync failed`)
+  and retry with backoff; only fatal authorization/configuration errors or
+  exceeding the staleness bound stop the consumer, surfacing through the
+  terminal `consumer stopped` Error. Rebalance-pass failures likewise warn in
+  place (`rebalance pass failed`) and retry at the next tick.
 
 ## Production guidance
 
@@ -159,5 +162,10 @@ Warn is the only record: `shard lease release failed`,
     lose its shards to peers despite being healthy.
   - `rebalance pass failed` — sustained occurrences mean shard distribution
     has stopped converging.
+  - `shard sync failed` — sustained occurrences mean shard discovery is
+    degraded: existing shards keep flowing, but resharding is invisible and
+    the consumer stops with `ErrShardSyncStale` once the
+    `WithShardSyncMaxStaleness` bound is exceeded. The `staleness` attribute
+    (also exposed via `Consumer.Health`) shows how close it is.
 - All events carry machine-parseable attributes (`shard`, `stream`, `owner`,
   `donor`, counts, `error`), so JSON handlers can index them directly.

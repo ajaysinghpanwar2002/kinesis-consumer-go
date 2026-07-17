@@ -75,6 +75,14 @@ its message).
 - **Live reshard/refresh:** a long-running consumer discovers new child shards
   produced by a split/merge on its sync tick and begins consuming them without a
   restart.
+- **Survivable sync failures:** a failed sync pass (Kinesis listing, checkpoint
+  readiness reads, lease listing/acquisition) keeps the last known shard map and
+  every running worker; discovery retries with capped backoff + jitter. Fatal
+  authorization/configuration errors stop the consumer immediately, and
+  persistent failure stops it with `ErrShardSyncStale` once the
+  `WithShardSyncMaxStaleness` bound (default 10x the sync interval) is
+  exceeded. Sync health — consecutive failures, last success, last error — is
+  exposed via `Consumer.Health()`.
 - **Parent/child gating:** children are held until their parent shard is read to
   completion. Completion is recorded as a `SHARD_END` checkpoint marker, and
   children only become eligible once every parent is complete — preserving
@@ -277,6 +285,7 @@ Every knob has a working default, so a consumer runs with no options at all.
 | `WithShardConcurrency(n)` | 1 | Concurrent record-handler calls per shard |
 | `WithFailurePolicy(policy)` | `fail-fast` | Post-retry poison handling |
 | `WithHeartbeat(interval, ttl)` | 5s, 20s | Worker liveness cadence and lease/worker TTL |
+| `WithShardSyncMaxStaleness(maxStaleness)` | 10x sync interval (10m) | How long a failing shard sync may go before the consumer stops |
 | `WithRebalance(min, jitter, cooldown, maxMoves)` | 10s, 10s, 10s, 2 | Rebalance timing and move bounds |
 | `WithGracefulDrain(timeout)` | off | Drain in-flight work on shutdown |
 | `WithLogger(logger)` | discard (silent) | Structured `log/slog` lifecycle/lease/rebalance/record events |
