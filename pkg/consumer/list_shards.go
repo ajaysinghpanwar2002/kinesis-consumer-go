@@ -69,6 +69,9 @@ func (c *Consumer) listShards(ctx context.Context) ([]types.Shard, error) {
 		if err != nil {
 			return nil, fmt.Errorf("list shards: %w", err)
 		}
+		if out == nil {
+			return nil, fmt.Errorf("list shards: %w", errNilKinesisOutput)
+		}
 
 		for _, shard := range out.Shards {
 			if shard.ShardId != nil {

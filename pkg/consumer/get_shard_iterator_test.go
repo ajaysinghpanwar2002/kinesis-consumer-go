@@ -283,3 +283,29 @@ func TestGetShardIteratorWrapsClientError(t *testing.T) {
 		t.Fatalf("getShardIterator() error = %v, want %q", err, "get shard iterator shard-1: boom")
 	}
 }
+
+func TestGetShardIteratorRejectsNilOutputWithoutCheckpointMutation(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	client := &fakeKinesisClient{getShardIteratorNil: true}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+	}
+
+	iterator, err := c.getShardIterator(context.Background(), "shard-1")
+	if !errors.Is(err, errNilKinesisOutput) {
+		t.Fatalf("getShardIterator() error = %v, want wraps %v", err, errNilKinesisOutput)
+	}
+	if err == nil || err.Error() != "get shard iterator shard-1: kinesis protocol error: nil output without error" {
+		t.Fatalf("getShardIterator() error = %v, want nil-output protocol error", err)
+	}
+	if iterator != "" {
+		t.Fatalf("getShardIterator() = %q, want empty", iterator)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("checkpoint Save calls = %d, want 0", len(store.saveCalls))
+	}
+}

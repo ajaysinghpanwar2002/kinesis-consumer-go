@@ -85,7 +85,7 @@ func (c *Consumer) getShardIterator(ctx context.Context, shardID string) (string
 		return "", fmt.Errorf("get shard iterator %s: %w", shardID, err)
 	}
 	if out == nil {
-		return "", nil
+		return "", fmt.Errorf("get shard iterator %s: %w", shardID, errNilKinesisOutput)
 	}
 	return aws.ToString(out.ShardIterator), nil
 }

@@ -2,9 +2,12 @@ package consumer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 )
+
+var errNilKinesisOutput = errors.New("kinesis protocol error: nil output without error")
 
 // KinesisAPI is the subset of the AWS SDK v2 Kinesis client that the consumer
 // depends on. New accepts this interface rather than a concrete

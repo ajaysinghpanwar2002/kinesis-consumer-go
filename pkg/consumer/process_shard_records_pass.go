@@ -229,9 +229,9 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 
 		iterator = aws.ToString(out.NextShardIterator)
 
-		// getRecords never returns a nil output (it normalizes nil to an empty
-		// GetRecordsOutput), and NextShardIterator was just dereferenced above, so
-		// an empty page is the only caught-up signal to check here.
+		// getRecords rejects nil outputs, and NextShardIterator was just
+		// dereferenced above, so an empty page is the only caught-up signal to
+		// check here.
 		if len(out.Records) == 0 {
 			// Caught up to the shard tip. Flush any processed-but-not-yet-
 			// checkpointed records so a FAILOVER/RESTART (a fresh worker re-enters

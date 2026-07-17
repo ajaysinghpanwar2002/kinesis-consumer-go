@@ -875,6 +875,33 @@ func TestProcessShardRecordsPassExpiredIteratorFlushSaveFailureReturnsError(t *t
 	}
 }
 
+func TestProcessShardRecordsPassNilGetRecordsOutputDoesNotCheckpointShardEnd(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{getRecordsOuts: []*kinesis.GetRecordsOutput{nil}}
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		client:   client,
+		store:    store,
+	}
+
+	lastSeq, count, iterator, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "iterator-1")
+	if !errors.Is(err, errNilKinesisOutput) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, errNilKinesisOutput)
+	}
+	if err == nil || err.Error() != "process shard records pass shard-1: get records iterator-1: kinesis protocol error: nil output without error" {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil-output protocol error", err)
+	}
+	if lastSeq != "" || count != 0 || iterator != "" {
+		t.Fatalf("processShardRecordsPass() = (%q, %d, %q), want empty progress on error", lastSeq, count, iterator)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("checkpoint Save calls = %d, want 0 (especially no SHARD_END)", len(store.saveCalls))
+	}
+}
+
 func TestGetRecordsBackoff(t *testing.T) {
 	t.Parallel()
 

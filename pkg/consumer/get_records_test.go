@@ -133,26 +133,28 @@ func TestGetRecordsReturnsRecordsAndNextIterator(t *testing.T) {
 	}
 }
 
-func TestGetRecordsHandlesNilOutput(t *testing.T) {
+func TestGetRecordsRejectsNilOutputWithoutCheckpointMutation(t *testing.T) {
 	t.Parallel()
 
-	client := &fakeKinesisClient{}
+	store := &fakeCheckpointSaveStore{}
+	client := &fakeKinesisClient{getRecordsOuts: []*kinesis.GetRecordsOutput{nil}}
 	c := &Consumer{
 		client: client,
+		store:  store,
 	}
 
 	out, err := c.getRecords(context.Background(), "iterator-1")
-	if err != nil {
-		t.Fatalf("getRecords() error = %v, want nil", err)
+	if !errors.Is(err, errNilKinesisOutput) {
+		t.Fatalf("getRecords() error = %v, want wraps %v", err, errNilKinesisOutput)
 	}
-	if out == nil {
-		t.Fatal("getRecords() output = nil, want empty output")
+	if err == nil || err.Error() != "get records iterator-1: kinesis protocol error: nil output without error" {
+		t.Fatalf("getRecords() error = %v, want nil-output protocol error", err)
 	}
-	if len(out.Records) != 0 {
-		t.Fatalf("len(Records) = %d, want 0", len(out.Records))
+	if out != nil {
+		t.Fatalf("getRecords() output = %v, want nil", out)
 	}
-	if out.NextShardIterator != nil {
-		t.Fatalf("NextShardIterator = %q, want nil", aws.ToString(out.NextShardIterator))
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("checkpoint Save calls = %d, want 0", len(store.saveCalls))
 	}
 }
 

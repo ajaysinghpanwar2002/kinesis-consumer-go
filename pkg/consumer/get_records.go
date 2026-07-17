@@ -89,7 +89,7 @@ func (c *Consumer) getRecords(ctx context.Context, shardIterator string) (*kines
 		return nil, fmt.Errorf("get records %s: %w", shardIterator, err)
 	}
 	if out == nil {
-		return &kinesis.GetRecordsOutput{}, nil
+		return nil, fmt.Errorf("get records %s: %w", shardIterator, errNilKinesisOutput)
 	}
 	return out, nil
 }

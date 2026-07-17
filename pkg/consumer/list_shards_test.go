@@ -23,6 +23,7 @@ type fakeKinesisClient struct {
 	getShardIteratorCalls []kinesis.GetShardIteratorInput
 	getShardIteratorOut   *kinesis.GetShardIteratorOutput
 	getShardIteratorErr   error
+	getShardIteratorNil   bool
 
 	getRecordsCtx   context.Context
 	getRecordsCalls []kinesis.GetRecordsInput
@@ -75,6 +76,9 @@ func (c *fakeKinesisClient) GetShardIterator(ctx context.Context, params *kinesi
 	}
 	if c.getShardIteratorErr != nil {
 		return nil, c.getShardIteratorErr
+	}
+	if c.getShardIteratorNil {
+		return nil, nil
 	}
 	if c.getShardIteratorOut == nil {
 		return &kinesis.GetShardIteratorOutput{}, nil
@@ -270,5 +274,31 @@ func TestListShardsWrapsClientError(t *testing.T) {
 	}
 	if err == nil || err.Error() != "list shards: boom" {
 		t.Fatalf("listShards() error = %v, want %q", err, "list shards: boom")
+	}
+}
+
+func TestListShardsRejectsNilOutputWithoutCheckpointMutation(t *testing.T) {
+	t.Parallel()
+
+	store := &fakeCheckpointSaveStore{}
+	client := &fakeKinesisClient{outs: []*kinesis.ListShardsOutput{nil}}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  store,
+	}
+
+	shards, err := c.listShards(context.Background())
+	if !errors.Is(err, errNilKinesisOutput) {
+		t.Fatalf("listShards() error = %v, want wraps %v", err, errNilKinesisOutput)
+	}
+	if err == nil || err.Error() != "list shards: kinesis protocol error: nil output without error" {
+		t.Fatalf("listShards() error = %v, want nil-output protocol error", err)
+	}
+	if shards != nil {
+		t.Fatalf("listShards() shards = %v, want nil", shards)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("checkpoint Save calls = %d, want 0", len(store.saveCalls))
 	}
 }
