@@ -16,6 +16,16 @@ func (c *Consumer) processRecordsPage(ctx context.Context, shardID string, out *
 	if err := c.handleRecordsPage(ctx, shardID, out); err != nil {
 		return "", 0, fmt.Errorf("process records page %s: %w", shardID, err)
 	}
+	// Cancellation cannot forcibly stop a user callback. If one ignores ctx
+	// and reports success after Start has already signaled this worker to stop,
+	// discard that late result before it can reach checkpoint code.
+	if ctx.Err() != nil || shardWorkerStopRequested(ctx) {
+		err := ctx.Err()
+		if err == nil {
+			err = context.Canceled
+		}
+		return "", 0, fmt.Errorf("process records page %s: %w", shardID, err)
+	}
 
 	lastRecord := out.Records[len(out.Records)-1]
 	return aws.ToString(lastRecord.SequenceNumber), len(out.Records), nil

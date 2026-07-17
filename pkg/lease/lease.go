@@ -35,6 +35,10 @@ var ErrNotOwned = errors.New("lease not owned by caller")
 // requested transition cannot be made because another live lease stands in
 // the way, they return (nil, false, nil) — false with no error — and reserve
 // a non-nil error for genuine backend failures.
+//
+// Implementations must be safe for concurrent calls and return promptly when
+// ctx is done. A backend that ignores cancellation can delay consumer shutdown
+// or late worker cleanup.
 type Manager interface {
 	// Acquire atomically creates the shard lease for owner if and only if no
 	// live lease currently exists (if-absent-set), returning the held Lease
@@ -76,6 +80,9 @@ type Provider interface {
 // acquired or claimed it. Renew and Release are authorized only for that
 // owner: once the underlying lease has expired or been taken over, both report
 // ErrNotOwned rather than acting on another worker's lease.
+//
+// Implementations must be safe for concurrent calls and return promptly when
+// ctx is done.
 type Lease interface {
 	// Renew extends the lease TTL by ttl, but only while the caller is still
 	// the recorded owner. It returns ErrNotOwned once ownership has been lost

@@ -41,13 +41,9 @@ func TestProcessShardRecordsLoopDerivesIteratorOncePerWorker(t *testing.T) {
 				Records:           []types.Record{{SequenceNumber: aws.String("sequence-2")}},
 				NextShardIterator: aws.String("iterator-4"),
 			},
+			{NextShardIterator: aws.String("iterator-5")}, // second pass caught up
 		},
-		afterGetRecords: func() {
-			getRecordsCalls++
-			if getRecordsCalls == 3 {
-				cancel()
-			}
-		},
+		afterGetRecords: func() { getRecordsCalls++ },
 	}
 	store := &fakeCheckpointSaveStore{}
 	var handled []string
@@ -69,6 +65,15 @@ func TestProcessShardRecordsLoopDerivesIteratorOncePerWorker(t *testing.T) {
 			return nil // re-poll instantly
 		},
 	}
+	passCalls := 0
+	c.processShardRecordsPassFn = func(ctx context.Context, shardID string, count int, iterator string) (string, int, string, error) {
+		lastSeq, nextCount, nextIterator, err := c.processShardRecordsPass(ctx, shardID, count, iterator)
+		passCalls++
+		if passCalls == 2 {
+			cancel()
+		}
+		return lastSeq, nextCount, nextIterator, err
+	}
 
 	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
 	if err != nil {
@@ -77,16 +82,16 @@ func TestProcessShardRecordsLoopDerivesIteratorOncePerWorker(t *testing.T) {
 	if lastSeq != "sequence-2" {
 		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-2")
 	}
-	if count != 1 {
-		t.Fatalf("count = %d, want 1", count)
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 after caught-up flush", count)
 	}
 	// THE proof: the iterator is derived once, not once per pass.
 	if len(client.getShardIteratorCalls) != 1 {
 		t.Fatalf("GetShardIterator calls = %d, want 1 (iterator must be held across passes, not re-derived each pass — LIB-2)", len(client.getShardIteratorCalls))
 	}
 	// The second pass polled with the HELD iterator (iterator-3), not a fresh derive.
-	if len(client.getRecordsCalls) != 3 {
-		t.Fatalf("GetRecords calls = %d, want 3", len(client.getRecordsCalls))
+	if len(client.getRecordsCalls) != 4 {
+		t.Fatalf("GetRecords calls = %d, want 4", len(client.getRecordsCalls))
 	}
 	if got := aws.ToString(client.getRecordsCalls[2].ShardIterator); got != "iterator-3" {
 		t.Fatalf("third GetRecords used ShardIterator %q, want %q (the held NextShardIterator from the caught-up page)", got, "iterator-3")
@@ -107,9 +112,12 @@ func TestProcessShardRecordsLoopRunsPassAndReturnsOnCancellation(t *testing.T) {
 			ShardIterator: aws.String("iterator-1"),
 		},
 		getRecordsOuts: []*kinesis.GetRecordsOutput{
-			{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
+			{
+				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+				NextShardIterator: aws.String("iterator-2"),
+			},
+			{NextShardIterator: aws.String("iterator-3")},
 		},
-		afterGetRecords: cancel,
 	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
@@ -125,6 +133,11 @@ func TestProcessShardRecordsLoopRunsPassAndReturnsOnCancellation(t *testing.T) {
 			return nil
 		},
 	}
+	c.processShardRecordsPassFn = func(ctx context.Context, shardID string, count int, iterator string) (string, int, string, error) {
+		lastSeq, nextCount, nextIterator, err := c.processShardRecordsPass(ctx, shardID, count, iterator)
+		cancel()
+		return lastSeq, nextCount, nextIterator, err
+	}
 
 	lastSeq, count, err := c.processShardRecordsLoop(ctx, "shard-1")
 	if err != nil {
@@ -133,14 +146,14 @@ func TestProcessShardRecordsLoopRunsPassAndReturnsOnCancellation(t *testing.T) {
 	if lastSeq != "sequence-1" {
 		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
 	}
-	if count != 1 {
-		t.Fatalf("count = %d, want 1", count)
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 after caught-up flush", count)
 	}
 	if len(handled) != 1 || handled[0] != "sequence-1" {
 		t.Fatalf("handled records = %v, want [sequence-1]", handled)
 	}
-	if len(client.getRecordsCalls) != 1 {
-		t.Fatalf("GetRecords calls = %d, want 1", len(client.getRecordsCalls))
+	if len(client.getRecordsCalls) != 2 {
+		t.Fatalf("GetRecords calls = %d, want 2", len(client.getRecordsCalls))
 	}
 }
 

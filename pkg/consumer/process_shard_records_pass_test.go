@@ -16,7 +16,7 @@ import (
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 )
 
-func TestProcessShardRecordsPassPollsAndProcessesPagesInOrder(t *testing.T) {
+func TestProcessShardRecordsPassDiscardsPageCompletedAfterPollingCancellation(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -62,14 +62,14 @@ func TestProcessShardRecordsPassPollsAndProcessesPagesInOrder(t *testing.T) {
 	}
 
 	lastSeq, count, _, err := c.processShardRecordsPass(ctx, "shard-1", 1, "")
-	if err != nil {
-		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, context.Canceled)
 	}
-	if lastSeq != "sequence-3" {
-		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-3")
+	if lastSeq != "sequence-1" {
+		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
 	}
-	if count != 4 {
-		t.Fatalf("count = %d, want 4", count)
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
 	}
 	wantHandled := []string{"sequence-1", "sequence-2", "sequence-3"}
 	if len(handled) != len(wantHandled) {
@@ -97,35 +97,11 @@ func TestProcessShardRecordsPassPollsAndProcessesPagesInOrder(t *testing.T) {
 func TestProcessShardRecordsPassCarriesCheckpointCount(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	getRecordsCalls := 0
-	client := &fakeKinesisClient{
-		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
-			ShardIterator: aws.String("iterator-1"),
-		},
-		getRecordsOuts: []*kinesis.GetRecordsOutput{
-			{
-				Records:           []types.Record{{SequenceNumber: aws.String("sequence-1")}},
-				NextShardIterator: aws.String("iterator-2"),
-			},
-			{
-				Records:           []types.Record{{SequenceNumber: aws.String("sequence-2")}},
-				NextShardIterator: aws.String("iterator-3"),
-			},
-		},
-		afterGetRecords: func() {
-			getRecordsCalls++
-			if getRecordsCalls == 2 {
-				cancel()
-			}
-		},
-	}
 	store := &fakeCheckpointSaveStore{}
 	c := &Consumer{
 		logger:   slog.New(slog.DiscardHandler),
 		reporter: metrics.Nop{},
 		cfg:      Config{StreamName: "stream"},
-		client:   client,
 		store:    store,
 		tuning:   tuningConfig{checkpointEvery: 3},
 		handler: func(ctx context.Context, record Record) error {
@@ -135,9 +111,24 @@ func TestProcessShardRecordsPassCarriesCheckpointCount(t *testing.T) {
 		},
 	}
 
-	lastSeq, count, _, err := c.processShardRecordsPass(ctx, "shard-1", 1, "")
+	lastSeq, count, err := c.processRecordsPageWithCheckpoint(context.Background(), "shard-1", &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}, 1)
 	if err != nil {
-		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+		t.Fatalf("first processRecordsPageWithCheckpoint() error = %v, want nil", err)
+	}
+	if lastSeq != "sequence-1" || count != 2 {
+		t.Fatalf("first page = (%q, %d), want (%q, 2)", lastSeq, count, "sequence-1")
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls after first page = %d, want 0", len(store.saveCalls))
+	}
+
+	lastSeq, count, err = c.processRecordsPageWithCheckpoint(context.Background(), "shard-1", &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-2")}},
+	}, count)
+	if err != nil {
+		t.Fatalf("second processRecordsPageWithCheckpoint() error = %v, want nil", err)
 	}
 	if lastSeq != "sequence-2" {
 		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-2")
@@ -578,7 +569,7 @@ func TestProcessShardRecordsPassWrapsProcessingError(t *testing.T) {
 	}
 }
 
-func TestProcessShardRecordsPassProcessesPartialPagesAfterCanceledPolling(t *testing.T) {
+func TestProcessShardRecordsPassRejectsPageCompletedAfterCanceledPolling(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -613,14 +604,14 @@ func TestProcessShardRecordsPassProcessesPartialPagesAfterCanceledPolling(t *tes
 	}
 
 	lastSeq, count, _, err := c.processShardRecordsPass(ctx, "shard-1", 1, "")
-	if err != nil {
-		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, context.Canceled)
 	}
-	if lastSeq != "sequence-1" {
-		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-1")
+	if lastSeq != "" {
+		t.Fatalf("lastSeq = %q, want empty", lastSeq)
 	}
-	if count != 2 {
-		t.Fatalf("count = %d, want 2", count)
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
 	}
 	if len(handled) != 1 || handled[0] != "sequence-1" {
 		t.Fatalf("handled records = %v, want [sequence-1]", handled)

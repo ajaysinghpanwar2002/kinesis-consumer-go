@@ -234,7 +234,8 @@ func WithGracefulDrain(timeout time.Duration) Option {
 // WithLogger sets the structured logger used for consumer lifecycle events.
 //
 // The default is a discard logger, so the library is silent unless a logger is
-// provided here.
+// provided here. Its slog.Handler must be safe for concurrent calls and return
+// promptly; logging is synchronous and cannot be canceled by the consumer.
 func WithLogger(logger *slog.Logger) Option {
 	return func(cfg *options) error {
 		if logger == nil {

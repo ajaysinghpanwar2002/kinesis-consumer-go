@@ -235,6 +235,10 @@ func TestStartLogsWorkerAndLeaseLifecycle(t *testing.T) {
 	_ = waitAcquireCall(t, manager)
 	cancel()
 	waitStartDone(t, done, nil)
+	waitForTrue(t, func() bool {
+		_, ok := findRecord(handler.snapshot(), "shard worker stopped")
+		return ok
+	}, "detached worker lifecycle logs")
 
 	records := handler.snapshot()
 

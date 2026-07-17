@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -131,9 +132,11 @@ func (fakeShardLease) Release(context.Context) error {
 }
 
 type recordingReleaseLease struct {
-	ctx   context.Context
-	calls int
-	err   error
+	ctx          context.Context
+	calls        int
+	err          error
+	released     chan struct{}
+	releasedOnce sync.Once
 }
 
 func (l *recordingReleaseLease) Renew(context.Context, time.Duration) error {
@@ -143,6 +146,9 @@ func (l *recordingReleaseLease) Renew(context.Context, time.Duration) error {
 func (l *recordingReleaseLease) Release(ctx context.Context) error {
 	l.ctx = ctx
 	l.calls++
+	if l.released != nil {
+		l.releasedOnce.Do(func() { close(l.released) })
+	}
 	return l.err
 }
 

@@ -58,7 +58,7 @@ working default, so `New` with no options is valid.
 | `WithBatchHandler` | `handler BatchHandlerFunc` | none | Switches to one handler call per GetRecords page instead of per record. Mutually exclusive with the positional record handler in `New`: pass one or the other — the positional handler must be nil when this is set, and `New` errors if both are provided. | non-nil |
 | `WithHeartbeat` | `interval, ttl time.Duration` | `5s, 20s` | Worker liveness heartbeat cadence and the lease/worker key TTL. | both whole-millisecond values `>= 1ms`; `interval < ttl`; `ttl + interval` must fit in `time.Duration`. Otherwise Valkey would truncate the configured TTL, or the lease watchdog deadline could overflow. Recommended: `ttl >= 3x interval` (the default is 4x) so a lease survives transient renew hiccups. |
 | `WithRebalance` | `minInterval, jitter, cooldown time.Duration, maxMoves int` | `10s, 10s, 10s, 2` | Rebalance timing (`minInterval + [0,jitter)` between ticks), per-shard cooldown after a move, and the max shard moves per tick. | `minInterval > 0`; `jitter >= 0`; `cooldown > 0`; `maxMoves >= 1` |
-| `WithGracefulDrain` | `timeout time.Duration` | off | On ctx cancel, workers finish in-flight work, checkpoint, and release leases before `Start` returns. `0` waits indefinitely. Drains longer than `heartbeatTTL` are safe: the worker keeps heartbeating for the whole drain, and a shard a peer claims mid-drain counts as drained (not an error). One worker's failure lets the others finish before the error is returned. | `timeout >= 0` |
+| `WithGracefulDrain` | `timeout time.Duration` | off | On ctx cancel, workers finish in-flight work, checkpoint, and release leases before `Start` returns. `0` waits indefinitely. At a nonzero deadline, remaining workers are signaled to stop and `Start` returns `ErrDrainTimeout` without joining an uncooperative callback. Drains longer than `heartbeatTTL` are safe: the worker keeps heartbeating for the whole drain, and a shard a peer claims mid-drain counts as drained (not an error). One worker's failure lets the others finish before the deadline or error is returned. | `timeout >= 0` |
 | `WithLeaseManager` | `manager lease.Manager` | auto | Supplies an explicit lease manager. Usually unnecessary — a store implementing `lease.Provider` (the Valkey store) enables leasing automatically. | non-nil |
 | `WithLogger` | `logger *slog.Logger` | discard (silent) | Structured logger for consumer lifecycle, lease, rebalance, and record-processing events; see [logging.md](logging.md) for the event catalog. | non-nil |
 | `WithMetrics` | `reporter metrics.Reporter` | `metrics.Nop{}` (silent) | Emits the consumer's counters, gauges, and timings through the supplied reporter; see [metrics.md](metrics.md) for the catalog and packaged statsd pipeline. | non-nil |
@@ -73,6 +73,20 @@ working default, so `New` with no options is valid.
 
 See [handler-behavior.md](handler-behavior.md) for the full failure-policy and
 DLQ semantics, including `PoisonRecord` metadata.
+
+### Extension lifecycle contract
+
+Handlers, batch handlers, DLQ publishers, Kinesis wrappers, checkpoint stores,
+lease managers, and leases can be called concurrently and must honor every
+supplied context promptly. A callback that ignores cancellation cannot be
+forcibly terminated; after a nonzero drain deadline (or ordinary non-graceful
+cancellation), `Start` returns while that callback finishes in its worker
+goroutine. Any late handler/DLQ success is discarded before checkpointing.
+
+Custom `slog.Handler` and `metrics.Reporter` implementations must also be
+concurrency-safe and return promptly. Those synchronous observability APIs do
+not receive a context, so a blocking implementation can delay processing or
+shutdown.
 
 ## Valkey backend options
 

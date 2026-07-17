@@ -5,12 +5,24 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 )
+
+type shardWorkerStopKey struct{}
+
+type shardWorkerStopState struct {
+	requested atomic.Bool
+}
+
+func shardWorkerStopRequested(ctx context.Context) bool {
+	state, _ := ctx.Value(shardWorkerStopKey{}).(*shardWorkerStopState)
+	return state != nil && state.requested.Load()
+}
 
 func (c *Consumer) startRegisteredShardWorker(
 	ctx context.Context,
@@ -25,7 +37,15 @@ func (c *Consumer) startRegisteredShardWorker(
 	if c.gracefulDrain {
 		workerBaseCtx = context.Background()
 	}
-	workerCtx, stopWorker := context.WithCancel(workerBaseCtx)
+	workerCtx, cancelWorker := context.WithCancel(workerBaseCtx)
+	stopState := &shardWorkerStopState{}
+	workerCtx = context.WithValue(workerCtx, shardWorkerStopKey{}, stopState)
+	stopWorker := func() {
+		// Set the fence before cancellation so a callback released immediately
+		// by ctx.Done cannot race through to checkpoint code.
+		stopState.requested.Store(true)
+		cancelWorker()
+	}
 	workerGen := workers.add(shardID, stopWorker)
 
 	workerWG.Add(1)

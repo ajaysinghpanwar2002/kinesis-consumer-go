@@ -19,6 +19,10 @@ var errNilKinesisOutput = errors.New("kinesis protocol error: nil output without
 // pass their client unchanged. The parameter types mirror the SDK exactly,
 // including the *kinesis.Options functional options, so a wrapper can forward
 // calls verbatim.
+//
+// Implementations must be safe for concurrent calls and return promptly when
+// ctx is done. Consumer shutdown cannot be bounded while an in-flight client
+// wrapper ignores its cancellation context.
 type KinesisAPI interface {
 	ListShards(ctx context.Context, params *kinesis.ListShardsInput, optFns ...func(*kinesis.Options)) (*kinesis.ListShardsOutput, error)
 	GetShardIterator(ctx context.Context, params *kinesis.GetShardIteratorInput, optFns ...func(*kinesis.Options)) (*kinesis.GetShardIteratorOutput, error)

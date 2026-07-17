@@ -52,7 +52,10 @@ type PoisonRecord struct {
 	RecordSequenceInBatchOrder int        `json:"record_sequence_in_batch_order"`
 }
 
-// DLQPublisher publishes poison records to a dead-letter destination.
+// DLQPublisher publishes poison records to a dead-letter destination. Publish
+// must honor ctx promptly and be safe for concurrent calls from shard workers.
+// If Publish ignores cancellation, Start may return while the call is still
+// running; a late success cannot advance the source checkpoint.
 type DLQPublisher interface {
 	Publish(ctx context.Context, record PoisonRecord) error
 }

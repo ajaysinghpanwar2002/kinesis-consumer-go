@@ -8,7 +8,9 @@ type Tag struct {
 	Value string
 }
 
-// Reporter emits consumer metrics.
+// Reporter emits consumer metrics. Implementations must be safe for concurrent
+// calls from consumer goroutines and return promptly; reporting is synchronous
+// and receives no context with which the consumer could cancel a blocked call.
 type Reporter interface {
 	Counter(name string, value int64, tags []Tag)
 	Gauge(name string, value float64, tags []Tag)

@@ -34,6 +34,10 @@ const CompletedPrefix = "SHARD_END"
 //
 // There is no in-band rewind: an intentional replay is performed by calling
 // Delete (a missing key makes the next Save unconditional).
+//
+// Implementations must be safe for concurrent calls from shard workers and
+// return promptly when ctx is done. A backend that ignores cancellation can
+// delay worker cleanup after Consumer.Start returns.
 type Store interface {
 	// Get returns the sequence number last persisted for the shard, verbatim
 	// — including a SHARD_END / SHARD_END:<finalSequenceNumber> completion

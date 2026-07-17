@@ -472,8 +472,8 @@ func TestProcessShardRecordsPassCountsPagesFetched(t *testing.T) {
 	c.tuning = tuningConfig{checkpointEvery: 10}
 	c.handler = func(context.Context, Record) error { return nil }
 
-	if _, _, _, err := c.processShardRecordsPass(ctx, "shard-1", 0, ""); err != nil {
-		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	if _, _, _, err := c.processShardRecordsPass(ctx, "shard-1", 0, ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v", err, context.Canceled)
 	}
 
 	pages := reporter.countersNamed(metricPagesFetched)

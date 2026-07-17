@@ -42,6 +42,13 @@ consumer passed to the handler is done (consumer shutdown, lease loss, or a
 concurrent-page abort), the consumer stops immediately and does not apply the
 failure policy.
 
+Handlers and DLQ publishers must honor that context promptly. Go cannot
+forcibly terminate a callback: after a nonzero graceful-drain deadline or an
+ordinary non-graceful cancellation, `Start` returns even if a callback is still
+running. If that callback later reports success, the consumer discards the late
+result before checkpointing; the record remains eligible for at-least-once
+redelivery. A zero graceful-drain timeout intentionally waits indefinitely.
+
 A handler that merely *returns* an error matching `context.Canceled` or
 `context.DeadlineExceeded` — for example an `http.Client` timeout or a
 database query deadline inside the handler — is treated like any other handler
@@ -103,8 +110,9 @@ For record handlers, one poison record is published for the failed record. For
 batch handlers, every record in the failed batch is published with batch
 metadata.
 
-DLQ publishing is part of handler processing. A publisher should honor `ctx`,
-return useful errors, and be safe for repeated calls. The consumer is
+DLQ publishing is part of handler processing. A publisher must honor `ctx`
+promptly, return useful errors, and be safe for concurrent and repeated calls.
+The consumer is
 at-least-once — replays after a crash and brief dual delivery during shard
 ownership transfers are both possible (see the ownership transfer windows in
 [features.md](features.md)) — so handlers and downstream DLQ handling should

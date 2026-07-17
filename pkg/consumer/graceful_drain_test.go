@@ -189,38 +189,46 @@ func TestDrainShardWorkersTimeoutAfterWorkerErrorJoinsBoth(t *testing.T) {
 	}
 }
 
-func TestWaitForShardDrainTimeoutCollectsErrorBufferedDuringForceStop(t *testing.T) {
+func TestWaitForShardDrainTimeoutReturnsWithoutWaitingForForcedWorkerExit(t *testing.T) {
 	t.Parallel()
 
-	// Deterministic timeout-first coverage: workerErrCh is empty when the
-	// select runs (only the timeout branch is ready), and the worker error
-	// appears only when the force-stop makes the worker report its failure.
-	// The timeout branch must still pick it up and join it with the timeout
-	// error instead of dropping it.
-	errBoom := errors.New("boom")
 	var wg sync.WaitGroup
 	workers := newShardWorkerSet()
-	workerErrCh := make(chan error, 1)
 	stop := make(chan struct{})
+	finish := make(chan struct{})
 	workers.add("slow-shard", func() {
-		workerErrCh <- errBoom // the force-stopped worker reports its failure
 		close(stop)
 	})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		<-stop
+		<-finish // deliberately ignore the stop signal
 	}()
 
 	timeoutCh := make(chan time.Time, 1)
 	timeoutCh <- time.Now()     // only the timeout branch is selectable
 	done := make(chan struct{}) // the drain never finishes on its own
 
-	err := waitForShardDrain(workers, &wg, done, timeoutCh, 20*time.Millisecond, workerErrCh)
+	returned := make(chan error, 1)
+	go func() {
+		returned <- waitForShardDrain(workers, done, timeoutCh, 20*time.Millisecond, nil)
+	}()
+
+	var err error
+	select {
+	case err = <-returned:
+	case <-time.After(100 * time.Millisecond):
+		close(finish)
+		t.Fatal("waitForShardDrain blocked waiting for a force-stopped worker")
+	}
 	if !errors.Is(err, ErrDrainTimeout) {
 		t.Fatalf("waitForShardDrain() error = %v, want wraps %v", err, ErrDrainTimeout)
 	}
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("waitForShardDrain() error = %v, want also wraps %v", err, errBoom)
+	select {
+	case <-stop:
+	default:
+		t.Fatal("worker stop was not signaled before timeout returned")
 	}
+	close(finish)
+	wg.Wait()
 }

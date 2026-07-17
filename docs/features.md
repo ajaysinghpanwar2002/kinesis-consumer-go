@@ -212,8 +212,15 @@ DLQ semantics.
 
 - `WithGracefulDrain(timeout)` lets workers finish in-flight work, checkpoint,
   and release their leases before `Start` returns on cancellation (a zero
-  timeout waits indefinitely). Without it, shutdown is prompt and relies on the
-  at-least-once guarantee + failover for any in-flight page.
+  timeout waits indefinitely). At a nonzero deadline, the consumer signals all
+  workers to stop and returns `ErrDrainTimeout` without waiting again. Without
+  graceful drain, cancellation likewise signals stop and returns promptly.
+- Go cannot forcibly terminate a callback. A handler or DLQ publisher that
+  ignores its canceled context may keep running after `Start` returns, but its
+  late result is discarded before checkpointing and its worker releases the
+  lease when the callback eventually returns. Consumer extensions must honor
+  context promptly and be concurrency-safe; synchronous logging and metrics
+  hooks, which have no context, must always return promptly.
 
 ## Backends and pluggability
 

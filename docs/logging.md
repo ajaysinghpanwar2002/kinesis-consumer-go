@@ -23,7 +23,9 @@ c, err := consumer.New(cfg, client, store, handler,
 `WithLogger(nil)` is rejected by `New` with a validation error. The logger is
 shared by the consumer's heartbeat, rebalance, and shard-worker goroutines, so
 the handler you supply must be safe for concurrent use (all `slog` handlers in
-the standard library are).
+the standard library are). It must also return promptly: log calls are
+synchronous and carry no cancellation context, so a blocking handler can delay
+processing or shutdown.
 
 `New` derives the consumer logger with two bounded identity attributes that are
 present on every event: canonical `stream` and configured `consumer_group`.

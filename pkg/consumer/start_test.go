@@ -505,7 +505,7 @@ func TestStartReturnsAcquisitionError(t *testing.T) {
 func TestStartReleasesAcquiredLeasesOnContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	shardLease := &recordingReleaseLease{}
+	shardLease := &recordingReleaseLease{released: make(chan struct{})}
 	manager := &recordingAcquireManager{
 		result:   shardLease,
 		acquired: true,
@@ -526,6 +526,7 @@ func TestStartReleasesAcquiredLeasesOnContextCancellation(t *testing.T) {
 	_ = waitAcquireCall(t, manager)
 	cancel()
 	waitStartDone(t, done, nil)
+	waitForRecordingRelease(t, shardLease)
 
 	if shardLease.calls != 1 {
 		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
@@ -538,8 +539,8 @@ func TestStartReleasesAcquiredLeasesOnContextCancellation(t *testing.T) {
 func TestStartStopsAllInitialWorkersOnContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	shardLeaseA := &recordingReleaseLease{}
-	shardLeaseB := &recordingReleaseLease{}
+	shardLeaseA := &recordingReleaseLease{released: make(chan struct{})}
+	shardLeaseB := &recordingReleaseLease{released: make(chan struct{})}
 	manager := &recordingAcquireManager{
 		callCh: make(chan acquireCall, 2),
 		results: []acquireResult{
@@ -566,6 +567,8 @@ func TestStartStopsAllInitialWorkersOnContextCancellation(t *testing.T) {
 	_ = waitAcquireCall(t, manager)
 	cancel()
 	waitStartDone(t, done, nil)
+	waitForRecordingRelease(t, shardLeaseA)
+	waitForRecordingRelease(t, shardLeaseB)
 
 	if shardLeaseA.calls != 1 {
 		t.Fatalf("shard-a Release calls = %d, want 1", shardLeaseA.calls)
@@ -706,7 +709,7 @@ func TestStartGracefulDrainCheckpointsPendingProgressOnContextCancellation(t *te
 func TestStartGracefulDrainTimeoutForceStopsWorkers(t *testing.T) {
 	t.Parallel()
 
-	shardLease := &recordingReleaseLease{}
+	shardLease := &recordingReleaseLease{released: make(chan struct{})}
 	manager := &recordingAcquireManager{
 		result:   shardLease,
 		acquired: true,
@@ -746,8 +749,203 @@ func TestStartGracefulDrainTimeoutForceStopsWorkers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for forced worker stop")
 	}
+	waitForRecordingRelease(t, shardLease)
 	if shardLease.calls != 1 {
 		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+type boundedShutdownCheckpointStore struct {
+	saveCh chan string
+}
+
+func (s *boundedShutdownCheckpointStore) Get(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (s *boundedShutdownCheckpointStore) Save(_ context.Context, _, _ string, sequenceNumber string) error {
+	select {
+	case s.saveCh <- sequenceNumber:
+	default:
+	}
+	return nil
+}
+
+func (*boundedShutdownCheckpointStore) Delete(context.Context, string, string) error {
+	return nil
+}
+
+type boundedShutdownLease struct {
+	released chan struct{}
+	once     sync.Once
+}
+
+func (*boundedShutdownLease) Renew(context.Context, time.Duration) error {
+	return nil
+}
+
+func (l *boundedShutdownLease) Release(context.Context) error {
+	l.once.Do(func() { close(l.released) })
+	return nil
+}
+
+type blockingDLQPublisher struct {
+	started  chan<- context.Context
+	release  <-chan struct{}
+	returned chan<- struct{}
+}
+
+func (p blockingDLQPublisher) Publish(ctx context.Context, _ PoisonRecord) error {
+	p.started <- ctx
+	<-p.release // deliberately ignore ctx
+	close(p.returned)
+	return nil
+}
+
+func TestStartCancellationIsBoundedByUncooperativeCallbacks(t *testing.T) {
+	const (
+		drainTimeout     = 20 * time.Millisecond
+		schedulingBudget = 250 * time.Millisecond
+	)
+
+	tests := []struct {
+		name     string
+		graceful bool
+		dlq      bool
+	}{
+		{name: "graceful drain handler", graceful: true},
+		{name: "graceful drain dlq", graceful: true, dlq: true},
+		{name: "non-graceful handler"},
+		{name: "non-graceful dlq", dlq: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callbackStarted := make(chan context.Context, 1)
+			callbackRelease := make(chan struct{})
+			callbackReturned := make(chan struct{})
+			var releaseCallback sync.Once
+			release := func() {
+				releaseCallback.Do(func() { close(callbackRelease) })
+			}
+			t.Cleanup(release)
+
+			client := &fakeKinesisClient{
+				outs: []*kinesis.ListShardsOutput{
+					{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+				},
+				getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+					ShardIterator: aws.String("iterator-1"),
+				},
+				getRecordsOut: &kinesis.GetRecordsOutput{
+					NextShardIterator: aws.String("iterator-2"),
+					Records: []types.Record{{
+						SequenceNumber: aws.String("sequence-1"),
+						PartitionKey:   aws.String("partition-1"),
+					}},
+				},
+			}
+			shardLease := &boundedShutdownLease{released: make(chan struct{})}
+			manager := &recordingAcquireManager{
+				result:   shardLease,
+				acquired: true,
+				callCh:   make(chan acquireCall, 1),
+			}
+			store := &boundedShutdownCheckpointStore{saveCh: make(chan string, 1)}
+			c := newTestStartConsumerWithLeaseManager(client, manager)
+			c.store = store
+			c.processShardRecordsLoopFn = nil
+			c.tuning.checkpointEvery = 1
+			c.tuning.retryMaxAttempts = 1
+			c.gracefulDrain = tt.graceful
+			c.drainTimeout = drainTimeout
+
+			if tt.dlq {
+				c.handler = func(context.Context, Record) error {
+					return errors.New("handler failed")
+				}
+				c.failurePolicy = FailurePolicySendToDLQ
+				c.dlqPublisher = blockingDLQPublisher{
+					started:  callbackStarted,
+					release:  callbackRelease,
+					returned: callbackReturned,
+				}
+			} else {
+				c.handler = func(ctx context.Context, _ Record) error {
+					callbackStarted <- ctx
+					<-callbackRelease // deliberately ignore ctx
+					close(callbackReturned)
+					return nil
+				}
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			done := runStart(ctx, c)
+			_ = waitAcquireCall(t, manager)
+
+			var callbackCtx context.Context
+			select {
+			case callbackCtx = <-callbackStarted:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for callback to start")
+			}
+
+			cancelledAt := time.Now()
+			cancel()
+
+			var startErr error
+			select {
+			case startErr = <-done:
+			case <-time.After(schedulingBudget):
+				t.Fatalf("Start did not return within %s of cancellation", schedulingBudget)
+			}
+			if tt.graceful {
+				if !errors.Is(startErr, ErrDrainTimeout) {
+					t.Fatalf("Start() error = %v, want wraps %v", startErr, ErrDrainTimeout)
+				}
+			} else if startErr != nil {
+				t.Fatalf("Start() error = %v, want nil", startErr)
+			}
+			if elapsed := time.Since(cancelledAt); elapsed > schedulingBudget {
+				t.Fatalf("Start returned after %s, want at most %s", elapsed, schedulingBudget)
+			}
+
+			select {
+			case <-callbackCtx.Done():
+			default:
+				t.Fatal("callback context was not canceled before Start returned")
+			}
+			select {
+			case <-callbackReturned:
+				t.Fatal("callback returned before the test released it")
+			default:
+			}
+			select {
+			case sequence := <-store.saveCh:
+				t.Fatalf("checkpoint %q saved while callback was still blocked", sequence)
+			default:
+			}
+
+			// Let the detached worker finish. Its late success must be discarded
+			// before checkpointing, but normal worker cleanup still releases the
+			// lease and reaps the goroutine.
+			release()
+			select {
+			case <-callbackReturned:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for callback to return")
+			}
+			select {
+			case <-shardLease.released:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for late worker cleanup to release its lease")
+			}
+			select {
+			case sequence := <-store.saveCh:
+				t.Fatalf("late callback result saved checkpoint %q", sequence)
+			default:
+			}
+		})
 	}
 }
 
@@ -755,8 +953,8 @@ func TestStartGracefulDrainStillForceStopsWorkersOnFatalError(t *testing.T) {
 	t.Parallel()
 
 	errBoom := errors.New("boom")
-	shardLeaseA := &recordingReleaseLease{}
-	shardLeaseB := &recordingReleaseLease{}
+	shardLeaseA := &recordingReleaseLease{released: make(chan struct{})}
+	shardLeaseB := &recordingReleaseLease{released: make(chan struct{})}
 	manager := &recordingAcquireManager{
 		callCh: make(chan acquireCall, 2),
 		results: []acquireResult{
@@ -812,6 +1010,8 @@ func TestStartGracefulDrainStillForceStopsWorkersOnFatalError(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for non-failing worker to be force-stopped")
 	}
+	waitForRecordingRelease(t, shardLeaseA)
+	waitForRecordingRelease(t, shardLeaseB)
 	if shardLeaseA.calls != 1 {
 		t.Fatalf("shard-a Release calls = %d, want 1", shardLeaseA.calls)
 	}
@@ -1114,7 +1314,7 @@ func TestStartGracefulDrainReturnsFinalWorkerErrorDuringDrain(t *testing.T) {
 func TestStartDoesNotReleaseNotAcquiredShards(t *testing.T) {
 	t.Parallel()
 
-	acquiredLease := &recordingReleaseLease{}
+	acquiredLease := &recordingReleaseLease{released: make(chan struct{})}
 	notAcquiredLease := &recordingReleaseLease{}
 	manager := &recordingAcquireManager{
 		callCh: make(chan acquireCall, 2),
@@ -1142,6 +1342,7 @@ func TestStartDoesNotReleaseNotAcquiredShards(t *testing.T) {
 	_ = waitAcquireCall(t, manager)
 	cancel()
 	waitStartDone(t, done, nil)
+	waitForRecordingRelease(t, acquiredLease)
 
 	if acquiredLease.calls != 1 {
 		t.Fatalf("acquired Release calls = %d, want 1", acquiredLease.calls)
@@ -1400,6 +1601,16 @@ func waitStartDone(t *testing.T, done <-chan error, want error) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Start to return")
+	}
+}
+
+func waitForRecordingRelease(t *testing.T, shardLease *recordingReleaseLease) {
+	t.Helper()
+
+	select {
+	case <-shardLease.released:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shard lease release")
 	}
 }
 

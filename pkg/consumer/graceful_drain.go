@@ -32,13 +32,13 @@ func drainShardWorkersOrError(
 	}()
 
 	if timeout <= 0 {
-		return waitForShardDrain(workers, workerWG, done, nil, 0, workerErrCh)
+		return waitForShardDrain(workers, done, nil, 0, workerErrCh)
 	}
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	return waitForShardDrain(workers, workerWG, done, timer.C, timeout, workerErrCh)
+	return waitForShardDrain(workers, done, timer.C, timeout, workerErrCh)
 }
 
 func (c *Consumer) drainShardWorkers(
@@ -69,7 +69,6 @@ func (c *Consumer) isDraining() bool {
 
 func waitForShardDrain(
 	workers *shardWorkerSet,
-	workerWG *sync.WaitGroup,
 	done <-chan struct{},
 	timeout <-chan time.Time,
 	timeoutAfter time.Duration,
@@ -96,15 +95,18 @@ func waitForShardDrain(
 				firstErr = err
 			}
 		case <-timeout:
+			if firstErr == nil {
+				// Both channels can already be ready when select chooses the
+				// timeout. Preserve an error buffered before force-stop, but do
+				// not wait for errors produced by cancellation below.
+				firstErr = pendingShardDrainError(workerErrCh)
+			}
 			if workers != nil {
 				workers.stopAll()
 			}
-			workerWG.Wait()
-			if firstErr == nil {
-				// Both channels can be ready at once and select picks
-				// arbitrarily — don't drop a worker error already buffered.
-				firstErr = pendingShardDrainError(workerErrCh)
-			}
+			// The goroutine waiting on workerWG above remains as the asynchronous
+			// reaper. Do not wait again here: a handler or extension that ignores
+			// its canceled context must not defeat the configured drain deadline.
 			timeoutErr := fmt.Errorf("%w after %s", ErrDrainTimeout, timeoutAfter)
 			if firstErr != nil {
 				return errors.Join(firstErr, timeoutErr)
@@ -112,6 +114,21 @@ func waitForShardDrain(
 			return timeoutErr
 		}
 	}
+}
+
+// stopAndReapShardWorkers signals every worker to stop and arranges for their
+// eventual cleanup without joining them on the Start call stack. Callers must
+// stop the orchestration goroutine first so no workerWG.Add can race with Wait.
+func stopAndReapShardWorkers(workers *shardWorkerSet, workerWG *sync.WaitGroup) {
+	if workers != nil {
+		workers.stopAll()
+	}
+	if workerWG == nil {
+		return
+	}
+	go func() {
+		workerWG.Wait()
+	}()
 }
 
 func pendingShardDrainError(workerErrCh <-chan error) error {

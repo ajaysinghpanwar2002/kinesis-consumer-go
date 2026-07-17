@@ -233,6 +233,40 @@ func TestProcessRecordsPageWithCheckpointSavesAtThreshold(t *testing.T) {
 	}
 }
 
+func TestProcessRecordsPageWithCheckpointRejectsLateSuccessAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 1},
+		handler: func(context.Context, Record) error {
+			cancel()
+			return nil // deliberately report success after cancellation
+		},
+	}
+	out := &kinesis.GetRecordsOutput{Records: []types.Record{{
+		SequenceNumber: aws.String("sequence-1"),
+	}}}
+
+	lastSeq, count, err := c.processRecordsPageWithCheckpoint(ctx, "shard-1", out, 0)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("processRecordsPageWithCheckpoint() error = %v, want wraps %v", err, context.Canceled)
+	}
+	if lastSeq != "" {
+		t.Fatalf("lastSeq = %q, want empty", lastSeq)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+	if len(store.saveCalls) != 0 {
+		t.Fatalf("Save calls = %d, want 0", len(store.saveCalls))
+	}
+}
+
 func TestProcessRecordsPageWithCheckpointCarriesModuloRemainder(t *testing.T) {
 	t.Parallel()
 

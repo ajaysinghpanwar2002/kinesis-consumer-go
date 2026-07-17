@@ -35,6 +35,10 @@ cons, err := consumer.New(cfg, kinesisClient, store, handler,
 `WithMetrics(nil)` is rejected with `metrics reporter cannot be nil`. Omitting
 the option retains the silent no-op default.
 
+Custom reporters must be safe for concurrent calls and return promptly. Metric
+emission is synchronous and the `Reporter` methods receive no context, so a
+blocking implementation can delay processing or shutdown.
+
 The statsd reporter is safe for concurrent use and writes one UDP datagram per
 emission. Runtime send failures are deliberately dropped: observability must
 not block or fail record processing. UDP delivery is therefore best-effort.

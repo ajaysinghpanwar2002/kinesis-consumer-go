@@ -149,15 +149,13 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 	case err := <-workerErrCh:
 		cancel()
 		<-orchestrationDone
-		workers.stopAll()
-		workerWG.Wait()
+		stopAndReapShardWorkers(workers, &workerWG)
 		return err
 	case <-runCtx.Done():
 		cancel()
 		<-orchestrationDone
 		if ctx.Err() == nil {
-			workers.stopAll()
-			workerWG.Wait()
+			stopAndReapShardWorkers(workers, &workerWG)
 			select {
 			case err := <-workerErrCh:
 				return err
@@ -174,8 +172,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 			}
 			return ctx.Err()
 		} else {
-			workers.stopAll()
-			workerWG.Wait()
+			stopAndReapShardWorkers(workers, &workerWG)
 		}
 	}
 
