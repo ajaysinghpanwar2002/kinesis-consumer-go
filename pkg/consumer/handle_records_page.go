@@ -88,6 +88,19 @@ func (c *Consumer) handleRecordsConcurrently(ctx context.Context, shardID string
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Handler panics are already recovered inside the attempt
+			// (callHandlerAttempt), so a panic reaching here comes from the
+			// library's own attempt path. These are bare goroutines — without
+			// this guard such a panic would kill the whole process instead of
+			// failing the page like any other first error.
+			defer func() {
+				if r := recover(); r != nil {
+					once.Do(func() {
+						firstErr = c.recoveredPanicError(shardID, handlerKindRecord, r)
+						cancel()
+					})
+				}
+			}()
 			for {
 				record, ok := nextRecord()
 				if !ok {

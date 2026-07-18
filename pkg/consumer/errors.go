@@ -32,6 +32,15 @@ var ErrConsumerAlreadyStarted = errors.New("consumer has already been started")
 // sentinel with errors.Is and inspect the cause with errors.Is/errors.As.
 var ErrHeartbeatStale = errors.New("worker heartbeat stale")
 
+// ErrHandlerPanic marks a panic in a user handler that the consumer recovered
+// and converted into an ordinary handler failure: the attempt is retried like
+// any returned error and, once retries are exhausted, the configured failure
+// policy applies — the process is never killed. The returned error preserves
+// the panic value in its message; when the handler panicked with an error
+// value, that error is also wrapped and stays matchable with
+// errors.Is/errors.As alongside this sentinel.
+var ErrHandlerPanic = errors.New("handler panicked")
+
 // ErrShardSyncStale is returned (wrapped) from Start when periodic shard
 // discovery has kept failing for longer than the configured maximum staleness
 // (WithShardSyncMaxStaleness) and the consumer can no longer trust its shard

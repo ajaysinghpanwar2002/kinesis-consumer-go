@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
@@ -195,7 +196,7 @@ func (c *Consumer) retryHandler(ctx context.Context, shardID, handlerKind string
 				c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKind}))
 		}
 		attemptStart := time.Now()
-		err := fn()
+		err := c.callHandlerAttempt(shardID, handlerKind, fn)
 		c.reporter.Timing(metricHandlerDuration, time.Since(attemptStart),
 			c.shardTags(shardID, metrics.Tag{Key: metricTagHandler, Value: handlerKind}))
 		if err != nil {
@@ -214,6 +215,55 @@ func (c *Consumer) retryHandler(ctx context.Context, shardID, handlerKind string
 		return attempt, nil
 	}
 	return maxAttempts, lastErr
+}
+
+// callHandlerAttempt invokes one handler attempt, converting a panic into an
+// ordinary handler error so it flows into retry → failure policy instead of
+// unwinding through the shard worker goroutine and killing the process (which
+// would bypass retry/skip/DLQ, stop every shard on this worker, leak leases
+// until TTL, and crash-loop on the same poison record after restart since
+// nothing checkpointed past it).
+func (c *Consumer) callHandlerAttempt(shardID, handlerKind string, fn func() error) (err error) {
+	defer func() {
+		// recover() alone decides: a nil return means normal (or Goexit)
+		// unwinding and must not be converted.
+		if r := recover(); r != nil {
+			err = c.recoveredPanicError(shardID, handlerKind, r)
+		}
+	}()
+	return fn()
+}
+
+// recoveredPanicError logs a recovered panic with its stack — the only place
+// the offending handler frame is visible — and returns it as an error
+// wrapping ErrHandlerPanic. A panic(err) value is wrapped too, so callers can
+// still match the original error with errors.Is/errors.As.
+//
+// The error is constructed before, and independently of, the log call: this
+// helper runs while a recovery guard is already unwinding, so a panicking
+// slog.Handler must not be allowed to escape and kill the very process the
+// conversion exists to protect. The log is best-effort and self-recovering.
+func (c *Consumer) recoveredPanicError(shardID, handlerKind string, panicValue any) error {
+	var err error
+	if panicErr, ok := panicValue.(error); ok {
+		err = fmt.Errorf("%w: %w", ErrHandlerPanic, panicErr)
+	} else {
+		err = fmt.Errorf("%w: %v", ErrHandlerPanic, panicValue)
+	}
+	func() {
+		defer func() {
+			// Swallow only a logger panic; the converted error already
+			// carries the panic value, so nothing is lost but the log line.
+			_ = recover()
+		}()
+		c.logger.Error("handler panic recovered",
+			slog.String("shard", shardID),
+			slog.String("handler", handlerKind),
+			slog.Any("panic", panicValue),
+			slog.String("stack", string(debug.Stack())),
+		)
+	}()
+	return err
 }
 
 func (c *Consumer) applyFailurePolicy(

@@ -56,6 +56,26 @@ database query deadline inside the handler — is treated like any other handler
 failure: it is retried and, if retries are exhausted, the failure policy
 applies. It does not stop the consumer.
 
+## Panics
+
+A panic in a record or batch handler does not kill the process. The consumer
+recovers it at the attempt boundary, logs it at error level with the panic
+value and stack trace, and converts it into an ordinary handler error wrapping
+`consumer.ErrHandlerPanic`. From there it follows exactly the flow above: the
+attempt counts as a failure, remaining retries run (a transiently panicking
+handler can still succeed), and exhausted retries hand the records to the
+configured failure policy — fail-fast surfaces the panic error through
+`Start` (match it with `errors.Is(err, consumer.ErrHandlerPanic)`), skip drops
+the records, and send-to-DLQ publishes poison records whose handler-error text
+carries the panic value.
+
+A handler that panics with an error value (`panic(err)`) keeps that error
+matchable: the converted error wraps both `ErrHandlerPanic` and the original
+error. This applies in all three modes — record, batch, and
+`WithShardConcurrency > 1` — including the concurrent page workers, which are
+additionally guarded so an unexpected library-side panic fails the page
+instead of the process.
+
 ## Failure Policies
 
 After handler retries are exhausted, the configured failure policy decides what
