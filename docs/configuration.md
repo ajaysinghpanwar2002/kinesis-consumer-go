@@ -139,7 +139,7 @@ Valkey without sharing progress or ownership:
 
 | State | Format | Default prefix |
 | --- | --- | --- |
-| Checkpoint | `<checkpointPrefix>:<group>:<stream>:<shard>` | `kinesis-checkpoint` |
+| Checkpoint | `<escapedCheckpointPrefix>:v2:<identity64>:<shard64>` | `kinesis-checkpoint` |
 | Lease owners (hash) | `<escapedLeasePrefix>:v2:{<identity64>}:lease-owners` | `kinesis-lease` |
 | Lease expirations (sorted set) | `<escapedLeasePrefix>:v2:{<identity64>}:lease-expirations` | `kinesis-lease` |
 | Worker expirations (sorted set) | `<escapedLeasePrefix>:v2:{<identity64>}:workers` | `kinesis-lease` |
@@ -150,14 +150,21 @@ of `StreamARN`. Name-only and ARN-only configurations for the same group and
 stream therefore share one coordination namespace.
 
 `<identity64>` is the unpadded base64url encoding of
-`<group>:<stream>`. Braces are the Redis Cluster hash tag: all three aggregate
+`<group>:<stream>`, and `<shard64>` the same encoding of the shard ID. The
+base64url alphabet excludes the `:` delimiter, so the keys are injective —
+group, stream, or shard values containing `:` can never make two distinct
+identities collide — and the `v2` segment anchors future format migrations.
+Braces in the lease keys are the Redis Cluster hash tag: all three aggregate
 coordination structures for one identity route to one slot, so their Lua
-updates are atomic. Lease hashes map shard ID to owner; lease and worker sorted
-sets map their member to an absolute server-time expiration in milliseconds.
-Snapshots query only these aggregate keys, remove expired or inconsistent
-entries atomically, and do not scan unrelated database keys or cluster nodes.
-`<escapedLeasePrefix>` is the configured prefix with `%`, `{`, and `}` escaped
-as `%25`, `%7B`, and `%7D`; default and ordinary custom prefixes are unchanged.
+updates are atomic. Checkpoint keys deliberately carry no hash tag — every
+checkpoint operation is single-key, and untagged per-shard keys stay spread
+across cluster slots. Lease hashes map shard ID to owner; lease and worker
+sorted sets map their member to an absolute server-time expiration in
+milliseconds. Snapshots query only these aggregate keys, remove expired or
+inconsistent entries atomically, and do not scan unrelated database keys or
+cluster nodes. `<escapedLeasePrefix>` and `<escapedCheckpointPrefix>` are the
+configured prefixes with `%`, `{`, and `}` escaped as `%25`, `%7B`, and
+`%7D`; default and ordinary custom prefixes are unchanged.
 
 The default lease prefix is the same whether the manager is store-provided or
 built standalone with `valkeylease.NewManager`, so default-configured workers
@@ -165,6 +172,17 @@ always coordinate in one namespace. If you customize the checkpoint prefix,
 the store derives `<checkpointPrefix>-lease` — any standalone manager in that
 deployment must be given the matching prefix explicitly, or its workers will
 lease in a separate namespace and process every shard twice.
+
+### Migration note: v2 checkpoint key encoding
+
+The `v2` checkpoint key format (escaped prefix, versioned segment,
+base64url-encoded identity and shard) replaces the earlier raw
+`<prefix>:<group>:<stream>:<shard>` join. This is a pre-v1 breaking
+stored-format change with no legacy dual-read: old checkpoints are not
+visible under the new keys. No published tag used the old scheme, so no
+deployment migration exists; if a pre-release deployment must retain
+progress, copy checkpoint values to their v2 keys out of band before
+restarting, and never run old and new workers concurrently.
 
 ### Migration note: indexed lease and heartbeat scheme
 

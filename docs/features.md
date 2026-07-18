@@ -281,8 +281,10 @@ All coordination state lives under consumer-group and canonical-stream
 segments plus configurable key prefixes, so multiple applications and streams
 can share one Valkey without colliding:
 
-- Checkpoints: `<checkpointPrefix>:<group>:<stream>:<shard>` (default prefix
-  `kinesis-checkpoint`; override with `WithKeyPrefix`).
+- Checkpoints: `<escapedCheckpointPrefix>:v2:<identity64>:<shard64>` (default prefix
+  `kinesis-checkpoint`; override with `WithKeyPrefix`). `<shard64>` is
+  unpadded base64url of the shard ID, so keys stay injective even when a
+  group, stream, or shard name contains `:`.
 - Lease owners and expirations: per-identity hash/sorted-set structures under
   `<leasePrefix>:v2:{<identity64>}:lease-*`, where `leasePrefix` defaults to
   `kinesis-lease` (a custom checkpoint prefix derives an adjacent lease prefix

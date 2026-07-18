@@ -75,6 +75,12 @@ func FinalizeLeaseConfig(cfg LeaseConfig, backendName string) (LeaseConfig, erro
 	return cfg, nil
 }
 
+// keyPrefixEscaper escapes hash-tag delimiters in configured key prefixes
+// injectively, shared by the lease and checkpoint key formats. Percent is
+// escaped first by NewReplacer's single-pass matching, keeping literal "%7B"
+// distinct from literal "{".
+var keyPrefixEscaper = strings.NewReplacer("%", "%25", "{", "%7B", "}", "%7D")
+
 // CoordinationKeys are the versioned aggregate keys used to coordinate one
 // consumer group and stream. Identity is base64url-encoded inside a cluster
 // hash tag so arbitrary Manager callers cannot inject braces and split the
@@ -96,10 +102,8 @@ func LeaseCoordinationKeys(prefix, coordinationIdentity string) CoordinationKeys
 		identity = "-"
 	}
 	// Escape prefix delimiters injectively so a custom prefix cannot introduce
-	// an earlier (or empty) hash tag. Percent is escaped first by NewReplacer's
-	// single-pass matching, keeping literal "%7B" distinct from literal "{".
-	escapedPrefix := strings.NewReplacer("%", "%25", "{", "%7B", "}", "%7D").Replace(prefix)
-	base := fmt.Sprintf("%s:v2:{%s}", escapedPrefix, identity)
+	// an earlier (or empty) hash tag.
+	base := fmt.Sprintf("%s:v2:{%s}", keyPrefixEscaper.Replace(prefix), identity)
 	return CoordinationKeys{
 		LeaseOwners:      base + ":lease-owners",
 		LeaseExpirations: base + ":lease-expirations",

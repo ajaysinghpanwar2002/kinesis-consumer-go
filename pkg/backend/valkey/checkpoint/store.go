@@ -46,13 +46,15 @@ type Store struct {
 	cfg       Config
 }
 
-// New creates a Store connected to addr. Keys are written as:
+// New creates a Store connected to addr. Keys are written in the versioned
+// injective format:
 //
-//	<KeyPrefix>:<coordinationIdentity>:<shardID>
+//	<escapedKeyPrefix>:v2:<enc(coordinationIdentity)>:<enc(shardID)>
 //
-// The consumer supplies coordinationIdentity as
-// "<consumerGroup>:<canonicalStreamName>", producing the concrete key format
-// "<KeyPrefix>:<consumerGroup>:<canonicalStreamName>:<shardID>".
+// where enc is unpadded base64url and hash-tag delimiters in the prefix are
+// escaped, mirroring the lease key encoding. The consumer supplies
+// coordinationIdentity as "<consumerGroup>:<canonicalStreamName>", so the
+// encoded identity segment matches the lease keys' identity64.
 //
 // New validates the resulting config, opens a client, and verifies
 // connectivity with a PING bounded by the configured ping timeout.
