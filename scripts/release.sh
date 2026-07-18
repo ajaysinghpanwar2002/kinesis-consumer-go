@@ -102,18 +102,61 @@ else
   fi
 fi
 
-# The backend module's committed go.mod must require the core module at exactly
-# the version being released, or a consumer of the backend tag would resolve a
-# different (or missing) core version.
-REQUIRED_CORE="$(
-  awk '/^require[ \t]*\(/{inblk=1; next} /^\)/{inblk=0}
-       $1=="require" && $2=="github.com/ajaysinghpanwar2002/kinesis-consumer-go" {print $3; exit}
-       inblk && $1=="github.com/ajaysinghpanwar2002/kinesis-consumer-go" {print $2; exit}' \
-    "$BACKEND_MODULE/go.mod"
-)"
-if [ "$REQUIRED_CORE" != "$VERSION" ]; then
-  echo "ERROR: $BACKEND_MODULE/go.mod requires the core module at '${REQUIRED_CORE:-<none>}', not $VERSION." >&2
-  echo "       Update that require to $VERSION (and the matching go.work replace), commit, then re-run." >&2
+# Every committed intra-repo version pin must already be at the version being
+# released (docs/releasing.md step 2), or a consumer of a published tag would
+# resolve a different (or missing) version — and local workspace builds would
+# silently diverge from what the tags describe.
+
+CORE_MODULE_PATH="github.com/ajaysinghpanwar2002/kinesis-consumer-go"
+BACKEND_MODULE_PATH="$CORE_MODULE_PATH/pkg/backend/valkey"
+PIN_ERRORS=0
+
+# require_version <go.mod> <module-path>: prints the version a go.mod requires
+# for the module, from either a one-line or a block require.
+require_version() {
+  awk -v mod="$2" '/^require[ \t]*\(/{inblk=1; next} /^\)/{inblk=0}
+       $1=="require" && $2==mod {print $3; exit}
+       inblk && $1==mod {print $2; exit}' "$1"
+}
+
+# check_require <go.mod> <module-path>
+check_require() {
+  local got
+  got="$(require_version "$1" "$2")"
+  if [ "$got" != "$VERSION" ]; then
+    echo "ERROR: $1 requires $2 at '${got:-<none>}', not $VERSION." >&2
+    PIN_ERRORS=1
+  fi
+}
+
+# The backend's core require is what a consumer of the backend tag resolves.
+check_require "$BACKEND_MODULE/go.mod" "$CORE_MODULE_PATH"
+
+# The unpublished workspace modules must pin the same version, or local
+# builds/tests after the release run against something other than what was
+# tagged.
+for gomod in examples/valkey/go.mod test/integration/go.mod; do
+  check_require "$gomod" "$CORE_MODULE_PATH"
+  check_require "$gomod" "$BACKEND_MODULE_PATH"
+done
+
+# The go.work replaces redirect exactly the pinned versions to the local
+# checkout; a stale version there means the workspace stops overriding the
+# new pins and every local build downloads the published modules instead.
+# check_work_replace <module-path>
+check_work_replace() {
+  local got
+  got="$(awk -v mod="$1" '$1=="replace" && $2==mod {print $3; exit}' go.work)"
+  if [ "$got" != "$VERSION" ]; then
+    echo "ERROR: go.work replace for $1 is at '${got:-<none>}', not $VERSION." >&2
+    PIN_ERRORS=1
+  fi
+}
+check_work_replace "$CORE_MODULE_PATH"
+check_work_replace "$BACKEND_MODULE_PATH"
+
+if [ "$PIN_ERRORS" != "0" ]; then
+  echo "       Update the pins above to $VERSION (docs/releasing.md step 2), commit, then re-run." >&2
   exit 1
 fi
 

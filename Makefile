@@ -1,5 +1,7 @@
 GO ?= go
-GOCACHE ?= /private/tmp/kinesis-consumer-go-build-cache
+# Default to the toolchain's own cache location so the build works on any OS;
+# CI overrides this with a workspace path that actions/setup-go can cache.
+GOCACHE ?= $(shell $(GO) env GOCACHE)
 export GOCACHE
 DOCKER ?= docker
 DOCKER_IMAGE ?= kinesis-consumer-go-dev
@@ -58,15 +60,19 @@ lint:
 	@( cd $(INTEGRATION_DIR) && $(STATICCHECK) -tags integration ./... )
 
 # Race-detector pass over the concurrency-heavy packages (worker/lease/drain
-# orchestration in pkg/consumer, the fire-and-forget UDP reporter in
-# pkg/metrics/statsd). Kept separate from `test`: the race runtime is several
-# times slower, so the fast local hook stays snappy while CI always runs this.
-RACE_PACKAGES ?= ./pkg/consumer ./pkg/metrics/statsd
+# orchestration in pkg/consumer, the in-memory lease manager in pkg/lease, the
+# fire-and-forget UDP reporter in pkg/metrics/statsd). Kept separate from
+# `test`: the race runtime is several times slower, so the fast local hook
+# stays snappy while CI always runs this. The Valkey backend is a separate Go
+# module, so the root package list can never reach it — it gets its own leg.
+RACE_PACKAGES ?= ./pkg/consumer ./pkg/lease ./pkg/metrics/statsd
 
 .PHONY: test-race
 test-race:
 	@echo "==> go test -race $(RACE_PACKAGES)"
 	@$(GO) test -race $(RACE_PACKAGES)
+	@echo "==> go test -race pkg/backend/valkey/..."
+	@( cd pkg/backend/valkey && $(GO) test -race ./... )
 
 # The two modules third parties actually import — the vulnerability-scanning
 # surface. examples/ and test/integration are never published, so a finding
@@ -98,13 +104,34 @@ fmt-check:
 		echo "gofmt needed for:"; echo "$$files"; exit 1; \
 	fi
 
-# Tidy module files across all modules.
+# Tidy module files across all modules — including test/integration, which is
+# not in MODULES (it is exercised via `integration`/`integration-build`, not
+# the plain test/build loops) but IS checked by tidy-check, so tidying must
+# cover it or the documented post-release `make tidy` could never make the
+# tidy gate pass.
+TIDY_MODULES ?= $(MODULES) test/integration
+
 .PHONY: tidy
 tidy:
-	@set -e; for m in $(MODULES); do \
+	@set -e; for m in $(TIDY_MODULES); do \
 		echo "==> go mod tidy $$m"; \
 		( cd "$$m" && $(GO) mod tidy ); \
 	done
+
+# Fail if any module's go.mod/go.sum drifts from `go mod tidy`. Modules whose
+# intra-repo requires are not published yet are skipped with a notice (the
+# expected state before the first release); see scripts/module-gates.sh.
+.PHONY: tidy-check
+tidy-check:
+	scripts/module-gates.sh tidy-check
+
+# Build and test pkg/backend/valkey with GOWORK=off, i.e. against its PINNED
+# core version as a third party would, catching tag/format skew between the
+# two published modules. Skips with a notice until the pinned version exists
+# on the proxy; see scripts/module-gates.sh.
+.PHONY: test-gowork-off
+test-gowork-off:
+	scripts/module-gates.sh gowork-off
 
 # Install the shared git hooks by pointing git at the in-repo hooks directory.
 .PHONY: hooks

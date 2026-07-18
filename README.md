@@ -83,7 +83,9 @@ make build
 
 Other targets: `make vet`, `make fmt-check`, `make tidy`.
 
-Run the same core test suite in Docker:
+Run the core module's unit tests in Docker (the image runs `go test ./...`
+from the repository root, which covers the core library module only — the
+Valkey backend and example modules are exercised by `make test` and CI):
 
 ```bash
 make docker-test

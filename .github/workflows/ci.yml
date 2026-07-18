@@ -5,8 +5,13 @@
 # integration workflow). It extends the pre-commit hook (make fmt-check + vet +
 # build + test): CI additionally runs `make lint` (staticcheck),
 # `make integration-build`, `make test-race` (race detector over the
-# concurrency-heavy packages), and `make vulncheck` (govulncheck over both
-# published modules), which the fast offline local hook leaves out.
+# concurrency-heavy packages plus the Valkey module), `make tidy-check`
+# (`go mod tidy -diff` per module), and `make vulncheck` (govulncheck over
+# both published modules), which the fast offline local hook leaves out. A
+# separate job builds/tests pkg/backend/valkey with GOWORK=off — against its
+# pinned core version, as a third party would — to catch tag/format skew
+# between the two published modules (skips with a notice until the first
+# release tags exist; see scripts/module-gates.sh).
 name: CI
 
 on:
@@ -80,5 +85,40 @@ jobs:
       - name: race tests
         run: make test-race
 
+      - name: go mod tidy gate
+        run: make tidy-check
+
       - name: govulncheck
         run: make vulncheck
+
+  gowork-off:
+    name: Backend vs pinned core (GOWORK=off)
+    runs-on: ubuntu-latest
+    env:
+      GOCACHE: ${{ github.workspace }}/.cache/go-build
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          # Only the backend module is exercised here, but keep the cache key
+          # aligned with the unit gate so the two jobs share entries.
+          cache-dependency-path: |
+            go.sum
+            pkg/backend/valkey/go.sum
+            examples/valkey/go.sum
+            test/integration/go.sum
+            go.work.sum
+
+      # Build and test the Valkey backend with the workspace overrides OFF, so
+      # its pinned `require` of the core module resolves against the published
+      # tag exactly as a third-party `go get` would. Pre-first-release (no tags
+      # on the remote yet) the pinned version is unresolvable by construction,
+      # and the gate skips with a notice instead of failing; once v0.1.0 exists
+      # this runs unconditionally and catches version skew or a stale go.sum.
+      - name: GOWORK=off build and test pkg/backend/valkey
+        run: make test-gowork-off

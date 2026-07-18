@@ -81,9 +81,12 @@ files. When you bump the release version, update both (see below).
    scripts/release.sh vX.Y.Z --remote upstream
    ```
 
-   The script refuses to run on a dirty tree, refuses to reuse an existing tag,
-   and verifies that `pkg/backend/valkey/go.mod` requires the core module at
-   exactly `vX.Y.Z` so the two tags stay a matched pair.
+   The script refuses to run on a dirty tree, refuses to reuse an existing
+   tag, and enforces step 2 in full: every intra-repo pin —
+   `pkg/backend/valkey/go.mod`'s core require, both intra-repo requires in
+   `examples/valkey/go.mod` and `test/integration/go.mod`, and both `go.work`
+   replace lines — must already be at exactly `vX.Y.Z`, so the two tags stay
+   a matched pair and the workspace keeps overriding what was tagged.
 
 7. Verify third-party resolution once the tags are on the remote:
 
@@ -92,6 +95,17 @@ files. When you bump the release version, update both (see below).
    GOFLAGS=-mod=mod go get \
      github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey@vX.Y.Z
    ```
+
+8. After the first release only: run `make tidy` and commit the result.
+   `pkg/backend/valkey/go.sum` cannot contain hashes for the core module
+   until a published tag exists, so the first release unblocks
+   `go mod tidy` from recording them. CI's tidy gate (`make tidy-check`)
+   and the `GOWORK=off` backend job skip a module that pins an unpublished
+   intra-repo version **only while no release tag exists on `origin`**
+   (the bootstrap state); the moment the first tags are pushed they
+   enforce unconditionally — expect both to fail until this `make tidy`
+   commit lands, and expect an unpublished pin (e.g. pins bumped to the
+   next version before its tags are pushed) to fail them thereafter.
 
 ## First release: repository setup
 
