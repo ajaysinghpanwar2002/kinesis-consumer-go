@@ -400,6 +400,39 @@ func TestSaveShardCheckpointCountsFailure(t *testing.T) {
 	}
 }
 
+func TestSaveShardCheckpointCountsEachFailedRetryAttempt(t *testing.T) {
+	t.Parallel()
+
+	reporter := &recordingReporter{}
+	c := newMetricsTestConsumer(reporter)
+	errBoom := errors.New("save boom")
+	c.store = &fakeCheckpointSaveStore{saveErrs: []error{errBoom, errBoom}}
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = time.Millisecond
+
+	if err := c.saveShardCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
+		t.Fatalf("saveShardCheckpoint() error = %v, want nil after retries", err)
+	}
+
+	failures := reporter.countersNamed(metricCheckpointFailures)
+	if len(failures) != 2 {
+		t.Fatalf("checkpoint_failures calls = %d, want 2 (one per failed attempt)", len(failures))
+	}
+	for _, failure := range failures {
+		assertCounterTags(t, failure, map[string]string{
+			"stream":         "stream",
+			"consumer_group": "group",
+			"shard":          "shard-1",
+		})
+	}
+	if saved := reporter.countersNamed(metricCheckpointsSaved); len(saved) != 1 {
+		t.Fatalf("checkpoints_saved calls = %d, want 1", len(saved))
+	}
+	if durations := reporter.timingsNamed(metricCheckpointSaveDuration); len(durations) != 1 {
+		t.Fatalf("checkpoint_save_duration calls = %d, want 1", len(durations))
+	}
+}
+
 func TestSaveShardCompletionCheckpointCountsSaveAndFailure(t *testing.T) {
 	t.Parallel()
 
