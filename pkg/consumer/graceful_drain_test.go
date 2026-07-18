@@ -189,6 +189,104 @@ func TestDrainShardWorkersTimeoutAfterWorkerErrorJoinsBoth(t *testing.T) {
 	}
 }
 
+func TestStopAndReapShardWorkersJoinsCooperativeWorkersWithinBudget(t *testing.T) {
+	t.Parallel()
+
+	workers := newShardWorkerSet()
+	stop := make(chan struct{})
+	gen := workers.add("shard-a", func() { close(stop) })
+
+	var workerWG sync.WaitGroup
+	var finished atomic.Bool
+	workerWG.Add(1)
+	go func() {
+		defer workerWG.Done()
+		defer workers.done("shard-a", gen)
+		<-stop
+		finished.Store(true)
+	}()
+
+	stopAndReapShardWorkers(workers, &workerWG, time.Second)
+
+	if !finished.Load() {
+		t.Fatal("stopAndReapShardWorkers returned before the cooperative worker finished")
+	}
+}
+
+func TestStopAndReapShardWorkersAbandonsHungWorkerAfterBudget(t *testing.T) {
+	t.Parallel()
+
+	workers := newShardWorkerSet()
+	var stopped int32
+	gen := workers.add("shard-a", func() { atomic.AddInt32(&stopped, 1) })
+
+	var workerWG sync.WaitGroup
+	finish := make(chan struct{})
+	workerWG.Add(1)
+	go func() {
+		defer workerWG.Done()
+		defer workers.done("shard-a", gen)
+		<-finish // deliberately ignore the stop signal
+	}()
+
+	returned := make(chan struct{})
+	go func() {
+		stopAndReapShardWorkers(workers, &workerWG, 10*time.Millisecond)
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		close(finish)
+		t.Fatal("stopAndReapShardWorkers blocked on a worker that ignores its stop signal")
+	}
+	if got := atomic.LoadInt32(&stopped); got != 1 {
+		t.Fatalf("stop calls = %d, want 1", got)
+	}
+
+	close(finish)
+	workerWG.Wait()
+}
+
+func TestStopAndReapShardWorkersZeroTimeoutDoesNotWait(t *testing.T) {
+	t.Parallel()
+
+	workers := newShardWorkerSet()
+	gen := workers.add("shard-a", func() {})
+
+	var workerWG sync.WaitGroup
+	finish := make(chan struct{})
+	workerWG.Add(1)
+	go func() {
+		defer workerWG.Done()
+		defer workers.done("shard-a", gen)
+		<-finish
+	}()
+
+	returned := make(chan struct{})
+	go func() {
+		stopAndReapShardWorkers(workers, &workerWG, 0)
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		close(finish)
+		t.Fatal("stopAndReapShardWorkers with zero timeout did not return immediately")
+	}
+
+	close(finish)
+	workerWG.Wait()
+}
+
+func TestStopAndReapShardWorkersNoopsWithoutWorkerGroup(t *testing.T) {
+	t.Parallel()
+
+	stopAndReapShardWorkers(nil, nil, time.Millisecond)
+}
+
 func TestWaitForShardDrainTimeoutReturnsWithoutWaitingForForcedWorkerExit(t *testing.T) {
 	t.Parallel()
 

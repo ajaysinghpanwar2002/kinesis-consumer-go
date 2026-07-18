@@ -498,6 +498,112 @@ func TestCloseDuringStartStopsRunAndClosesManagerAfterLastUse(t *testing.T) {
 	}
 }
 
+func TestForceStopShutdownReleasesLeasesBeforeStartReturns(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{released: make(chan struct{})}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c, err := New(
+		Config{StreamName: "stream", ConsumerGroup: "group"},
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		fakeProviderStore{manager: manager},
+		func(context.Context, Record) error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil", err)
+	}
+
+	workerStarted := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = shardID
+		close(workerStarted)
+		<-ctx.Done()
+		return "", 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+	_ = waitAcquireCall(t, manager)
+	<-workerStarted
+
+	// A clean caller-ctx cancellation without graceful drain force-stops the
+	// workers. Start must join them long enough for their lease Release to
+	// complete, so a peer (or the next deploy's instance) can re-acquire the
+	// shard immediately instead of waiting out the heartbeat TTL.
+	cancel()
+	waitStartDone(t, done, nil)
+
+	select {
+	case <-shardLease.released:
+	default:
+		t.Fatal("Start returned before the force-stopped worker released its lease")
+	}
+}
+
+func TestForceStopShutdownAbandonsHungWorkerAfterBound(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{released: make(chan struct{})}
+	manager := &recordingAcquireManager{
+		result:   shardLease,
+		acquired: true,
+		callCh:   make(chan acquireCall, 1),
+	}
+	c, err := New(
+		Config{StreamName: "stream", ConsumerGroup: "group"},
+		&fakeKinesisClient{
+			outs: []*kinesis.ListShardsOutput{
+				{Shards: []types.Shard{{ShardId: aws.String("shard-1")}}},
+			},
+		},
+		fakeProviderStore{manager: manager},
+		func(context.Context, Record) error { return nil },
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v, want nil", err)
+	}
+	// The join budget: a worker stuck in an uncooperative callback must not
+	// hold Start hostage past this bound.
+	c.tuning.shardLeaseReleaseTimeout = 20 * time.Millisecond
+
+	workerStarted := make(chan struct{})
+	finishWorker := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = ctx // deliberately uncooperative: ignores cancellation
+		_ = shardID
+		close(workerStarted)
+		<-finishWorker
+		return "", 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runStart(ctx, c)
+	_ = waitAcquireCall(t, manager)
+	<-workerStarted
+
+	cancel()
+	waitStartDone(t, done, nil)
+
+	select {
+	case <-shardLease.released:
+		t.Fatal("hung worker released its lease before Start returned")
+	default:
+	}
+
+	// Unblock the abandoned worker; the asynchronous reaper joins it and its
+	// late Release still runs.
+	close(finishWorker)
+	waitForRecordingRelease(t, shardLease)
+}
+
 func TestCloseWaitsForInProgressGracefulDrain(t *testing.T) {
 	t.Parallel()
 

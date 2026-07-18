@@ -116,19 +116,36 @@ func waitForShardDrain(
 	}
 }
 
-// stopAndReapShardWorkers signals every worker to stop and arranges for their
-// eventual cleanup without joining them on the Start call stack. Callers must
-// stop the orchestration goroutine first so no workerWG.Add can race with Wait.
-func stopAndReapShardWorkers(workers *shardWorkerSet, workerWG *sync.WaitGroup) {
+// stopAndReapShardWorkers signals every worker to stop, then waits up to
+// joinTimeout for them to finish so cooperative workers complete their lease
+// Release while the lease manager is still open — without the bounded join,
+// Start returns mid-Release and a caller's deferred Close closes the manager
+// underneath the workers, leaving every lease to expire by TTL. A worker
+// stuck in a callback that ignores its canceled context is abandoned once the
+// budget elapses (joinTimeout <= 0 skips the wait entirely); the background
+// goroutine remains as its asynchronous reaper. Callers must stop the
+// orchestration goroutine first so no workerWG.Add can race with Wait.
+func stopAndReapShardWorkers(workers *shardWorkerSet, workerWG *sync.WaitGroup, joinTimeout time.Duration) {
 	if workers != nil {
 		workers.stopAll()
 	}
 	if workerWG == nil {
 		return
 	}
+	done := make(chan struct{})
 	go func() {
 		workerWG.Wait()
+		close(done)
 	}()
+	if joinTimeout <= 0 {
+		return
+	}
+	timer := time.NewTimer(joinTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 func pendingShardDrainError(workerErrCh <-chan error) error {
