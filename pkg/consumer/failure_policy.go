@@ -28,7 +28,12 @@ const (
 	// entire failed batch-handler page and allows the page checkpoint to advance.
 	FailurePolicySkip FailurePolicy = "skip"
 	// FailurePolicySendToDLQ publishes failed records before allowing the page
-	// checkpoint to advance.
+	// checkpoint to advance, then checkpoints past the page immediately once it
+	// completes (instead of waiting for the next due checkpoint) to keep the
+	// crash-replay window small. The residual window cannot be closed: a crash
+	// between a successful publish and that checkpoint replays the page, so a
+	// record can end up both in the DLQ and fully processed downstream.
+	// Deduplicate on PoisonRecord.IdempotencyKey.
 	FailurePolicySendToDLQ FailurePolicy = "send-to-dlq"
 )
 
@@ -309,6 +314,10 @@ func (c *Consumer) applyFailurePolicy(
 			slog.Int("attempts", attempts),
 			slog.Any("error", cause),
 		)
+		// Request an immediate page checkpoint flush so the published records
+		// are not replayed (and re-delivered on both paths) by a crash before
+		// the next due checkpoint.
+		markDLQPagePublished(ctx)
 		return nil
 	default:
 		return failFastErr

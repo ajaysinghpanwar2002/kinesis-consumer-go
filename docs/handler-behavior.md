@@ -128,6 +128,16 @@ If all DLQ attempts fail, the consumer returns an error that includes both the
 handler failure and the final DLQ publish failure. The failed source page is not
 checkpointed.
 
+When publishing succeeds, the consumer checkpoints past the page immediately
+after the page completes, rather than waiting for the next due checkpoint
+(`WithBatching`'s `checkpointEvery`). Until that checkpoint is saved, a crash
+replays the page: its poison records would be republished to the DLQ *and*
+redelivered to the handler on the replay, so a record can be observed on both
+paths. The immediate flush narrows that both-paths duplicate window to the gap
+between the publish and the save; it cannot close it — DLQ delivery and source
+processing remain at-least-once, so downstream systems must deduplicate on
+`IdempotencyKey`.
+
 ## Poison Record Metadata
 
 The DLQ publisher receives a `consumer.PoisonRecord`. The record includes:

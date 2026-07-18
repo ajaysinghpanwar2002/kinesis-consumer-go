@@ -85,6 +85,7 @@ number.
 | IT-9b (#18) | `TestRetryEventuallySucceeds` | A flaky record is retried, succeeds once (no double-delivery), and stops retrying early. |
 | IT-10a (#16) | `TestDLQCapturesPoisonAndContinues` | `SendToDLQ` publishes a poison record once with full metadata, then continues and checkpoints. |
 | IT-10b (#17) | `TestDLQPublishFailureFailsConsumer` | A failing DLQ publish fails the consumer instead of silently checkpointing. |
+| IT-27 | `TestDLQPageCheckpointFlushSurvivesCrashStop` | A successful page DLQ publish checkpoints immediately (not at the next due checkpoint); a crash after that flush replays nothing, narrowing the both-paths duplicate window to the publish→save gap. |
 
 ### Group E — Batch & concurrency
 
