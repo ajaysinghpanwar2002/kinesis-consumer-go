@@ -217,11 +217,13 @@ func TestExecuteLocalRebalanceShedShardsStopsRunningWorkersInOrder(t *testing.T)
 		workers,
 	)
 	assertShardList(t, got, []string{"shard-a", "shard-b"})
-	if workers.has("shard-a") {
-		t.Fatal("workers.has(shard-a) = true after shed, want false")
+	// Shed workers keep their registration (the local stale-worker fence)
+	// until their deferred done runs; they are stopping, not running.
+	if !workers.has("shard-a") || !workers.has("shard-b") {
+		t.Fatal("workers.has after shed = false, want true until the workers finish")
 	}
-	if workers.has("shard-b") {
-		t.Fatal("workers.has(shard-b) = true after shed, want false")
+	if workers.running("shard-a") || workers.running("shard-b") {
+		t.Fatal("workers.running after shed = true, want false")
 	}
 	if got := atomic.LoadInt32(&cancelledA); got != 1 {
 		t.Fatalf("shard-a cancel calls = %d, want 1", got)

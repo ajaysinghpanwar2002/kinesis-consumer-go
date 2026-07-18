@@ -123,6 +123,12 @@ spread across them.
   - a randomized interval (min + jitter, default 10s + 10s),
   - a per-shard cooldown after a move (default 10s) that blocks immediate
     re-acquire,
+  - a local stale-worker fence: a shed shard stays registered to its old
+    worker until that worker has fully stopped and released its lease, so
+    this consumer never re-acquires or claims the shard while an
+    uncooperative callback (one that ignores its canceled context, however
+    long) still holds the old lease handle — a stale handle could otherwise
+    release the successor's lease.
   - a bound on the number of moves per rebalance tick (default 2).
   - The mechanism combines both directions: an under-share worker (below its
     fair-share low bound) first acquires unowned shards, then, if still short,

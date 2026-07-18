@@ -131,7 +131,10 @@ func selectLocalRebalanceShedShards(
 		if rebalanceShardInCooldown(shardID, cooldown, now) {
 			continue
 		}
-		if !workers.has(shardID) {
+		// Only running workers are shed candidates: a stopping worker was
+		// already shed and would burn a move-budget slot (its stop is a
+		// no-op) every tick it spends stuck in an uncooperative callback.
+		if !workers.running(shardID) {
 			continue
 		}
 		shards = append(shards, shardID)
