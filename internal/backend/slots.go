@@ -29,8 +29,14 @@ func (s *SlotTracker) Max() int {
 
 // Reserve attempts to reserve a slot for key. It returns a release function and
 // true when the reservation succeeds. When the tracker is nil or unlimited
-// (max <= 0), it always succeeds with a no-op release. When the limit is
-// reached, it returns (nil, false).
+// (max <= 0), it always succeeds with a no-op release and never tracks keys,
+// so duplicate keys are indistinguishable there. When the limit is reached, it
+// returns (nil, false).
+//
+// Reserving a key that is already reserved returns (nil, false): the existing
+// reservation is owned by exactly one release closure, and handing out a
+// second closure for the same map entry would let a failed redundant
+// acquisition free the slot backing a still-live lease.
 //
 // The release function is intentionally not idempotent-guarded here; callers
 // that need at-most-once release wrap it themselves.
@@ -40,6 +46,10 @@ func (s *SlotTracker) Reserve(key string) (func(), bool) {
 	}
 
 	s.mu.Lock()
+	if _, exists := s.owned[key]; exists {
+		s.mu.Unlock()
+		return nil, false
+	}
 	if len(s.owned) >= s.max {
 		s.mu.Unlock()
 		return nil, false

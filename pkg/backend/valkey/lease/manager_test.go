@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -336,6 +337,122 @@ func TestManagerRenewNotOwnedFreesSlot(t *testing.T) {
 	}
 	if _, ok, err := mgr.Acquire(ctx, "stream", "shard-2", "owner-a", time.Minute); err != nil || !ok {
 		t.Fatalf("Acquire shard-2 after renew-not-owned ok=%v err=%v, want ok true (slot must be freed)", ok, err)
+	}
+}
+
+func TestManagerRedundantSelfAcquireKeepsLiveLeaseSlot(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t, WithMaxLeases(1))
+	ctx := context.Background()
+
+	held, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Acquire shard-1 error=%v ok=%v, want ok true", err, ok)
+	}
+
+	// A redundant self-acquire of the already-held shard is refused at the slot
+	// tracker and must not disturb the live lease's reservation.
+	if l, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Minute); err != nil || ok || l != nil {
+		t.Fatalf("redundant self-Acquire = (%v, %v, %v), want (nil, false, nil)", l, ok, err)
+	}
+
+	// Regression for the undercount bug: the failed redundant acquire used to
+	// free the slot backing the live lease, letting shard-2 through at
+	// MaxLeases capacity.
+	if l, ok, err := mgr.Acquire(ctx, "stream", "shard-2", "owner-a", time.Minute); err != nil || ok || l != nil {
+		t.Fatalf("Acquire shard-2 at capacity = (%v, %v, %v), want (nil, false, nil)", l, ok, err)
+	}
+
+	// The live lease's release still frees the slot.
+	if err := held.Release(ctx); err != nil {
+		t.Fatalf("Release shard-1: %v", err)
+	}
+	if _, ok, err := mgr.Acquire(ctx, "stream", "shard-2", "owner-a", time.Minute); err != nil || !ok {
+		t.Fatalf("Acquire shard-2 after release ok=%v err=%v, want ok true", ok, err)
+	}
+}
+
+func TestManagerRedundantSelfClaimKeepsLiveLeaseSlot(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t, WithMaxLeases(1))
+	ctx := context.Background()
+
+	held, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Acquire shard-1 error=%v ok=%v, want ok true", err, ok)
+	}
+
+	// A redundant self-claim of the already-held shard is refused at the slot
+	// tracker before touching the backend, keeping the live lease's slot
+	// intact.
+	if l, ok, err := mgr.Claim(ctx, "stream", "shard-1", "owner-a", "owner-a", time.Minute); err != nil || ok || l != nil {
+		t.Fatalf("redundant self-Claim = (%v, %v, %v), want (nil, false, nil)", l, ok, err)
+	}
+	if l, ok, err := mgr.Acquire(ctx, "stream", "shard-2", "owner-a", time.Minute); err != nil || ok || l != nil {
+		t.Fatalf("Acquire shard-2 at capacity = (%v, %v, %v), want (nil, false, nil)", l, ok, err)
+	}
+
+	if err := held.Release(ctx); err != nil {
+		t.Fatalf("Release shard-1: %v", err)
+	}
+	if _, ok, err := mgr.Acquire(ctx, "stream", "shard-2", "owner-a", time.Minute); err != nil || !ok {
+		t.Fatalf("Acquire shard-2 after release ok=%v err=%v, want ok true", ok, err)
+	}
+}
+
+func TestManagerConcurrentSameShardAcquireRespectsMax(t *testing.T) {
+	t.Parallel()
+
+	mgr, _ := newTestManager(t, WithMaxLeases(1))
+	ctx := context.Background()
+
+	type result struct {
+		lease consumerlease.Lease
+		ok    bool
+		err   error
+	}
+	results := make(chan result, 2)
+	var start sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < 2; i++ {
+		go func() {
+			start.Wait()
+			l, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Minute)
+			results <- result{lease: l, ok: ok, err: err}
+		}()
+	}
+	start.Done()
+
+	var winner consumerlease.Lease
+	wins := 0
+	for i := 0; i < 2; i++ {
+		res := <-results
+		if res.err != nil {
+			t.Fatalf("concurrent Acquire error: %v", res.err)
+		}
+		if res.ok {
+			wins++
+			winner = res.lease
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("concurrent same-shard Acquire wins = %d, want exactly 1", wins)
+	}
+
+	// The tracker never exceeded max: the single slot is still occupied by the
+	// winner, so another shard is refused.
+	if l, ok, err := mgr.Acquire(ctx, "stream", "shard-2", "owner-a", time.Minute); err != nil || ok || l != nil {
+		t.Fatalf("Acquire shard-2 at capacity = (%v, %v, %v), want (nil, false, nil)", l, ok, err)
+	}
+
+	// After the winner releases, the shard is acquirable again.
+	if err := winner.Release(ctx); err != nil {
+		t.Fatalf("Release winner: %v", err)
+	}
+	if _, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Minute); err != nil || !ok {
+		t.Fatalf("re-Acquire shard-1 after release ok=%v err=%v, want ok true", ok, err)
 	}
 }
 

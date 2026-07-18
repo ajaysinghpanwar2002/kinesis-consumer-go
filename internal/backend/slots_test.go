@@ -88,6 +88,56 @@ func TestSlotTrackerReleaseFreesKey(t *testing.T) {
 	}
 }
 
+func TestSlotTrackerRedundantReserveIsRefused(t *testing.T) {
+	tracker := NewSlotTracker(2)
+
+	releaseA, ok := tracker.Reserve("a")
+	if !ok {
+		t.Fatal("Reserve(a) ok = false, want true")
+	}
+
+	// Reserving an already-held key must fail even with capacity to spare, and
+	// must not disturb the original reservation.
+	release, ok := tracker.Reserve("a")
+	if ok {
+		t.Fatal("redundant Reserve(a) ok = true, want false")
+	}
+	if release != nil {
+		t.Fatal("redundant Reserve(a) release != nil, want nil on rejection")
+	}
+
+	// The original reservation still counts toward the limit exactly once.
+	if _, ok := tracker.Reserve("b"); !ok {
+		t.Fatal("Reserve(b) ok = false, want true (one slot still free)")
+	}
+	if _, ok := tracker.Reserve("c"); ok {
+		t.Fatal("Reserve(c) ok = true, want false (limit reached)")
+	}
+
+	// The original release still works: release-then-reserve of the same key
+	// succeeds.
+	releaseA()
+	if _, ok := tracker.Reserve("a"); !ok {
+		t.Fatal("Reserve(a) after release ok = false, want true")
+	}
+}
+
+func TestSlotTrackerUnlimitedAllowsDuplicateKeys(t *testing.T) {
+	tracker := NewSlotTracker(0)
+
+	// The unlimited path never tracks keys, so duplicate reservations succeed.
+	releaseFirst, ok := tracker.Reserve("a")
+	if !ok {
+		t.Fatal("Reserve(a) ok = false, want true (unlimited)")
+	}
+	releaseSecond, ok := tracker.Reserve("a")
+	if !ok {
+		t.Fatal("duplicate Reserve(a) ok = false, want true (unlimited)")
+	}
+	releaseFirst()
+	releaseSecond()
+}
+
 func TestSlotTrackerDoubleReleaseIsSafe(t *testing.T) {
 	// The release func is intentionally not once-guarded; releasing twice must
 	// be a harmless no-op (deleting an already-absent key) and must not free an
