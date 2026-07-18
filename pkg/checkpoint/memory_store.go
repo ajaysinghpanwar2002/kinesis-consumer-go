@@ -48,7 +48,9 @@ func (m *MemoryStore) Save(_ context.Context, streamName, shardID, sequenceNumbe
 }
 
 // checkpointAdvances implements the Store contract's advance-only rule. It
-// must stay in lockstep with the Valkey backend's CheckpointSaveScript.
+// must stay in lockstep with the Valkey backend's CheckpointSaveScript. (The
+// script additionally rejects a corrupt stored value with an error; this map
+// has no external writers, so no equivalent check exists here.)
 func checkpointAdvances(current, next string) bool {
 	if current == "" {
 		return true

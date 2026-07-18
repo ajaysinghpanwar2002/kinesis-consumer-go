@@ -614,12 +614,15 @@ func TestSaveShardCheckpointIfDueSavesAboveThreshold(t *testing.T) {
 		tuning:   tuningConfig{checkpointEvery: 3},
 	}
 
+	// 5 processed with checkpointEvery=3: the save persists sequence-5, which
+	// covers all 5 records — the returned count must be 0, not the phantom
+	// 5 % 3 = 2 remainder that would fire the next checkpoint early.
 	count, err := c.saveShardCheckpointIfDue(context.Background(), "shard-1", "sequence-5", 5)
 	if err != nil {
 		t.Fatalf("saveShardCheckpointIfDue() error = %v, want nil", err)
 	}
-	if count != 2 {
-		t.Fatalf("saveShardCheckpointIfDue() count = %d, want 2", count)
+	if count != 0 {
+		t.Fatalf("saveShardCheckpointIfDue() count = %d, want 0", count)
 	}
 	if len(store.saveCalls) != 1 {
 		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))

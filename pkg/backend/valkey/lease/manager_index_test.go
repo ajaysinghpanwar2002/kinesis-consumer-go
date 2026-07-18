@@ -322,8 +322,8 @@ func TestManagerCommandsRouteOneCoordinationIdentityToOneClusterSlot(t *testing.
 	}
 	wantSlot := commands[0].slot
 	for i, command := range commands {
-		if command.name != "EVAL" {
-			t.Errorf("command %d = %q, want EVAL (no SCAN/GET discovery)", i, command.name)
+		if command.name != "EVAL" && command.name != "EVALSHA" {
+			t.Errorf("command %d = %q, want EVAL/EVALSHA (no SCAN/GET discovery)", i, command.name)
 		}
 		if command.slot != wantSlot {
 			t.Errorf("command %d slot = %d, want shared coordination slot %d", i, command.slot, wantSlot)
@@ -342,6 +342,15 @@ func TestManagerSnapshotCommandCountIsIndependentOfDatabaseSize(t *testing.T) {
 			server.SetTime(anchor)
 			seedSnapshotMembers(t, mgr, size)
 			seedUnrelatedKeys(t, server, 2000)
+			// Warm the snapshot scripts before observing: the first EVALSHA per
+			// script pays a one-time NOSCRIPT→EVAL fallback that is not part of
+			// the steady-state per-snapshot command count.
+			if _, err := mgr.List(context.Background(), "target:stream"); err != nil {
+				t.Fatalf("warm List: %v", err)
+			}
+			if _, err := mgr.Workers(context.Background(), "target:stream"); err != nil {
+				t.Fatalf("warm Workers: %v", err)
+			}
 			observer := observeManager(mgr)
 
 			assertSnapshotCommandCount(t, mgr, observer, size)

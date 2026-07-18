@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/rand"
 	"net"
 	"testing"
 	"time"
@@ -1035,9 +1036,10 @@ func TestProcessShardRecordsPassRetriesRetryableGetRecordsErrors(t *testing.T) {
 			if len(handled) != 1 || handled[0] != "sequence-1" {
 				t.Fatalf("handled records = %v, want [sequence-1]", handled)
 			}
-			// One backoff sleep at the base duration, then the retry succeeded.
-			if len(sleeps) != 1 || sleeps[0] != 500*time.Millisecond {
-				t.Fatalf("backoff sleeps = %v, want [500ms]", sleeps)
+			// One backoff sleep at the base duration plus up to 50% jitter,
+			// then the retry succeeded.
+			if len(sleeps) != 1 || sleeps[0] < 500*time.Millisecond || sleeps[0] > 750*time.Millisecond {
+				t.Fatalf("backoff sleeps = %v, want one sleep in [500ms, 750ms]", sleeps)
 			}
 			// The retry reused the same iterator — no re-derivation.
 			if len(client.getRecordsCalls) != 3 {
@@ -1116,13 +1118,51 @@ func TestProcessShardRecordsPassBackoffGrowsAndResetsOnSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
 	}
-	want := []time.Duration{500 * time.Millisecond, time.Second, 500 * time.Millisecond}
-	if len(sleeps) != len(want) {
-		t.Fatalf("backoff sleeps = %v, want %v", sleeps, want)
+	// Each delay is its deterministic base plus up to 50% jitter; the reset
+	// after the successful read is visible as the third delay dropping back
+	// to the base range.
+	wantBase := []time.Duration{500 * time.Millisecond, time.Second, 500 * time.Millisecond}
+	if len(sleeps) != len(wantBase) {
+		t.Fatalf("backoff sleeps = %v, want %d sleeps with bases %v", sleeps, len(wantBase), wantBase)
 	}
-	for i := range want {
-		if sleeps[i] != want[i] {
-			t.Fatalf("backoff sleeps = %v, want %v", sleeps, want)
+	for i, base := range wantBase {
+		if sleeps[i] < base || sleeps[i] > base+base/2 {
+			t.Fatalf("backoff sleeps = %v, want sleep %d in [%v, %v]", sleeps, i, base, base+base/2)
+		}
+	}
+}
+
+func TestGetRecordsRetryDelayJitter(t *testing.T) {
+	t.Parallel()
+
+	// nil rng keeps the delay deterministic at the base backoff.
+	if got := getRecordsRetryDelay(2, nil); got != time.Second {
+		t.Fatalf("getRecordsRetryDelay(2, nil) = %v, want 1s", got)
+	}
+	if got := getRecordsRetryDelay(0, nil); got != 0 {
+		t.Fatalf("getRecordsRetryDelay(0, nil) = %v, want 0", got)
+	}
+
+	rng := rand.New(rand.NewSource(1))
+	sawJitter := false
+	for i := 0; i < 100; i++ {
+		got := getRecordsRetryDelay(2, rng)
+		if got < time.Second || got > 1500*time.Millisecond {
+			t.Fatalf("getRecordsRetryDelay(2, rng) = %v, want in [1s, 1.5s]", got)
+		}
+		if got != time.Second {
+			sawJitter = true
+		}
+	}
+	if !sawJitter {
+		t.Fatal("getRecordsRetryDelay(2, rng) never jittered above the base in 100 draws")
+	}
+
+	// At the cap the jittered delay must not exceed getRecordsBackoffMax,
+	// matching the shard-sync retry path.
+	for i := 0; i < 100; i++ {
+		if got := getRecordsRetryDelay(100, rng); got != getRecordsBackoffMax {
+			t.Fatalf("getRecordsRetryDelay(100, rng) = %v, want capped at %v", got, getRecordsBackoffMax)
 		}
 	}
 }

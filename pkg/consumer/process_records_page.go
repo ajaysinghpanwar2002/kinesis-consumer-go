@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
@@ -49,6 +50,11 @@ func (c *Consumer) processRecordsPage(ctx context.Context, shardID string, out *
 		}
 		return "", 0, fmt.Errorf("process records page %s: %w", shardID, err)
 	}
+
+	// Health().Processing.LastRecordProcessed: the page finished processing —
+	// handler success, or a skip/DLQ policy outcome that lets the page
+	// checkpoint advance.
+	c.processingHealth.recordProcessed(time.Now())
 
 	lastRecord := out.Records[len(out.Records)-1]
 	return aws.ToString(lastRecord.SequenceNumber), len(out.Records), nil

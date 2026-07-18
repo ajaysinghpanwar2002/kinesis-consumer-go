@@ -288,10 +288,14 @@ func (c *Consumer) applyFailurePolicy(
 	case FailurePolicySkip:
 		c.reporter.Counter(metricRecordsSkipped, int64(len(records)),
 			c.shardTags(shardID, metrics.Tag{Key: metricTagPolicy, Value: string(FailurePolicySkip)}))
+		// The first/last sequence numbers make the dropped range identifiable
+		// for replay or audit; this log line is the only record of the loss.
 		c.logger.Warn("records skipped after handler failure",
 			slog.String("shard", shardID),
 			slog.String("handler", handlerKind),
 			slog.Int("records", len(records)),
+			slog.String("first_sequence", aws.ToString(records[0].SequenceNumber)),
+			slog.String("last_sequence", aws.ToString(records[len(records)-1].SequenceNumber)),
 			slog.Int("attempts", attempts),
 			slog.Any("error", cause),
 		)

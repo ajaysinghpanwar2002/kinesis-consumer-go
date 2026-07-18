@@ -53,9 +53,11 @@ type Consumer struct {
 
 	// syncHealth backs Health().ShardSync (written by the orchestration
 	// loop); heartbeatHealth backs Health().Heartbeat (written by the
-	// heartbeat loop).
-	syncHealth      healthSignalState
-	heartbeatHealth healthSignalState
+	// heartbeat loop); processingHealth backs Health().Processing (written
+	// by shard workers on successful reads and processed pages).
+	syncHealth       healthSignalState
+	heartbeatHealth  healthSignalState
+	processingHealth processingProgressState
 
 	// lifecycleMu guards the closed/start/run state shared between Start and
 	// Close. startClaimed is permanent: endRun clears only the active handles,

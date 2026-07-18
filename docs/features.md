@@ -309,6 +309,16 @@ they never perform a database-wide or cluster-node SCAN.
   sample Telegraf, InfluxDB, and Grafana assets. See
   [metrics.md](metrics.md) for names, tags, semantics, wiring, and cardinality
   guidance.
+- **Health probes:** `Consumer.Health()` snapshots the liveness signals —
+  shard-sync and heartbeat state (consecutive failures, last success, last
+  error) plus processing progress: `Processing.LastReadSuccess` advances on
+  every successful `GetRecords` call (including empty tip pages), so a
+  wedged-but-renewing consumer — leases and heartbeats healthy while a stuck
+  handler blocks delivery — shows a stale read timestamp;
+  `Processing.LastRecordProcessed` advances when a page finishes processing,
+  distinguishing "no traffic" from "not processing". Both signals are
+  consumer-global (any owned shard advances them); use the per-shard metrics
+  for shard-level visibility.
 
 ## Configuration defaults
 

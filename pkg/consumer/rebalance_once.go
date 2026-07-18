@@ -42,6 +42,7 @@ func (c *Consumer) rebalanceShardsOnce(
 	}
 	result.readyShardIDs = readyShardIDs
 	if len(readyShardIDs) == 0 {
+		c.emitIdleOwnershipGauges(ctx)
 		return result, nil
 	}
 
@@ -108,6 +109,33 @@ func (c *Consumer) rebalanceShardsOnce(
 	result.movedShardIDs = append(result.movedShardIDs, stoppedShardIDs...)
 	recordRebalanceCooldown(cooldown, stoppedShardIDs, now, c.tuning.shardCooldownPeriod)
 	return result, nil
+}
+
+// emitIdleOwnershipGauges keeps the ownership gauges flowing when a rebalance
+// pass has no ready shards (before the first shard becomes ready, and after
+// the last one completes). Without it the last emitted values freeze on
+// dashboards — a consumer that finished its stream keeps showing its final
+// owned-shard count forever. The snapshot is built the same way as a planning
+// pass, just with an empty ready set: owned/low/high report 0 and
+// active_workers reports the live worker count. Listing is best-effort — the
+// gauges are observability, so a backend blip here must not turn an otherwise
+// successful idle pass into a failed one.
+func (c *Consumer) emitIdleOwnershipGauges(ctx context.Context) {
+	leaseOwners, err := c.listRebalanceLeaseOwners(ctx)
+	if err != nil {
+		c.logger.Debug("skipping idle ownership gauges", slog.Any("error", err))
+		return
+	}
+	workerOwners, err := c.listRebalanceWorkerOwners(ctx)
+	if err != nil {
+		c.logger.Debug("skipping idle ownership gauges", slog.Any("error", err))
+		return
+	}
+	snapshot := buildRebalanceOwnershipSnapshot(nil, leaseOwners, workerOwners, c.leaseOwner)
+	c.reporter.Gauge(metricOwnedShards, float64(snapshot.ownerCounts[c.leaseOwner]), c.streamTags())
+	c.reporter.Gauge(metricActiveWorkers, float64(snapshot.activeWorkers), c.streamTags())
+	c.reporter.Gauge(metricFairShareLow, float64(snapshot.low), c.streamTags())
+	c.reporter.Gauge(metricFairShareHigh, float64(snapshot.high), c.streamTags())
 }
 
 func recordRebalanceCooldown(

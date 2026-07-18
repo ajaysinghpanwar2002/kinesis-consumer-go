@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"time"
 
@@ -36,6 +37,22 @@ func getRecordsBackoff(failures int) time.Duration {
 		}
 	}
 	return backoff
+}
+
+// getRecordsRetryDelay is getRecordsBackoff plus up to 50% jitter (nil rng
+// disables jitter for determinism), capped at getRecordsBackoffMax —
+// matching the shard-sync retry path (shardSyncRetryDelay) so shard readers
+// throttled by the same event don't retry in lockstep and re-manufacture the
+// throttling that triggered the backoff.
+func getRecordsRetryDelay(failures int, rng *rand.Rand) time.Duration {
+	delay := getRecordsBackoff(failures)
+	if rng != nil && delay > 0 {
+		delay += time.Duration(rng.Int63n(int64(delay/2) + 1))
+	}
+	if delay > getRecordsBackoffMax {
+		delay = getRecordsBackoffMax
+	}
+	return delay
 }
 
 // retryableGetRecordsError classifies GetRecords errors the pass survives by
@@ -111,6 +128,9 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 	count := processedSinceCheckpoint
 	readFailures := 0
 	var lastReadAt time.Time
+	// Lazily seeded on the first retryable read failure; healthy passes never
+	// pay for it.
+	var backoffRng *rand.Rand
 
 	for {
 		select {
@@ -184,7 +204,10 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 				// in-place instead of failing the shard (which would stop the
 				// whole consumer). The same iterator stays valid for the retry.
 				readFailures++
-				backoff := getRecordsBackoff(readFailures)
+				if backoffRng == nil {
+					backoffRng = rand.New(rand.NewSource(time.Now().UnixNano()))
+				}
+				backoff := getRecordsRetryDelay(readFailures, backoffRng)
 				c.logger.Warn("get records failed; backing off",
 					slog.String("shard", shardID),
 					slog.Int("consecutive_failures", readFailures),
@@ -202,6 +225,10 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 		}
 		readFailures = 0
+		// Health().Processing.LastReadSuccess: every successful read counts,
+		// including empty tip pages — the signal is "the delivery loop is
+		// turning", not "records arrived".
+		c.processingHealth.recordRead(time.Now())
 		c.reporter.Timing(metricGetRecordsDuration, time.Since(getRecordsStart), c.shardTags(shardID))
 		c.reporter.Counter(metricPagesFetched, 1, c.shardTags(shardID))
 		if out.MillisBehindLatest != nil {

@@ -1,15 +1,21 @@
 package consumer
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/aws/smithy-go"
+
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 )
 
 func TestHealthZeroValueConsumer(t *testing.T) {
@@ -217,5 +223,120 @@ func TestFatalShardSyncError(t *testing.T) {
 				t.Fatalf("fatalShardSyncError(%v) = %t, want %t", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHealthProcessingZeroUntilFirstActivity(t *testing.T) {
+	t.Parallel()
+
+	c := &Consumer{}
+	h := c.Health()
+	if !h.Processing.LastReadSuccess.IsZero() {
+		t.Fatalf("LastReadSuccess = %v, want zero before any read", h.Processing.LastReadSuccess)
+	}
+	if !h.Processing.LastRecordProcessed.IsZero() {
+		t.Fatalf("LastRecordProcessed = %v, want zero before any processed page", h.Processing.LastRecordProcessed)
+	}
+}
+
+func TestHealthProcessingReportsRecordedTimestamps(t *testing.T) {
+	t.Parallel()
+
+	c := &Consumer{}
+	readAt := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
+	processedAt := readAt.Add(time.Second)
+	c.processingHealth.recordRead(readAt)
+	c.processingHealth.recordProcessed(processedAt)
+
+	h := c.Health()
+	if !h.Processing.LastReadSuccess.Equal(readAt) {
+		t.Fatalf("LastReadSuccess = %v, want %v", h.Processing.LastReadSuccess, readAt)
+	}
+	if !h.Processing.LastRecordProcessed.Equal(processedAt) {
+		t.Fatalf("LastRecordProcessed = %v, want %v", h.Processing.LastRecordProcessed, processedAt)
+	}
+}
+
+// TestProcessShardRecordsPassAdvancesReadHealthOnEmptyTipPage pins the
+// LastReadSuccess hook and its semantics: an empty caught-up page counts as a
+// successful read (the delivery loop is turning) without counting as
+// processed records.
+func TestProcessShardRecordsPassAdvancesReadHealthOnEmptyTipPage(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{NextShardIterator: aws.String("tip-iterator")}, // empty: caught up
+		},
+	}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		client:   client,
+		store:    &fakeCheckpointSaveStore{},
+		tuning:   tuningConfig{checkpointEvery: 10},
+		handler:  func(context.Context, Record) error { return nil },
+	}
+
+	if _, _, _, err := c.processShardRecordsPass(context.Background(), "shard-1", 0, "held-iterator"); err != nil {
+		t.Fatalf("processShardRecordsPass() error = %v, want nil", err)
+	}
+	h := c.Health()
+	if h.Processing.LastReadSuccess.IsZero() {
+		t.Fatal("LastReadSuccess is zero, want advanced by the empty tip page read")
+	}
+	if !h.Processing.LastRecordProcessed.IsZero() {
+		t.Fatalf("LastRecordProcessed = %v, want zero (no records were processed)", h.Processing.LastRecordProcessed)
+	}
+}
+
+// TestProcessRecordsPageAdvancesProcessedHealth pins the LastRecordProcessed
+// hook: a page that finishes processing advances the timestamp.
+func TestProcessRecordsPageAdvancesProcessedHealth(t *testing.T) {
+	t.Parallel()
+
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    &fakeCheckpointSaveStore{},
+		tuning:   tuningConfig{checkpointEvery: 10},
+		handler:  func(context.Context, Record) error { return nil },
+	}
+	out := &kinesis.GetRecordsOutput{
+		Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}},
+	}
+
+	if _, _, err := c.processRecordsPageWithCheckpoint(context.Background(), "shard-1", out, 0); err != nil {
+		t.Fatalf("processRecordsPageWithCheckpoint() error = %v, want nil", err)
+	}
+	if c.Health().Processing.LastRecordProcessed.IsZero() {
+		t.Fatal("LastRecordProcessed is zero, want advanced by the processed page")
+	}
+}
+
+// TestProcessingProgressKeepsGreatestTimestamp pins the out-of-order-writer
+// guarantee: a descheduled worker resuming with an older timestamp must not
+// regress a newer one — the signals report the LAST progress, so a regression
+// would falsely age the consumer despite recent activity.
+func TestProcessingProgressKeepsGreatestTimestamp(t *testing.T) {
+	t.Parallel()
+
+	var state processingProgressState
+	newer := time.Date(2026, 7, 18, 10, 0, 1, 0, time.UTC)
+	older := newer.Add(-time.Second)
+
+	state.recordRead(newer)
+	state.recordRead(older) // late writer with a stale capture
+	state.recordProcessed(newer)
+	state.recordProcessed(older)
+
+	lastRead, lastProcessed := state.snapshot()
+	if !lastRead.Equal(newer) {
+		t.Fatalf("lastRead = %v, want %v (older write must not regress it)", lastRead, newer)
+	}
+	if !lastProcessed.Equal(newer) {
+		t.Fatalf("lastProcessed = %v, want %v (older write must not regress it)", lastProcessed, newer)
 	}
 }

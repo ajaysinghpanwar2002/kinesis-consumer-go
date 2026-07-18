@@ -150,7 +150,12 @@ batch.
 
 Gauges are point-in-time observations. The four ownership gauges are emitted
 from a successfully built rebalance-plan snapshot, before that pass executes
-its moves.
+its moves. A rebalance pass with no ready shards (before the first shard is
+ready, or after the last one completes) still emits all four from a
+best-effort idle snapshot — `owned_shards`, `fair_share_low`, and
+`fair_share_high` report 0 and `active_workers` reports the live worker count
+— so dashboards do not freeze on the last pre-idle values. Only a backend
+listing failure during such an idle pass skips the emission.
 
 | Statsd name | Value/unit | Tags | Emitted when |
 | --- | --- | --- | --- |

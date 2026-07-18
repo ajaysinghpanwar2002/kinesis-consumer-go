@@ -566,3 +566,55 @@ func TestNewManagerPingFailure(t *testing.T) {
 		t.Fatal("NewManager on unreachable addr error = nil, want error")
 	}
 }
+
+// TestManagerRejectsSubMillisecondTTL pins the born-expired-lease guard: the
+// Lua scripts work in whole milliseconds, so a sub-millisecond TTL truncates
+// to zero — a lease no peer ever sees as live that would still consume a
+// MaxLeases slot. All TTL-taking operations reject it, and a rejected Acquire
+// must not leak its slot reservation.
+func TestManagerRejectsSubMillisecondTTL(t *testing.T) {
+	t.Parallel()
+
+	server, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis start: %v", err)
+	}
+	t.Cleanup(server.Close)
+	mgr, err := NewManager(server.Addr(), WithKeyPrefix("lease-test"), WithMaxLeases(1))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Close() })
+	ctx := context.Background()
+
+	if _, _, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", 500*time.Microsecond); err == nil {
+		t.Fatal("Acquire(500µs) error = nil, want ttl validation error")
+	}
+	if _, _, err := mgr.Claim(ctx, "stream", "shard-1", "owner-a", "owner-b", 0); err == nil {
+		t.Fatal("Claim(0) error = nil, want ttl validation error")
+	}
+	if err := mgr.Heartbeat(ctx, "stream", "owner-a", time.Millisecond-1); err == nil {
+		t.Fatal("Heartbeat(<1ms) error = nil, want ttl validation error")
+	}
+
+	// The rejected Acquire must not have consumed the single MaxLeases slot.
+	acquired, ok, err := mgr.Acquire(ctx, "stream", "shard-1", "owner-a", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Acquire after rejected ttl = (ok=%t, err=%v), want (true, nil)", ok, err)
+	}
+
+	// Renew validates too, and the failed validation does not touch the lease.
+	if err := acquired.Renew(ctx, 500*time.Microsecond); err == nil {
+		t.Fatal("Renew(500µs) error = nil, want ttl validation error")
+	}
+	owners, err := mgr.List(ctx, "stream")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if owners["shard-1"] != "owner-a" {
+		t.Fatalf("owners = %v, want shard-1 owned by owner-a (lease untouched by rejected renew)", owners)
+	}
+	if err := acquired.Release(ctx); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+}

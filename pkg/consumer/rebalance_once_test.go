@@ -105,7 +105,11 @@ func (m *recordingRebalanceOnceManager) Claim(_ context.Context, _ string, shard
 	return result.lease, result.claimed, result.err
 }
 
-func TestRebalanceShardsOnceNoReadyShardsSkipsSnapshotsAndExecution(t *testing.T) {
+// TestRebalanceShardsOnceNoReadyShardsSkipsPlanningAndExecution pins the idle
+// pass contract: with no ready shards there is no plan and no execution, but
+// the pass still lists owners/workers once each to keep the ownership gauges
+// flowing (dashboards must not freeze on the last pre-idle values).
+func TestRebalanceShardsOnceNoReadyShardsSkipsPlanningAndExecution(t *testing.T) {
 	t.Parallel()
 
 	manager := &recordingRebalanceOnceManager{}
@@ -141,11 +145,12 @@ func TestRebalanceShardsOnceNoReadyShardsSkipsSnapshotsAndExecution(t *testing.T
 		t.Fatalf("started = %d, want 0", result.started)
 	}
 	assertShardList(t, result.movedShardIDs, nil)
-	if len(manager.listCalls) != 0 {
-		t.Fatalf("List calls = %d, want 0", len(manager.listCalls))
+	// One listing each for the idle ownership gauges — no retries, no planning.
+	if len(manager.listCalls) != 1 {
+		t.Fatalf("List calls = %d, want 1 (idle gauge snapshot)", len(manager.listCalls))
 	}
-	if len(manager.workerCalls) != 0 {
-		t.Fatalf("Workers calls = %d, want 0", len(manager.workerCalls))
+	if len(manager.workerCalls) != 1 {
+		t.Fatalf("Workers calls = %d, want 1 (idle gauge snapshot)", len(manager.workerCalls))
 	}
 	assertRebalanceExecutionCalls(t, manager.executionCalls, nil)
 	waitWorkerGroupDone(t, &workerWG)
@@ -1100,4 +1105,79 @@ func TestRebalanceShardsOnceQuietPassLogsNothing(t *testing.T) {
 	if records := handler.snapshot(); len(records) != 0 {
 		t.Fatalf("quiet balanced pass emitted records: %+v", records)
 	}
+}
+
+// TestRebalanceShardsOnceIdleEmitsOwnershipGauges pins the idle-pass gauge
+// contract: with no ready shards the ownership gauges are still emitted from
+// a best-effort snapshot (owned/low/high report 0, active_workers reports the
+// live worker count) so dashboards do not freeze on the last pre-idle values
+// after the final shard completes.
+func TestRebalanceShardsOnceIdleEmitsOwnershipGauges(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingRebalanceOnceManager{
+		workerOwners: []string{"self", "peer"},
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	reporter := &recordingReporter{}
+	c.reporter = reporter
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := c.rebalanceShardsOnce(
+		ctx, nil, newShardCompletionState(), nil, workers, &workerWG, workerErrCh, cancel, time.Now(),
+	); err != nil {
+		t.Fatalf("rebalanceShardsOnce() error = %v, want nil", err)
+	}
+
+	wantGauges := map[string]float64{
+		metricOwnedShards:   0,
+		metricActiveWorkers: 2,
+		metricFairShareLow:  0,
+		metricFairShareHigh: 0,
+	}
+	for name, want := range wantGauges {
+		calls := reporter.gaugesNamed(name)
+		if len(calls) != 1 {
+			t.Fatalf("gauge %q calls = %d, want 1 (idle emission)", name, len(calls))
+		}
+		if calls[0].value != want {
+			t.Fatalf("gauge %q = %v, want %v", name, calls[0].value, want)
+		}
+	}
+	waitWorkerGroupDone(t, &workerWG)
+}
+
+// TestRebalanceShardsOnceIdleGaugesAreBestEffort pins that a backend failure
+// while snapshotting for the idle gauges is swallowed: the gauges are
+// observability, so the otherwise successful idle pass must not fail.
+func TestRebalanceShardsOnceIdleGaugesAreBestEffort(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingRebalanceOnceManager{
+		listErrs: []error{errors.New("valkey down")},
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+	reporter := &recordingReporter{}
+	c.reporter = reporter
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := c.rebalanceShardsOnce(
+		ctx, nil, newShardCompletionState(), nil, workers, &workerWG, workerErrCh, cancel, time.Now(),
+	); err != nil {
+		t.Fatalf("rebalanceShardsOnce() error = %v, want nil (idle gauges are best-effort)", err)
+	}
+	if calls := reporter.gaugesNamed(metricOwnedShards); len(calls) != 0 {
+		t.Fatalf("gauge %q calls = %d, want 0 after snapshot failure", metricOwnedShards, len(calls))
+	}
+	waitWorkerGroupDone(t, &workerWG)
 }

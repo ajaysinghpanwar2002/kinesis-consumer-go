@@ -5,13 +5,46 @@ import (
 	"time"
 )
 
+func processingHealthSnapshot(s *processingProgressState) ProcessingHealth {
+	lastRead, lastProcessed := s.snapshot()
+	return ProcessingHealth{
+		LastReadSuccess:     lastRead,
+		LastRecordProcessed: lastProcessed,
+	}
+}
+
 // Health is a point-in-time snapshot of the consumer's internal liveness
 // signals, read via Consumer.Health. It reports observations, not a verdict:
 // callers decide their own alerting thresholds (typically on each signal's
 // ConsecutiveFailures and the age of its LastSuccess).
 type Health struct {
-	ShardSync ShardSyncHealth
-	Heartbeat HeartbeatHealth
+	ShardSync  ShardSyncHealth
+	Heartbeat  HeartbeatHealth
+	Processing ProcessingHealth
+}
+
+// ProcessingHealth describes record-delivery progress across all owned
+// shards. It exists so a wedged-but-renewing consumer — one whose leases and
+// heartbeats stay healthy while no records move (for example a handler stuck
+// ignoring its context) — is visible to probes. Both signals are
+// consumer-global: any owned shard advances them, so one wedged shard among
+// several healthy ones will not show here (use the per-shard metrics for
+// that granularity).
+type ProcessingHealth struct {
+	// LastReadSuccess is when a GetRecords call last succeeded on any owned
+	// shard, including empty pages at the shard tip. It is the delivery
+	// loop's liveness signal — a wedged handler blocks its shard's next read,
+	// while an idle-but-healthy consumer at the tip keeps polling — so probes
+	// should alert on the age of this timestamp. Zero until the first
+	// successful read (and always zero for a consumer that owns no shards).
+	LastReadSuccess time.Time
+	// LastRecordProcessed is when a page of records last finished processing
+	// — handler success, or a skip/DLQ failure-policy outcome that lets the
+	// page checkpoint advance. On a healthy consumer with no incoming traffic
+	// this goes stale while LastReadSuccess stays fresh; the pair
+	// distinguishes "no traffic" from "not processing". Zero until the first
+	// processed page.
+	LastRecordProcessed time.Time
 }
 
 // ShardSyncHealth describes the periodic shard-discovery loop: the sync pass
@@ -70,7 +103,43 @@ func (c *Consumer) Health() Health {
 			LastSuccess:         hbLastSuccess,
 			LastError:           hbErr,
 		},
+		Processing: processingHealthSnapshot(&c.processingHealth),
 	}
+}
+
+// processingProgressState backs Health().Processing. Shard workers write it
+// concurrently from their read/process paths, so each record keeps only the
+// greatest timestamp: a descheduled writer resuming with an older time must
+// not regress a newer one and falsely report stale processing. Mutex-guarded
+// time.Time values (like healthSignalState) preserve the monotonic clock
+// component for callers computing signal age; the lock is negligible next to
+// the GetRecords network call each write follows. Zero values mean never.
+type processingProgressState struct {
+	mu            sync.Mutex
+	lastRead      time.Time
+	lastProcessed time.Time
+}
+
+func (s *processingProgressState) recordRead(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.After(s.lastRead) {
+		s.lastRead = now
+	}
+}
+
+func (s *processingProgressState) recordProcessed(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.After(s.lastProcessed) {
+		s.lastProcessed = now
+	}
+}
+
+func (s *processingProgressState) snapshot() (lastRead, lastProcessed time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastRead, s.lastProcessed
 }
 
 // healthSignalState is the mutable, locked backing store behind one Health

@@ -88,7 +88,11 @@ func (c *Consumer) saveShardCheckpointIfDue(ctx context.Context, shardID, sequen
 	if err := c.saveShardCheckpoint(ctx, shardID, sequenceNumber); err != nil {
 		return processedSinceCheckpoint, fmt.Errorf("save due shard checkpoint %s: %w", shardID, err)
 	}
-	return processedSinceCheckpoint % c.tuning.checkpointEvery, nil
+	// The save covers every record processed so far — the checkpoint is the
+	// page-end sequence number — so nothing remains uncheckpointed. A modulo
+	// remainder here would be phantom carry-over that makes the next
+	// checkpoint fire early.
+	return 0, nil
 }
 
 func (c *Consumer) checkpointOnDrain(ctx context.Context, shardID, sequenceNumber string, processedSinceCheckpoint int) error {
