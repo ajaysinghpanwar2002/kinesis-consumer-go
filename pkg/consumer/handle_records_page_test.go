@@ -802,6 +802,7 @@ func TestHandleRecordsPageSkipPolicyLogsSkippedRecords(t *testing.T) {
 	}
 	wantAttrs := map[string]string{
 		"shard": "shard-1", "handler": handlerKindBatch, "records": "2", "attempts": "2",
+		"first_sequence": "sequence-1", "last_sequence": "sequence-2",
 	}
 	for key, want := range wantAttrs {
 		if skipped.attrs[key] != want {

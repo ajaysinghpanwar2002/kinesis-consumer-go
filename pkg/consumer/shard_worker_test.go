@@ -383,3 +383,54 @@ func TestRunShardWorkerPreservesProcessingFailureAfterLeaseLoss(t *testing.T) {
 		t.Fatalf("Release calls = %d, want 0 (lease belongs to the peer)", calls)
 	}
 }
+
+// TestRunShardWorkerNormalizesCanceledErrorWhenStopFenceIsSet pins the
+// stop-fence normalization race fix: a shed stopper sets the stop fence
+// before calling cancel, so a descheduled stopper can leave the page path
+// returning context.Canceled while the worker context's Err() is still nil.
+// With the fence set, that cancellation is the requested worker stop — the
+// worker must exit cleanly (and release its lease), not escalate a routine
+// shed into a fatal run error.
+func TestRunShardWorkerNormalizesCanceledErrorWhenStopFenceIsSet(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	c := newTestShardWorkerConsumer(time.Hour, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_, _ = ctx, shardID
+		return "", 0, fmt.Errorf("process records page shard-1: %w", context.Canceled)
+	}
+
+	stopState := &shardWorkerStopState{}
+	stopState.requested.Store(true)
+	ctx := context.WithValue(context.Background(), shardWorkerStopKey{}, stopState)
+
+	done := runShardWorker(ctx, c, "shard-1", shardLease)
+	waitShardWorkerDone(t, done, nil)
+
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+// TestRunShardWorkerKeepsCanceledErrorWithoutStopSignal is the contrast case:
+// a handler that returns context.Canceled while its context is live and no
+// stop was requested is an ordinary fatal processing error.
+func TestRunShardWorkerKeepsCanceledErrorWithoutStopSignal(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &recordingReleaseLease{}
+	c := newTestShardWorkerConsumer(time.Hour, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_, _ = ctx, shardID
+		return "", 0, fmt.Errorf("process records page shard-1: %w", context.Canceled)
+	}
+
+	done := runShardWorker(context.Background(), c, "shard-1", shardLease)
+	if err := waitShardWorkerDone(t, done, context.Canceled); err == nil {
+		t.Fatal("runShardWorker() error = nil, want the canceled processing error preserved")
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}

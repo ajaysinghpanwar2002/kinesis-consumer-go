@@ -267,7 +267,12 @@ func TestProcessRecordsPageWithCheckpointRejectsLateSuccessAfterContextCancellat
 	}
 }
 
-func TestProcessRecordsPageWithCheckpointCarriesModuloRemainder(t *testing.T) {
+// TestProcessRecordsPageWithCheckpointCoveringSaveResetsCount pins that a due
+// checkpoint resets the processed-since-checkpoint count to zero: the saved
+// value is the page-end sequence, so the save covers every accumulated record
+// and a modulo remainder would be phantom carry-over that fires the next
+// checkpoint early.
+func TestProcessRecordsPageWithCheckpointCoveringSaveResetsCount(t *testing.T) {
 	t.Parallel()
 
 	store := &fakeCheckpointSaveStore{}
@@ -298,8 +303,8 @@ func TestProcessRecordsPageWithCheckpointCarriesModuloRemainder(t *testing.T) {
 	if lastSeq != "sequence-3" {
 		t.Fatalf("lastSeq = %q, want %q", lastSeq, "sequence-3")
 	}
-	if count != 2 {
-		t.Fatalf("count = %d, want 2", count)
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 (covering save leaves nothing uncheckpointed)", count)
 	}
 	if len(store.saveCalls) != 1 {
 		t.Fatalf("Save calls = %d, want 1", len(store.saveCalls))

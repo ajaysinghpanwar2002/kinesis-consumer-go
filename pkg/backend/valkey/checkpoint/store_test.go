@@ -2,6 +2,8 @@ package checkpoint
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -349,5 +351,82 @@ func TestNewPingFailure(t *testing.T) {
 	if err == nil {
 		_ = store.Close()
 		t.Fatal("New on unreachable addr error = nil, want error")
+	}
+}
+
+// TestStoreSaveSurfacesCorruptStoredCheckpoint pins that a stored value that
+// is neither a sequence number nor a completion marker fails the save with
+// ErrInvalidStoredCheckpoint instead of silently winning every comparison and
+// discarding all future saves. Only the save script writes these keys, so a
+// corrupt value means out-of-band interference; Delete (the documented rewind
+// path) recovers.
+func TestStoreSaveSurfacesCorruptStoredCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	corruptValues := []string{"garbage", "0123", "12a", "-5", ""}
+	for _, corrupt := range corruptValues {
+		t.Run(fmt.Sprintf("stored_%q", corrupt), func(t *testing.T) {
+			t.Parallel()
+
+			store, server := newTestStore(t)
+			ctx := context.Background()
+			key := backend.CheckpointKey("kinesis-checkpoint", "stream", "shard-1")
+			server.Set(key, corrupt)
+
+			err := store.Save(ctx, "stream", "shard-1", "100")
+			if !errors.Is(err, ErrInvalidStoredCheckpoint) {
+				t.Fatalf("Save over %q error = %v, want wraps ErrInvalidStoredCheckpoint", corrupt, err)
+			}
+			// The corrupt value is left in place for inspection.
+			if got, gerr := server.Get(key); gerr != nil || got != corrupt {
+				t.Fatalf("stored value after failed save = (%q, %v), want (%q, nil)", got, gerr, corrupt)
+			}
+			// Delete is the recovery path: the next save is unconditional.
+			if err := store.Delete(ctx, "stream", "shard-1"); err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+			if err := store.Save(ctx, "stream", "shard-1", "100"); err != nil {
+				t.Fatalf("Save after Delete: %v", err)
+			}
+			if got, gerr := store.Get(ctx, "stream", "shard-1"); gerr != nil || got != "100" {
+				t.Fatalf("Get after recovery = (%q, %v), want (100, nil)", got, gerr)
+			}
+		})
+	}
+}
+
+// TestStoreSaveAcceptsValidStoredValues is the complement: every value the
+// library itself writes — sequence numbers (including "0") and completion
+// markers — must keep passing the corruption check.
+func TestStoreSaveAcceptsValidStoredValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		stored string
+		save   string
+		want   string
+	}{
+		{name: "zero sequence advances", stored: "0", save: "5", want: "5"},
+		{name: "plain sequence advances", stored: "99", save: "100", want: "100"},
+		{name: "stale save discarded without error", stored: "100", save: "99", want: "100"},
+		{name: "completion marker stays terminal", stored: "SHARD_END:100", save: "200", want: "SHARD_END:100"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, server := newTestStore(t)
+			ctx := context.Background()
+			key := backend.CheckpointKey("kinesis-checkpoint", "stream", "shard-1")
+			server.Set(key, tt.stored)
+
+			if err := store.Save(ctx, "stream", "shard-1", tt.save); err != nil {
+				t.Fatalf("Save(%q) over %q error = %v, want nil", tt.save, tt.stored, err)
+			}
+			if got, err := store.Get(ctx, "stream", "shard-1"); err != nil || got != tt.want {
+				t.Fatalf("Get = (%q, %v), want (%q, nil)", got, err, tt.want)
+			}
+		})
 	}
 }

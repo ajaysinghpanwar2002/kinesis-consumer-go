@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	valkey "github.com/valkey-io/valkey-go"
@@ -26,6 +27,20 @@ var (
 	_ corecheckpoint.Store   = (*Store)(nil)
 	_ consumerlease.Provider = (*Store)(nil)
 )
+
+// ErrInvalidStoredCheckpoint reports that the value already stored under the
+// shard's checkpoint key is neither a Kinesis sequence number nor a
+// SHARD_END completion marker. Only the save script writes these keys, so
+// this means the key was corrupted out of band; Save surfaces it as an error
+// (wrapping this sentinel) instead of silently discarding every future save
+// against the corrupt value. Recover by repairing or Delete-ing the key
+// (Delete is the documented rewind path).
+var ErrInvalidStoredCheckpoint = errors.New("stored checkpoint value is not a valid sequence number or completion marker")
+
+// checkpointSaveScript wraps the save script for EVALSHA execution: the
+// script body is sent once and subsequent saves — the store's hot path —
+// reference it by hash.
+var checkpointSaveScript = valkey.NewLuaScript(backend.CheckpointSaveScript)
 
 // Config controls how the checkpoint store connects and where it writes keys.
 type Config = backend.CheckpointConfig
@@ -129,12 +144,20 @@ func (s *Store) Get(ctx context.Context, streamName, shardID string) (string, er
 // but only when it advances the checkpoint: a stale or duplicate value is
 // silently discarded and a completed (SHARD_END-prefixed) value is never
 // overwritten, per the checkpoint.Store contract. The advance-only
-// compare-and-set runs atomically as a Lua script.
+// compare-and-set runs atomically as a Lua script (by hash — EVALSHA — since
+// this is the store's hot path). A corrupt stored value fails the save with
+// an error wrapping ErrInvalidStoredCheckpoint rather than silently
+// discarding it.
 func (s *Store) Save(ctx context.Context, streamName, shardID, sequenceNumber string) error {
-	key := s.key(streamName, shardID)
-	cmd := s.client.B().Eval().Script(backend.CheckpointSaveScript).Numkeys(1).Key(key).
-		Arg(sequenceNumber).Arg(corecheckpoint.CompletedPrefix).Build()
-	if err := s.client.Do(ctx, cmd).Error(); err != nil {
+	resp := checkpointSaveScript.Exec(ctx, s.client, []string{s.key(streamName, shardID)},
+		[]string{sequenceNumber, corecheckpoint.CompletedPrefix})
+	if err := resp.Error(); err != nil {
+		// Only a server error reply whose message carries the script's error
+		// code is the corruption signal; anything else stays a plain backend
+		// failure.
+		if ve, ok := valkey.IsValkeyErr(err); ok && strings.HasPrefix(ve.Error(), backend.InvalidCheckpointError) {
+			return fmt.Errorf("save checkpoint %s/%s: %w", streamName, shardID, ErrInvalidStoredCheckpoint)
+		}
 		return fmt.Errorf("save checkpoint %s/%s: %w", streamName, shardID, err)
 	}
 	return nil
@@ -290,6 +313,11 @@ func newClient(cfg Config) (valkey.Client, error) {
 		Password:          cfg.Password,
 		ForceSingleClient: !cfg.UseCluster,
 		DisableCache:      true,
+		// Bound connection writes so a black-holed connection surfaces as an
+		// error instead of blocking a save behind an unbounded socket write.
+		// PingTimeout already expresses how long this deployment tolerates
+		// waiting on the backend.
+		ConnWriteTimeout: cfg.PingTimeout,
 	}
 	if cfg.Credentials != nil {
 		fn := cfg.Credentials

@@ -36,6 +36,34 @@ type CredentialsFn = backend.CredentialsFn
 // Option customizes a Valkey-backed lease manager.
 type Option func(*Config) error
 
+// minTTL is the smallest TTL Acquire, Claim, Renew, and Heartbeat accept. The
+// Lua scripts work in whole milliseconds, so a sub-millisecond TTL truncates
+// to zero and creates a born-expired lease — one that no peer can see as live
+// but that still consumed a MaxLeases slot on this manager.
+const minTTL = time.Millisecond
+
+// validateTTL rejects TTLs below minTTL before any slot is reserved or script
+// runs.
+func validateTTL(ttl time.Duration) error {
+	if ttl < minTTL {
+		return fmt.Errorf("ttl %s is below the minimum %s", ttl, minTTL)
+	}
+	return nil
+}
+
+// Hot-path Lua scripts wrapped for EVALSHA execution: each script body is
+// sent once and later calls — renews and heartbeats fire every few seconds
+// per worker — reference it by hash.
+var (
+	leaseAcquireScript    = valkey.NewLuaScript(backend.LeaseAcquireScript)
+	leaseClaimScript      = valkey.NewLuaScript(backend.LeaseClaimScript)
+	leaseRenewScript      = valkey.NewLuaScript(backend.LeaseRenewScript)
+	leaseReleaseScript    = valkey.NewLuaScript(backend.LeaseReleaseScript)
+	leaseListScript       = valkey.NewLuaScript(backend.LeaseListScript)
+	workerHeartbeatScript = valkey.NewLuaScript(backend.WorkerHeartbeatScript)
+	workerListScript      = valkey.NewLuaScript(backend.WorkerListScript)
+)
+
 // Manager coordinates shard ownership across consumer workers using Valkey
 // (exclusive in steady state — see the lease.Manager contract for the
 // ownership-transfer windows). Versioned aggregate keys are written as:
@@ -101,8 +129,12 @@ func (m *Manager) Close() error {
 
 // Acquire tries to claim a shard. It returns (nil, false, nil) when someone
 // else owns the shard or the manager is already holding its maximum number of
-// leases.
+// leases, and an error for a ttl below one millisecond (which would create a
+// born-expired lease).
 func (m *Manager) Acquire(ctx context.Context, streamName, shardID, owner string, ttl time.Duration) (consumerlease.Lease, bool, error) {
+	if err := validateTTL(ttl); err != nil {
+		return nil, false, fmt.Errorf("acquire lease %s/%s: %w", streamName, shardID, err)
+	}
 	keys := m.keys(streamName)
 	slotKey := keys.LeaseOwners + "\x00" + shardID
 	releaseSlot, ok := m.slots.Reserve(slotKey)
@@ -110,9 +142,9 @@ func (m *Manager) Acquire(ctx context.Context, streamName, shardID, owner string
 		return nil, false, nil
 	}
 
-	resp := m.client.Do(ctx, m.client.B().Eval().Script(backend.LeaseAcquireScript).Numkeys(2).
-		Key(keys.LeaseOwners, keys.LeaseExpirations).
-		Arg(shardID, owner, strconv.FormatInt(ttl.Milliseconds(), 10)).Build())
+	resp := leaseAcquireScript.Exec(ctx, m.client,
+		[]string{keys.LeaseOwners, keys.LeaseExpirations},
+		[]string{shardID, owner, strconv.FormatInt(ttl.Milliseconds(), 10)})
 	res, err := resp.ToInt64()
 	if err != nil {
 		releaseSlot()
@@ -136,8 +168,8 @@ func (m *Manager) Acquire(ctx context.Context, streamName, shardID, owner string
 // List returns active shard owners for a stream, keyed by shard ID.
 func (m *Manager) List(ctx context.Context, streamName string) (map[string]string, error) {
 	keys := m.keys(streamName)
-	result, err := m.client.Do(ctx, m.client.B().Eval().Script(backend.LeaseListScript).Numkeys(2).
-		Key(keys.LeaseOwners, keys.LeaseExpirations).Build()).AsStrMap()
+	result, err := leaseListScript.Exec(ctx, m.client,
+		[]string{keys.LeaseOwners, keys.LeaseExpirations}, nil).AsStrMap()
 	if err != nil {
 		return nil, fmt.Errorf("list leases %s: %w", streamName, err)
 	}
@@ -146,8 +178,12 @@ func (m *Manager) List(ctx context.Context, streamName string) (map[string]strin
 
 // Claim tries to transfer a shard from expectedOwner to newOwner. It returns
 // (nil, false, nil) when the current owner does not match expectedOwner or the
-// manager is already holding its maximum number of leases.
+// manager is already holding its maximum number of leases, and an error for a
+// ttl below one millisecond (which would create a born-expired lease).
 func (m *Manager) Claim(ctx context.Context, streamName, shardID, expectedOwner, newOwner string, ttl time.Duration) (consumerlease.Lease, bool, error) {
+	if err := validateTTL(ttl); err != nil {
+		return nil, false, fmt.Errorf("claim lease %s/%s: %w", streamName, shardID, err)
+	}
 	keys := m.keys(streamName)
 	slotKey := keys.LeaseOwners + "\x00" + shardID
 	releaseSlot, ok := m.slots.Reserve(slotKey)
@@ -155,9 +191,9 @@ func (m *Manager) Claim(ctx context.Context, streamName, shardID, expectedOwner,
 		return nil, false, nil
 	}
 
-	resp := m.client.Do(ctx, m.client.B().Eval().Script(backend.LeaseClaimScript).Numkeys(2).
-		Key(keys.LeaseOwners, keys.LeaseExpirations).
-		Arg(shardID, expectedOwner, strconv.FormatInt(ttl.Milliseconds(), 10), newOwner).Build())
+	resp := leaseClaimScript.Exec(ctx, m.client,
+		[]string{keys.LeaseOwners, keys.LeaseExpirations},
+		[]string{shardID, expectedOwner, strconv.FormatInt(ttl.Milliseconds(), 10), newOwner})
 	res, err := resp.ToInt64()
 	if err != nil {
 		releaseSlot()
@@ -178,11 +214,16 @@ func (m *Manager) Claim(ctx context.Context, streamName, shardID, expectedOwner,
 	}, true, nil
 }
 
-// Heartbeat marks this worker as alive for the given TTL.
+// Heartbeat marks this worker as alive for the given TTL. A ttl below one
+// millisecond is an error: it would truncate to a zero-lifetime entry that no
+// peer ever observes as live.
 func (m *Manager) Heartbeat(ctx context.Context, streamName, owner string, ttl time.Duration) error {
+	if err := validateTTL(ttl); err != nil {
+		return fmt.Errorf("heartbeat %s/%s: %w", streamName, owner, err)
+	}
 	key := m.keys(streamName).Workers
-	if err := m.client.Do(ctx, m.client.B().Eval().Script(backend.WorkerHeartbeatScript).Numkeys(1).
-		Key(key).Arg(owner, strconv.FormatInt(ttl.Milliseconds(), 10)).Build()).Error(); err != nil {
+	if err := workerHeartbeatScript.Exec(ctx, m.client, []string{key},
+		[]string{owner, strconv.FormatInt(ttl.Milliseconds(), 10)}).Error(); err != nil {
 		return fmt.Errorf("heartbeat %s/%s: %w", streamName, owner, err)
 	}
 	return nil
@@ -191,8 +232,7 @@ func (m *Manager) Heartbeat(ctx context.Context, streamName, owner string, ttl t
 // Workers lists currently alive owners for the stream.
 func (m *Manager) Workers(ctx context.Context, streamName string) ([]string, error) {
 	key := m.keys(streamName).Workers
-	entries, err := m.client.Do(ctx, m.client.B().Eval().Script(backend.WorkerListScript).Numkeys(1).
-		Key(key).Build()).ToArray()
+	entries, err := workerListScript.Exec(ctx, m.client, []string{key}, nil).ToArray()
 	if err != nil {
 		return nil, fmt.Errorf("list workers %s: %w", streamName, err)
 	}
@@ -227,11 +267,16 @@ type valkeyLease struct {
 }
 
 // Renew extends the TTL only if the caller still owns the lease. On loss of
-// ownership it releases the slot reservation and returns ErrNotOwned.
+// ownership it releases the slot reservation and returns ErrNotOwned. A ttl
+// below one millisecond is an error: it would truncate the live lease to a
+// zero lifetime.
 func (l *valkeyLease) Renew(ctx context.Context, ttl time.Duration) error {
-	resp := l.client.Do(ctx, l.client.B().Eval().Script(backend.LeaseRenewScript).Numkeys(2).
-		Key(l.ownersKey, l.expiriesKey).
-		Arg(l.shardID, l.owner, strconv.FormatInt(ttl.Milliseconds(), 10)).Build())
+	if err := validateTTL(ttl); err != nil {
+		return fmt.Errorf("renew lease %s: %w", l.shardID, err)
+	}
+	resp := leaseRenewScript.Exec(ctx, l.client,
+		[]string{l.ownersKey, l.expiriesKey},
+		[]string{l.shardID, l.owner, strconv.FormatInt(ttl.Milliseconds(), 10)})
 	res, err := resp.ToInt64()
 	if err != nil {
 		return fmt.Errorf("renew lease %s: %w", l.shardID, err)
@@ -247,8 +292,8 @@ func (l *valkeyLease) Renew(ctx context.Context, ttl time.Duration) error {
 // slot reservation, and returns ErrNotOwned when the caller no longer owns the
 // lease.
 func (l *valkeyLease) Release(ctx context.Context) error {
-	resp := l.client.Do(ctx, l.client.B().Eval().Script(backend.LeaseReleaseScript).Numkeys(2).
-		Key(l.ownersKey, l.expiriesKey).Arg(l.shardID, l.owner).Build())
+	resp := leaseReleaseScript.Exec(ctx, l.client,
+		[]string{l.ownersKey, l.expiriesKey}, []string{l.shardID, l.owner})
 	res, err := resp.ToInt64()
 	l.once.Do(l.done)
 	if err != nil {
@@ -350,6 +395,11 @@ func newClient(cfg Config) (valkey.Client, error) {
 		Password:          cfg.Password,
 		ForceSingleClient: !cfg.UseCluster,
 		DisableCache:      true,
+		// Bound connection writes so a black-holed connection surfaces as an
+		// error instead of blocking a renew or heartbeat behind an unbounded
+		// socket write. PingTimeout already expresses how long this deployment
+		// tolerates waiting on the backend.
+		ConnWriteTimeout: cfg.PingTimeout,
 	}
 	if cfg.Credentials != nil {
 		fn := cfg.Credentials

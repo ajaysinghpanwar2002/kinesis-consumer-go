@@ -196,9 +196,12 @@ func SetCheckpointDB(cfg *CheckpointConfig, db int) error {
 // strings without leading zeros, so longer is greater and equal lengths
 // compare lexicographically (the numbers exceed Lua's 53-bit numeric
 // precision, so tonumber would corrupt the order). Stale writes return 0 and
-// change nothing. It must stay in lockstep with the memory store's
-// checkpointAdvances. KEYS[1]=checkpoint key, ARGV[1]=new value,
-// ARGV[2]=completed prefix.
+// change nothing. A stored value that is neither a completion marker nor a
+// valid sequence number (external corruption — only this script writes the
+// key) raises an InvalidCheckpointError-prefixed script error instead of
+// silently winning every length comparison and discarding all future saves.
+// It must stay in lockstep with the memory store's checkpointAdvances.
+// KEYS[1]=checkpoint key, ARGV[1]=new value, ARGV[2]=completed prefix.
 const CheckpointSaveScript = `
 local cur = redis.call("get", KEYS[1])
 if cur == false then
@@ -215,9 +218,17 @@ if string.sub(ARGV[1], 1, #ARGV[2]) == ARGV[2] then
   redis.call("set", KEYS[1], ARGV[1])
   return 1
 end
+if cur ~= "0" and not string.match(cur, "^[1-9]%d*$") then
+  return redis.error_reply("` + InvalidCheckpointError + ` stored checkpoint value is not a valid sequence number or completion marker")
+end
 if #ARGV[1] > #cur or (#ARGV[1] == #cur and ARGV[1] > cur) then
   redis.call("set", KEYS[1], ARGV[1])
   return 1
 end
 return 0
 `
+
+// InvalidCheckpointError is the error-code prefix CheckpointSaveScript raises
+// when the stored checkpoint value is corrupt. Stores match on it to convert
+// the script error into a typed backend error.
+const InvalidCheckpointError = "INVALIDCHECKPOINT"
