@@ -14,7 +14,10 @@ const CompletedPrefix = "SHARD_END"
 //
 // Save is advance-only: an implementation must apply a save only when it
 // advances the checkpoint, and silently discard (return nil) one that would
-// regress it. In order:
+// regress it. The compare-and-write must be atomic with respect to concurrent
+// Save calls for the same shard — a read-compare-write that interleaves two
+// writers can commit the stale value after the newer one, which is exactly
+// the regression this rule exists to prevent. In order:
 //
 //   - no existing value → write
 //   - equal to the current value → no-op success (idempotent)

@@ -15,8 +15,9 @@ handler := func(ctx context.Context, record consumer.Record) error {
 
 When a record handler is used, the consumer calls it once per Kinesis record. If
 `consumer.WithBatchHandler` is configured, the consumer calls the batch handler
-once per `GetRecords` response instead and ignores any record handler passed to
-`New`.
+once per `GetRecords` response instead. The two modes are mutually exclusive:
+`consumer.New` returns an error when both a record handler and
+`WithBatchHandler` are provided.
 
 ```go
 opts := []consumer.Option{

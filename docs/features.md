@@ -132,8 +132,9 @@ spread across them.
   - a bound on the number of moves per rebalance tick (default 2).
   - The mechanism combines both directions: an under-share worker (below its
     fair-share low bound) first acquires unowned shards, then, if still short,
-    claims a shard from an over-share donor (a worker holding more than the high
-    bound); separately, an over-share worker sheds its excess shards.
+    claims a shard from any donor holding more than the low bound (the donor
+    never drops below its own low bound); separately, an over-share worker
+    (above the high bound) sheds its excess shards.
   - Startup and shard-sync acquisition are bounded by the same fair share and
     cooldown: a worker fills toward its high bound from unowned shards only, so
     a cold-starting worker does not grab the whole stream just to shed it back,
