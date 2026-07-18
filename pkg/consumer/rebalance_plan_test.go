@@ -73,6 +73,118 @@ func TestBuildLocalRebalancePlanAcquiresRemainingUnownedUpToHigh(t *testing.T) {
 	}
 }
 
+func TestBuildLocalRebalancePlanStarvedWorkerClaimsFromAtHighDonor(t *testing.T) {
+	t.Parallel()
+
+	// The 2/2/0 dead zone: 4 shards over 3 workers (low=1, high=2). No donor
+	// exceeds high, so requiring count > high froze the starved worker at 0
+	// forever. It must claim one shard from a donor at exactly high.
+	now := time.Date(2026, 6, 28, 4, 5, 6, 0, time.UTC)
+	plan := buildLocalRebalancePlan(
+		[]string{"shard-a", "shard-b", "shard-c", "shard-d"},
+		map[string]string{
+			"shard-a": "donor-a",
+			"shard-b": "donor-a",
+			"shard-c": "donor-b",
+			"shard-d": "donor-b",
+		},
+		[]string{"self", "donor-a", "donor-b"},
+		"self",
+		nil,
+		nil,
+		now,
+		2,
+	)
+
+	if plan.snapshot.low != 1 || plan.snapshot.high != 2 {
+		t.Fatalf("low/high = %d/%d, want 1/2", plan.snapshot.low, plan.snapshot.high)
+	}
+	assertRebalancePlanActions(t, plan.actions, []rebalancePlanAction{
+		{kind: rebalancePlanClaimDonor, shardID: "shard-a", donor: "donor-a"},
+	})
+	if plan.projectedCount != 1 {
+		t.Fatalf("projectedCount = %d, want 1 (exactly low, no over-claim)", plan.projectedCount)
+	}
+}
+
+func TestBuildLocalRebalancePlanStarvedWorkerReachesLowWithTenShardsFourWorkers(t *testing.T) {
+	t.Parallel()
+
+	// The 3/3/3/1 dead zone: 10 shards over 4 workers (low=2, high=3). Every
+	// donor sits at exactly high, so the worker at 1 could never reach its
+	// fair-share floor of 2. It must claim exactly one shard and stop at low.
+	now := time.Date(2026, 6, 28, 4, 5, 6, 0, time.UTC)
+	plan := buildLocalRebalancePlan(
+		[]string{
+			"shard-01", "shard-02", "shard-03", "shard-04", "shard-05",
+			"shard-06", "shard-07", "shard-08", "shard-09", "shard-10",
+		},
+		map[string]string{
+			"shard-01": "donor-a",
+			"shard-02": "donor-a",
+			"shard-03": "donor-a",
+			"shard-04": "donor-b",
+			"shard-05": "donor-b",
+			"shard-06": "donor-b",
+			"shard-07": "donor-c",
+			"shard-08": "donor-c",
+			"shard-09": "donor-c",
+			"shard-10": "self",
+		},
+		[]string{"self", "donor-a", "donor-b", "donor-c"},
+		"self",
+		nil,
+		nil,
+		now,
+		2,
+	)
+
+	if plan.snapshot.low != 2 || plan.snapshot.high != 3 {
+		t.Fatalf("low/high = %d/%d, want 2/3", plan.snapshot.low, plan.snapshot.high)
+	}
+	assertRebalancePlanActions(t, plan.actions, []rebalancePlanAction{
+		{kind: rebalancePlanClaimDonor, shardID: "shard-01", donor: "donor-a"},
+	})
+	if plan.projectedCount != 2 {
+		t.Fatalf("projectedCount = %d, want 2 (exactly low)", plan.projectedCount)
+	}
+}
+
+func TestBuildLocalRebalancePlanNeverClaimsFromDonorAtLow(t *testing.T) {
+	t.Parallel()
+
+	// Donor eligibility is strictly count > low: a claim from a donor at low
+	// would just move the starvation. 4 shards over 3 workers (low=1), both
+	// donors at exactly low, and the only unowned shard in cooldown — the
+	// starved worker must plan nothing rather than drain a donor below low.
+	now := time.Date(2026, 6, 28, 4, 5, 6, 0, time.UTC)
+	cooldown := map[string]time.Time{
+		"shard-x": now.Add(time.Minute),
+		"shard-y": now.Add(time.Minute),
+	}
+	plan := buildLocalRebalancePlan(
+		[]string{"shard-a", "shard-b", "shard-x", "shard-y"},
+		map[string]string{
+			"shard-a": "donor-a",
+			"shard-b": "donor-b",
+		},
+		[]string{"self", "donor-a", "donor-b"},
+		"self",
+		cooldown,
+		nil,
+		now,
+		2,
+	)
+
+	if plan.snapshot.low != 1 || plan.snapshot.high != 2 {
+		t.Fatalf("low/high = %d/%d, want 1/2", plan.snapshot.low, plan.snapshot.high)
+	}
+	assertRebalancePlanActions(t, plan.actions, nil)
+	if plan.projectedCount != 0 {
+		t.Fatalf("projectedCount = %d, want 0", plan.projectedCount)
+	}
+}
+
 func TestBuildLocalRebalancePlanHonorsMaxMovesAcrossPhases(t *testing.T) {
 	t.Parallel()
 
