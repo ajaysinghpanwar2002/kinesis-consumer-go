@@ -86,11 +86,12 @@ func TestStoreConsumerGroupCoordinationKeysAreIsolated(t *testing.T) {
 		t.Fatalf("Get group B = (%q, %v), want (20, nil)", got, err)
 	}
 
-	wantAKey := "kinesis-checkpoint:group-a:orders:shard-1"
+	// Literal v2 keys: <prefix>:v2:<base64url(group:stream)>:<base64url(shard)>.
+	wantAKey := "kinesis-checkpoint:v2:Z3JvdXAtYTpvcmRlcnM:c2hhcmQtMQ"
 	if got, err := server.Get(wantAKey); err != nil || got != "10" {
 		t.Fatalf("Valkey key %q = (%q, %v), want (10, nil)", wantAKey, got, err)
 	}
-	wantBKey := "kinesis-checkpoint:group-b:orders:shard-1"
+	wantBKey := "kinesis-checkpoint:v2:Z3JvdXAtYjpvcmRlcnM:c2hhcmQtMQ"
 	if got, err := server.Get(wantBKey); err != nil || got != "20" {
 		t.Fatalf("Valkey key %q = (%q, %v), want (20, nil)", wantBKey, got, err)
 	}

@@ -20,7 +20,7 @@ import (
 // not by the library's key prefix — so that check alone would prove nothing about
 // the prefix. The prefix is the SOLE isolating variable only in the foreign-prefix
 // cross-reads below: reading one stream's keys through the OTHER consumer's prefix.
-// The lease/checkpoint key is <prefix>:<stream>:<shard>; reading stream A's keys
+// The checkpoint key is <prefix>:v2:<enc(stream)>:<enc(shard)>; reading stream A's keys
 // through prefix B (same stream segment, same shard segment, different prefix) MUST
 // find nothing, and that emptiness is proof of prefix isolation only after the
 // positive side (the key exists under its own prefix) has been established. Hence

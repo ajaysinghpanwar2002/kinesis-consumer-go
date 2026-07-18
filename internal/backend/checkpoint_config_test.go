@@ -133,11 +133,63 @@ func TestFinalizeCheckpointConfigDefaultsAndPreservation(t *testing.T) {
 	}
 }
 
+// TestCheckpointKey pins the stored v2 key format; changing any literal here
+// is a breaking stored-format change and needs a version bump plus a
+// migration note in docs/configuration.md.
 func TestCheckpointKey(t *testing.T) {
 	t.Parallel()
 
-	if got := CheckpointKey("kinesis-checkpoint", "stream", "shard-1"); got != "kinesis-checkpoint:stream:shard-1" {
-		t.Fatalf("CheckpointKey = %q, want kinesis-checkpoint:stream:shard-1", got)
+	tests := []struct {
+		name   string
+		prefix string
+		stream string
+		shard  string
+		want   string
+	}{
+		{
+			name:   "default prefix",
+			prefix: "kinesis-checkpoint",
+			stream: "stream",
+			shard:  "shard-1",
+			want:   "kinesis-checkpoint:v2:c3RyZWFt:c2hhcmQtMQ",
+		},
+		{
+			name:   "coordination identity encodes with its group delimiter",
+			prefix: "kinesis-checkpoint",
+			stream: "group-a:orders",
+			shard:  "shard-1",
+			want:   "kinesis-checkpoint:v2:Z3JvdXAtYTpvcmRlcnM:c2hhcmQtMQ",
+		},
+		{
+			name:   "prefix hash-tag delimiters are escaped like lease keys",
+			prefix: "ten{ant}%",
+			stream: "stream",
+			shard:  "shard-1",
+			want:   "ten%7Bant%7D%25:v2:c3RyZWFt:c2hhcmQtMQ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := CheckpointKey(tt.prefix, tt.stream, tt.shard); got != tt.want {
+				t.Fatalf("CheckpointKey(%q, %q, %q) = %q, want %q", tt.prefix, tt.stream, tt.shard, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCheckpointKeyIsInjective is the collision regression for the pre-v2
+// raw-join format: these (stream, shard) pairs join to the identical string
+// "a:b:c", so the old scheme mapped them to one key.
+func TestCheckpointKeyIsInjective(t *testing.T) {
+	t.Parallel()
+
+	a := CheckpointKey("kinesis-checkpoint", "a:b", "c")
+	b := CheckpointKey("kinesis-checkpoint", "a", "b:c")
+	if a == b {
+		t.Fatalf("CheckpointKey collision: (%q,%q) and (%q,%q) both map to %q", "a:b", "c", "a", "b:c", a)
 	}
 }
 

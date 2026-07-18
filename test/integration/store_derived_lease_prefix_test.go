@@ -30,8 +30,8 @@ import (
 //
 // POSITIVE-ONLY by design. There is no clean negative: a probe at the bare
 // checkpoint prefix "<checkpointPrefix>" would falsely match the CHECKPOINT keys
-// (checkpoints are "<prefix>:<stream>:<shard>", exactly what the "<prefix>:<stream>:*"
-// lease scan matches), and a nonexistent-prefix probe is vacuous. The negative is
+// (checkpoints are "<prefix>:v2:<enc(stream)>:<enc(shard)>", which a lease probe
+// at the bare prefix matches), and a nonexistent-prefix probe is vacuous. The negative is
 // logically subsumed by the positive under the single-derivation coupling.
 //
 // Scope note: this slice's value is deliberately thin — it proves the derivation is
