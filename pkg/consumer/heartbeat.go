@@ -39,7 +39,19 @@ func (c *Consumer) workerHeartbeatLoop(ctx context.Context, stopRun func(error))
 
 	// send performs one heartbeat and reports whether validity is lost.
 	send := func() (stale bool) {
-		err := c.leaseManager.Heartbeat(ctx, c.coordinationKey(), c.leaseOwner, c.tuning.heartbeatTTL)
+		// Bound the backend call so a hung-but-context-respecting Heartbeat
+		// surfaces as a transient DeadlineExceeded within one heartbeat
+		// interval — flowing into the failure/staleness accounting below —
+		// instead of blocking this loop forever and silently disabling the
+		// ErrHeartbeatStale stop while peers claim the shards away. Mirrors
+		// renewShardLease.
+		sendCtx := ctx
+		if c.tuning.heartbeatInterval > 0 {
+			var cancel context.CancelFunc
+			sendCtx, cancel = context.WithTimeout(ctx, c.tuning.heartbeatInterval)
+			defer cancel()
+		}
+		err := c.leaseManager.Heartbeat(sendCtx, c.coordinationKey(), c.leaseOwner, c.tuning.heartbeatTTL)
 		if err == nil {
 			c.heartbeatHealth.recordSuccess(time.Now())
 			return false

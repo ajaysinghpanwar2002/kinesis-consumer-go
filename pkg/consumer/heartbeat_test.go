@@ -361,8 +361,11 @@ func TestWorkerHeartbeatLoopShutdownIsNotReportedAsValidityLoss(t *testing.T) {
 	c := newTestHeartbeatConsumer(newRecordingHeartbeatManager())
 	c.leaseManager = manager
 	c.reporter = reporter
-	c.tuning.heartbeatInterval = time.Millisecond
-	c.tuning.heartbeatTTL = 2 * time.Millisecond
+	// The interval doubles as the per-call send timeout; keep it far larger
+	// than the test so only the shutdown cancel — never the timeout — unparks
+	// the send, while ttl-interval keeps the validity deadline tiny.
+	c.tuning.heartbeatInterval = 5 * time.Second
+	c.tuning.heartbeatTTL = 5*time.Second + 50*time.Millisecond
 
 	recorder := newStopRunRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -371,13 +374,125 @@ func TestWorkerHeartbeatLoopShutdownIsNotReportedAsValidityLoss(t *testing.T) {
 	<-manager.started
 	// Let the validity deadline lapse while the send is parked, then cancel:
 	// the failure surfaces only after cancellation and must stay silent.
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	cancel()
 	waitDone(t, done)
 
 	assertNoStopRun(t, recorder)
 	if failures := reporter.countersNamed(metricHeartbeatFailures); len(failures) != 0 {
 		t.Fatalf("heartbeat_failures calls = %d, want 0", len(failures))
+	}
+}
+
+// hangingHeartbeatManager models a black-holed connection through a
+// context-respecting client: every Heartbeat parks until its call context is
+// done and returns that context's error.
+type hangingHeartbeatManager struct {
+	fakeLeaseManager
+}
+
+func (hangingHeartbeatManager) Heartbeat(ctx context.Context, _, _ string, _ time.Duration) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestWorkerHeartbeatLoopHangingSendStillTripsStaleness(t *testing.T) {
+	t.Parallel()
+
+	// Regression: without the per-call send timeout, a hanging Heartbeat
+	// blocks the loop forever — no failure is ever recorded and the
+	// ErrHeartbeatStale stop below never fires.
+	reporter := &recordingReporter{}
+	c := newTestHeartbeatConsumer(newRecordingHeartbeatManager())
+	c.leaseManager = hangingHeartbeatManager{}
+	c.reporter = reporter
+	c.tuning.heartbeatInterval = 5 * time.Millisecond
+	c.tuning.heartbeatTTL = 25 * time.Millisecond
+
+	recorder := newStopRunRecorder()
+	start := time.Now()
+	done := runHeartbeatLoop(context.Background(), c, recorder.stopRun)
+
+	err := waitStopRun(t, recorder)
+	elapsed := time.Since(start)
+	waitDone(t, done)
+
+	if !errors.Is(err, ErrHeartbeatStale) {
+		t.Fatalf("stopRun error = %v, want wraps %v", err, ErrHeartbeatStale)
+	}
+	// The failure cause must be the per-call deadline, not shutdown.
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stopRun error = %v, want preserves cause %v", err, context.DeadlineExceeded)
+	}
+	if margin := c.tuning.heartbeatTTL - c.tuning.heartbeatInterval; elapsed < margin {
+		t.Fatalf("stopRun after %v, want no earlier than %v", elapsed, margin)
+	}
+	if failures := reporter.countersNamed(metricHeartbeatFailures); len(failures) == 0 {
+		t.Fatal("heartbeat_failures calls = 0, want >= 1 (timeouts must count as failures)")
+	}
+
+	health := c.Health().Heartbeat
+	if health.ConsecutiveFailures < 1 {
+		t.Fatalf("Health().Heartbeat.ConsecutiveFailures = %d, want >= 1", health.ConsecutiveFailures)
+	}
+	if !errors.Is(health.LastError, context.DeadlineExceeded) {
+		t.Fatalf("Health().Heartbeat.LastError = %v, want wraps %v", health.LastError, context.DeadlineExceeded)
+	}
+}
+
+// slowHeartbeatManager delays each Heartbeat, then succeeds, unless the call
+// context expires first.
+type slowHeartbeatManager struct {
+	fakeLeaseManager
+
+	delay time.Duration
+	sent  chan struct{}
+}
+
+func (m *slowHeartbeatManager) Heartbeat(ctx context.Context, _, _ string, _ time.Duration) error {
+	select {
+	case <-time.After(m.delay):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case m.sent <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func TestWorkerHeartbeatLoopSlowSendWithinIntervalSucceeds(t *testing.T) {
+	t.Parallel()
+
+	// A send slower than the network ideal but well inside the interval must
+	// not be cut off by the per-call timeout.
+	manager := &slowHeartbeatManager{delay: 20 * time.Millisecond, sent: make(chan struct{}, 1)}
+	reporter := &recordingReporter{}
+	c := newTestHeartbeatConsumer(newRecordingHeartbeatManager())
+	c.leaseManager = manager
+	c.reporter = reporter
+	c.tuning.heartbeatInterval = time.Hour
+	c.tuning.heartbeatTTL = 2 * time.Hour
+
+	recorder := newStopRunRecorder()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runHeartbeatLoop(ctx, c, recorder.stopRun)
+
+	select {
+	case <-manager.sent:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for slow heartbeat to complete")
+	}
+	cancel()
+	waitDone(t, done)
+
+	if failures := reporter.countersNamed(metricHeartbeatFailures); len(failures) != 0 {
+		t.Fatalf("heartbeat_failures calls = %d, want 0", len(failures))
+	}
+	assertNoStopRun(t, recorder)
+	if c.Health().Heartbeat.LastSuccess.IsZero() {
+		t.Fatal("Health().Heartbeat.LastSuccess is zero, want recorded success")
 	}
 }
 
