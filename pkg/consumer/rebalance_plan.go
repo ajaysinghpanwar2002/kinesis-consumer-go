@@ -58,7 +58,12 @@ func buildLocalRebalancePlan(
 			continue
 		}
 
-		if !planClaimFromDonor(&plan, ownerCounts, ownerShards, cooldown, workers, now, snapshot.high, self, maxMoves) {
+		// A starved worker may claim from any donor above `low`, not just
+		// above `high`: requiring `count > high` leaves dead zones like
+		// 2/2/0 (4 shards / 3 workers, high=2) frozen forever. Convergence
+		// is safe — the taker only claims while below `low` and the donor
+		// never drops below `low` (the threshold is strict).
+		if !planClaimFromDonor(&plan, ownerCounts, ownerShards, cooldown, workers, now, snapshot.low, self, maxMoves) {
 			break
 		}
 	}
@@ -86,12 +91,12 @@ func planClaimFromDonor(
 	cooldown map[string]time.Time,
 	workers *shardWorkerSet,
 	now time.Time,
-	high int,
+	donorThreshold int,
 	self string,
 	maxMoves int,
 ) bool {
 	for len(plan.actions) < maxMoves {
-		donor := pickRebalanceDonor(ownerCounts, high, self)
+		donor := pickRebalanceDonor(ownerCounts, donorThreshold, self)
 		if donor == "" {
 			return false
 		}

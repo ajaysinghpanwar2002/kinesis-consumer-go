@@ -2,16 +2,20 @@ package consumer
 
 import "time"
 
+// pickRebalanceDonor selects the peer to claim a shard from: the owner with
+// the most shards (lexicographically smallest owner on ties), considering
+// only owners strictly above threshold — a donor at the threshold would be
+// pushed below it by the claim.
 func pickRebalanceDonor(
 	ownerCounts map[string]int,
-	high int,
+	threshold int,
 	self string,
 ) string {
 	bestOwner := ""
 	bestCount := 0
 
 	for owner, count := range ownerCounts {
-		if owner == self || count <= high {
+		if owner == self || count <= threshold {
 			continue
 		}
 		if bestOwner == "" || count > bestCount || (count == bestCount && owner < bestOwner) {
