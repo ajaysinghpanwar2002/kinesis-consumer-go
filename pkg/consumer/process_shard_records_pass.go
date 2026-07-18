@@ -93,7 +93,9 @@ func getRecordsErrorKind(err error) string {
 // The caller (processShardRecordsLoop) owns the shard iterator across passes and
 // threads it in via the iterator argument. When iterator is empty (the first pass
 // of a worker, or after an expired-iterator reset) the pass derives one from the
-// stored checkpoint — or, with no checkpoint, from the configured StartPosition.
+// stored checkpoint — or, with no checkpoint, from TRIM_HORIZON for a reshard
+// child with a known parent and from the configured StartPosition otherwise
+// (see getShardIterator).
 // When the pass catches up it returns the last NextShardIterator so the loop can
 // keep polling from exactly there. This matters for StartLatest: re-deriving a
 // fresh LATEST iterator every pass would re-anchor to the moving shard tip and

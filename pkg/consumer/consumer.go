@@ -46,6 +46,11 @@ type Consumer struct {
 	// caller-owned and is never recorded here.
 	ownedLeaseManagerCloser io.Closer
 
+	// parentage tracks which known shards are reshard children (have a parent
+	// in the shard listing), so iterator derivation can anchor checkpoint-less
+	// children at TRIM_HORIZON instead of StartPosition. Zero value is ready.
+	parentage shardParentage
+
 	// syncHealth backs Health().ShardSync (written by the orchestration
 	// loop); heartbeatHealth backs Health().Heartbeat (written by the
 	// heartbeat loop).
@@ -167,6 +172,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 
 	shardMap := make(map[string]types.Shard, len(shards))
 	mergeKnownShards(shardMap, shards)
+	c.parentage.record(shardMap)
 
 	workerErrCh := make(chan error, len(shardMap))
 	workers := newShardWorkerSet()

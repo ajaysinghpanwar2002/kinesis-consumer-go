@@ -699,6 +699,60 @@ func TestProcessShardRecordsPassReDerivesAfterExpiredIterator(t *testing.T) {
 	}
 }
 
+func TestProcessShardRecordsPassExpiredIteratorReDerivesChildAtTrimHorizon(t *testing.T) {
+	t.Parallel()
+
+	// A reshard child whose iterator expires BEFORE its first checkpoint must
+	// re-derive at TRIM_HORIZON, not cfg.StartPosition: with the default
+	// StartLatest, a re-derived LATEST iterator would re-anchor to the child's
+	// current tip and silently skip everything since the parents completed.
+	// The re-derivation happens inside the pass with only the shard ID, so
+	// this proves the parentage registry reaches that path.
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("fresh-iterator"),
+		},
+		getRecordsErrs: []error{&types.ExpiredIteratorException{}}, // held iterator expired before any checkpoint
+		getRecordsOuts: []*kinesis.GetRecordsOutput{
+			{Records: []types.Record{{SequenceNumber: aws.String("sequence-1")}}},
+		},
+	}
+	store := &fakeCheckpointSaveStore{}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream", StartPosition: StartLatest},
+		client:   client,
+		store:    store,
+		tuning:   tuningConfig{checkpointEvery: 10},
+		handler: func(ctx context.Context, record Record) error {
+			_ = ctx
+			_ = record
+			return nil
+		},
+	}
+	c.parentage.record(map[string]types.Shard{
+		"parent":  shardWithParents("parent", "", ""),
+		"child-1": shardWithParents("child-1", "parent", ""),
+	})
+
+	_, _, _, err := c.processShardRecordsPass(context.Background(), "child-1", 0, "stale-iterator")
+	if !errors.Is(err, errShardCompleted) {
+		t.Fatalf("processShardRecordsPass() error = %v, want wraps %v (recovered from expiry, then hit shard end)", err, errShardCompleted)
+	}
+	if len(client.getShardIteratorCalls) != 1 {
+		t.Fatalf("GetShardIterator calls = %d, want 1 (re-derive after expiry)", len(client.getShardIteratorCalls))
+	}
+	call := client.getShardIteratorCalls[0]
+	if call.ShardIteratorType != types.ShardIteratorTypeTrimHorizon {
+		t.Fatalf("re-derived ShardIteratorType = %v, want %v (child with known parent must not use StartPosition)",
+			call.ShardIteratorType, types.ShardIteratorTypeTrimHorizon)
+	}
+	if call.StartingSequenceNumber != nil {
+		t.Fatalf("StartingSequenceNumber = %q, want nil", aws.ToString(call.StartingSequenceNumber))
+	}
+}
+
 // readThroughCheckpointSaveStore makes Save visible to subsequent Get calls,
 // so re-derivation observes the flushed checkpoint like a real store.
 type readThroughCheckpointSaveStore struct {

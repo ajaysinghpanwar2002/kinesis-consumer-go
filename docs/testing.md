@@ -110,6 +110,7 @@ number.
 | --- | --- | --- |
 | IT-16 (#11) | `TestLiveConsumerDiscoversChildrenOnReshard` | A live consumer discovers child shards after a split and processes them without restart. |
 | IT-17 (#12) | `TestParentChildGatingHoldsChildrenUntilParentCompletes` | A child shard is gated until its parent reaches `SHARD_END`, then delivered. |
+| IT-26 | `TestResharedChildrenDeliverWindowRecordsWithStartLatest` | With `StartLatest`, records produced into child shards between the split and child pickup are still delivered (children anchor at `TRIM_HORIZON`, not `StartPosition`). |
 
 ### Group H — Rebalance fairness
 

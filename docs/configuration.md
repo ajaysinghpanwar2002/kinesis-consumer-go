@@ -18,7 +18,7 @@ the logical consumer group, and the initial read position.
 | `StreamName` | `string` | — | Stream to consume by name. Set exactly one of this and `StreamARN`. |
 | `StreamARN` | `string` | — | Stream to consume by ARN. Set exactly one of this and `StreamName`; AWS calls use the ARN while coordination and telemetry use its canonical stream-name resource. |
 | `ConsumerGroup` | `string` | — | Required logical application identity. Workers with the same group share checkpoints and shard ownership; different groups consume the same stream independently. |
-| `StartPosition` | `StartPosition` | `StartLatest` | Where to start when a shard has **no checkpoint** (see below). |
+| `StartPosition` | `StartPosition` | `StartLatest` | Where to start for a **parentless** shard with **no checkpoint** (see below). |
 | `StartTimestamp` | `*time.Time` | `nil` | Required when `StartPosition == StartAtTimestamp`; ignored otherwise. |
 
 Validation (`New` returns an error if violated): exactly one of `StreamName` /
@@ -39,7 +39,17 @@ three values below; `StartAtTimestamp` requires a non-nil `StartTimestamp`.
 **Resume overrides start position.** When a checkpoint already exists for a
 shard, the consumer resumes strictly *after* the checkpointed sequence number
 (internally an `AFTER_SEQUENCE_NUMBER` iterator) regardless of `StartPosition`.
-`StartPosition` only governs the first run of a shard with no stored progress.
+
+**Reshard children override start position.** A shard with no checkpoint whose
+parent appears in the consumer's known shard listing (a child created by a
+split/merge) always starts from `TRIM_HORIZON`, regardless of `StartPosition`:
+children are gated until every parent reads to `SHARD_END`, so `TRIM_HORIZON`
+is an exact continuation, while honoring `StartLatest` would silently skip
+every record produced into the child between the reshard and pickup.
+
+`StartPosition` therefore only governs the first run of a **parentless** shard
+with no stored progress: original shards at group bootstrap, or shards whose
+parents aged out of retention before this consumer ever listed them.
 
 ## Consumer options (`consumer.With*`)
 

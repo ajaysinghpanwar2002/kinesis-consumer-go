@@ -63,6 +63,16 @@ func (c *Consumer) getShardIterator(ctx context.Context, shardID string) (string
 	if seq != "" {
 		input.ShardIteratorType = types.ShardIteratorTypeAfterSequenceNumber
 		input.StartingSequenceNumber = aws.String(seq)
+	} else if c.parentage.hasKnownParents(shardID) {
+		// A checkpoint-less shard with a known parent is a reshard child being
+		// picked up for the first time. Parent gating (readyShardIDs) already
+		// guarantees every parent reached SHARD_END before this worker starts,
+		// so TRIM_HORIZON continues exactly where the parents left off.
+		// cfg.StartPosition (default StartLatest) would instead anchor at the
+		// child's tip at worker-start time and silently drop every record
+		// written between the reshard and pickup. StartPosition applies only
+		// to parentless shards with no checkpoint.
+		input.ShardIteratorType = types.ShardIteratorTypeTrimHorizon
 	} else {
 		switch c.cfg.StartPosition {
 		case StartTrimHorizon:

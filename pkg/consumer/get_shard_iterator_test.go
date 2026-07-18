@@ -166,6 +166,180 @@ func TestGetShardIteratorUsesConfiguredStartPositionWithoutCheckpoint(t *testing
 	}
 }
 
+func TestGetShardIteratorUsesTrimHorizonForChildWithKnownParentWithoutCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	timestamp := time.Unix(1700000000, 0).UTC()
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "default latest",
+			cfg:  Config{StreamName: "stream"},
+		},
+		{
+			name: "explicit latest",
+			cfg:  Config{StreamName: "stream", StartPosition: StartLatest},
+		},
+		{
+			name: "trim horizon",
+			cfg:  Config{StreamName: "stream", StartPosition: StartTrimHorizon},
+		},
+		{
+			name: "at timestamp",
+			cfg: Config{
+				StreamName:     "stream",
+				StartPosition:  StartAtTimestamp,
+				StartTimestamp: &timestamp,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &fakeKinesisClient{}
+			c := &Consumer{
+				cfg:    tt.cfg,
+				client: client,
+				store:  &fakeCheckpointSaveStore{},
+			}
+			c.parentage.record(map[string]types.Shard{
+				"parent":  shardWithParents("parent", "", ""),
+				"child-1": shardWithParents("child-1", "parent", ""),
+			})
+
+			if _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
+				t.Fatalf("getShardIterator() error = %v, want nil", err)
+			}
+			if len(client.getShardIteratorCalls) != 1 {
+				t.Fatalf("GetShardIterator calls = %d, want 1", len(client.getShardIteratorCalls))
+			}
+			call := client.getShardIteratorCalls[0]
+			if call.ShardIteratorType != types.ShardIteratorTypeTrimHorizon {
+				t.Fatalf("ShardIteratorType = %v, want %v", call.ShardIteratorType, types.ShardIteratorTypeTrimHorizon)
+			}
+			if call.StartingSequenceNumber != nil {
+				t.Fatalf("StartingSequenceNumber = %q, want nil", aws.ToString(call.StartingSequenceNumber))
+			}
+			if call.Timestamp != nil {
+				t.Fatalf("Timestamp = %v, want nil", *call.Timestamp)
+			}
+		})
+	}
+}
+
+func TestGetShardIteratorKeepsStartPositionWhenParentsAgedOut(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  &fakeCheckpointSaveStore{},
+	}
+	// The child's parent IDs reference shards absent from every listing this
+	// consumer saw (aged out of retention): StartPosition semantics apply.
+	c.parentage.record(map[string]types.Shard{
+		"child-1": shardWithParents("child-1", "expired-parent", ""),
+	})
+
+	if _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
+		t.Fatalf("getShardIterator() error = %v, want nil", err)
+	}
+	if len(client.getShardIteratorCalls) != 1 {
+		t.Fatalf("GetShardIterator calls = %d, want 1", len(client.getShardIteratorCalls))
+	}
+	call := client.getShardIteratorCalls[0]
+	if call.ShardIteratorType != types.ShardIteratorTypeLatest {
+		t.Fatalf("ShardIteratorType = %v, want %v", call.ShardIteratorType, types.ShardIteratorTypeLatest)
+	}
+}
+
+func TestGetShardIteratorPrefersCheckpointOverParentage(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{
+		getShardIteratorOut: &kinesis.GetShardIteratorOutput{
+			ShardIterator: aws.String("iterator-1"),
+		},
+	}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  &fakeCheckpointSaveStore{checkpoint: "sequence-1"},
+	}
+	c.parentage.record(map[string]types.Shard{
+		"parent":  shardWithParents("parent", "", ""),
+		"child-1": shardWithParents("child-1", "parent", ""),
+	})
+
+	if _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
+		t.Fatalf("getShardIterator() error = %v, want nil", err)
+	}
+	if len(client.getShardIteratorCalls) != 1 {
+		t.Fatalf("GetShardIterator calls = %d, want 1", len(client.getShardIteratorCalls))
+	}
+	call := client.getShardIteratorCalls[0]
+	if call.ShardIteratorType != types.ShardIteratorTypeAfterSequenceNumber {
+		t.Fatalf("ShardIteratorType = %v, want %v", call.ShardIteratorType, types.ShardIteratorTypeAfterSequenceNumber)
+	}
+	if aws.ToString(call.StartingSequenceNumber) != "sequence-1" {
+		t.Fatalf("StartingSequenceNumber = %q, want %q", aws.ToString(call.StartingSequenceNumber), "sequence-1")
+	}
+}
+
+func TestRefreshKnownShardsFeedsParentageIntoIteratorDerivation(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{
+				Shards: []types.Shard{
+					shardWithParents("parent", "", ""),
+					shardWithParents("child-1", "parent", ""),
+				},
+			},
+		},
+	}
+	c := &Consumer{
+		cfg:    Config{StreamName: "stream"},
+		client: client,
+		store:  &fakeCheckpointSaveStore{},
+	}
+
+	known := make(map[string]types.Shard)
+	if err := c.refreshKnownShards(context.Background(), known); err != nil {
+		t.Fatalf("refreshKnownShards() error = %v, want nil", err)
+	}
+
+	// Both the first derivation and any expired-iterator re-derivation go
+	// through getShardIterator with only the shard ID: the refresh recording
+	// must be what carries the parent info to it.
+	if _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
+		t.Fatalf("getShardIterator() error = %v, want nil", err)
+	}
+	if len(client.getShardIteratorCalls) != 1 {
+		t.Fatalf("GetShardIterator calls = %d, want 1", len(client.getShardIteratorCalls))
+	}
+	if got := client.getShardIteratorCalls[0].ShardIteratorType; got != types.ShardIteratorTypeTrimHorizon {
+		t.Fatalf("child ShardIteratorType = %v, want %v", got, types.ShardIteratorTypeTrimHorizon)
+	}
+
+	client.getShardIteratorCalls = nil
+	if _, err := c.getShardIterator(context.Background(), "parent"); err != nil {
+		t.Fatalf("getShardIterator() error = %v, want nil", err)
+	}
+	if len(client.getShardIteratorCalls) != 1 {
+		t.Fatalf("GetShardIterator calls = %d, want 1", len(client.getShardIteratorCalls))
+	}
+	if got := client.getShardIteratorCalls[0].ShardIteratorType; got != types.ShardIteratorTypeLatest {
+		t.Fatalf("parent ShardIteratorType = %v, want %v", got, types.ShardIteratorTypeLatest)
+	}
+}
+
 func TestGetShardIteratorReturnsCompletedForShardEndCheckpoint(t *testing.T) {
 	t.Parallel()
 

@@ -15,7 +15,7 @@ so you can plan around the gaps.
 | Area | Capability |
 | --- | --- |
 | Stream identity | Consume by exactly one of `StreamName` / `StreamARN`, isolated by required `ConsumerGroup` |
-| Start position | `LATEST` (default), `TRIM_HORIZON`, `AT_TIMESTAMP`; resumes from checkpoint when one exists |
+| Start position | `LATEST` (default), `TRIM_HORIZON`, `AT_TIMESTAMP`; resumes from checkpoint when one exists; reshard children always continue from `TRIM_HORIZON` |
 | Shard discovery | Initial listing + periodic resync; live reshard/refresh without restart |
 | Reshard ordering | Parent/child gating via `SHARD_END` completion markers |
 | Coordination | Shard leases with acquire/renew/release + worker heartbeats |
@@ -59,12 +59,21 @@ its message).
   ARN; checkpoint, lease, and heartbeat keys use
   `<consumer-group>:<canonical-stream-name>`. Workers in one group share
   progress and ownership, while different groups consume independently.
-- **Start position** (`Config.StartPosition`, used only when no checkpoint
-  exists for a shard):
+- **Start position** (`Config.StartPosition`, used only for a **parentless**
+  shard with no checkpoint):
   - `StartLatest` — the default; only records produced after the consumer
     positions on the shard.
   - `StartTrimHorizon` — from the oldest retained record.
   - `StartAtTimestamp` — from `Config.StartTimestamp` (required for this mode).
+- **Reshard children:** a checkpoint-less shard with a parent in the known
+  shard listing always resumes from `TRIM_HORIZON`, regardless of
+  `StartPosition`. Parent/child gating guarantees the child only starts after
+  every parent reached `SHARD_END`, so this is an exact continuation — records
+  produced into the child between the reshard and pickup are never skipped
+  (with `StartLatest` they otherwise would be). `StartPosition` still applies
+  when the parents have aged out of retention and never appeared in this
+  consumer's listings (e.g. a fresh group bootstrapping on a long-ago-resharded
+  stream).
 - **Resume:** when a checkpoint exists for a shard, the consumer resumes strictly
   after the checkpointed sequence number, ignoring `StartPosition`.
 
@@ -298,7 +307,7 @@ Every knob has a working default, so a consumer runs with no options at all.
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `Config.StartPosition` | `LATEST` | Start position when no checkpoint exists |
+| `Config.StartPosition` | `LATEST` | Start position for parentless shards with no checkpoint (reshard children always use `TRIM_HORIZON`) |
 | `WithBatching(batchSize, checkpointEvery)` | 100, 100 | GetRecords page size; checkpoint throttle |
 | `WithPolling(pollInterval, shardSyncInterval)` | 1s, 1m | GetRecords poll cadence; shard resync cadence |
 | `WithRetry(maxAttempts, backoff)` | 3, 1s | Handler retry attempts and linear base backoff |

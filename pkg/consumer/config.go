@@ -14,7 +14,11 @@ const identitySegmentMaxLength = 128
 
 var identitySegmentPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
-// StartPosition controls where consumption starts when no checkpoint exists.
+// StartPosition controls where consumption starts for a parentless shard with
+// no checkpoint. Two cases always override it: a shard with a checkpoint
+// resumes strictly after it, and a checkpoint-less shard with a parent in the
+// known shard listing (a reshard child) starts from TRIM_HORIZON so records
+// produced between the reshard and pickup are never skipped.
 type StartPosition string
 
 const (

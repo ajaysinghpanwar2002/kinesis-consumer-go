@@ -22,5 +22,9 @@ func (c *Consumer) refreshKnownShards(ctx context.Context, known map[string]type
 		return err
 	}
 	mergeKnownShards(known, shards)
+	// Record parentage even when the caller later discards this refresh's
+	// candidate map on failure: parent links are immutable facts from the
+	// listing, so keeping them early is always safe.
+	c.parentage.record(known)
 	return nil
 }
