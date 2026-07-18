@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 )
@@ -28,6 +29,8 @@ type fakeCheckpointSaveStore struct {
 	getErr     error
 	saveCalls  []checkpointSaveCall
 	saveErr    error
+	saveErrs   []error // per-call errors, consumed before saveErr applies
+	onSave     func()  // runs after each Save call is recorded
 }
 
 func (s *fakeCheckpointSaveStore) Get(ctx context.Context, streamName, shardID string) (string, error) {
@@ -49,6 +52,14 @@ func (s *fakeCheckpointSaveStore) Save(ctx context.Context, streamName, shardID,
 		shardID:        shardID,
 		sequenceNumber: sequenceNumber,
 	})
+	if s.onSave != nil {
+		s.onSave()
+	}
+	if len(s.saveErrs) > 0 {
+		err := s.saveErrs[0]
+		s.saveErrs = s.saveErrs[1:]
+		return err
+	}
 	if s.saveErr != nil {
 		return s.saveErr
 	}
@@ -297,6 +308,127 @@ func TestSaveShardCheckpointWrapsStoreError(t *testing.T) {
 	}
 	if err == nil || err.Error() != "save shard checkpoint shard-1 sequence-1: boom" {
 		t.Fatalf("saveShardCheckpoint() error = %v, want %q", err, "save shard checkpoint shard-1 sequence-1: boom")
+	}
+}
+
+func TestSaveShardCheckpointRetriesTransientStoreFailure(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	store := &fakeCheckpointSaveStore{saveErrs: []error{errBoom, errBoom}}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+	}
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = time.Millisecond
+
+	if err := c.saveShardCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
+		t.Fatalf("saveShardCheckpoint() error = %v, want nil after retries", err)
+	}
+	if len(store.saveCalls) != 3 {
+		t.Fatalf("Save calls = %d, want 3", len(store.saveCalls))
+	}
+	for i, call := range store.saveCalls {
+		if call.sequenceNumber != "sequence-1" {
+			t.Fatalf("Save call %d sequenceNumber = %q, want %q", i, call.sequenceNumber, "sequence-1")
+		}
+	}
+}
+
+func TestSaveShardCheckpointReturnsLastErrorAfterExhaustedRetries(t *testing.T) {
+	t.Parallel()
+
+	errFirst := errors.New("first boom")
+	errSecond := errors.New("second boom")
+	errLast := errors.New("last boom")
+	store := &fakeCheckpointSaveStore{saveErrs: []error{errFirst, errSecond, errLast}}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+	}
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = time.Millisecond
+
+	err := c.saveShardCheckpoint(context.Background(), "shard-1", "sequence-1")
+	if !errors.Is(err, errLast) {
+		t.Fatalf("saveShardCheckpoint() error = %v, want wraps final attempt error %v", err, errLast)
+	}
+	if errors.Is(err, errFirst) || errors.Is(err, errSecond) {
+		t.Fatalf("saveShardCheckpoint() error = %v, want only the final attempt's error", err)
+	}
+	if err == nil || err.Error() != "save shard checkpoint shard-1 sequence-1: last boom" {
+		t.Fatalf("saveShardCheckpoint() error = %v, want %q", err, "save shard checkpoint shard-1 sequence-1: last boom")
+	}
+	if len(store.saveCalls) != 3 {
+		t.Fatalf("Save calls = %d, want 3", len(store.saveCalls))
+	}
+}
+
+func TestSaveShardCheckpointRetryWaitStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &fakeCheckpointSaveStore{saveErr: errBoom}
+	store.onSave = cancel // the first failed attempt races no one: ctx is done before the backoff wait
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+	}
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = time.Hour // only ctx cancellation can end the wait
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.saveShardCheckpoint(ctx, "shard-1", "sequence-1")
+	}()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("saveShardCheckpoint did not return after context cancellation")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("saveShardCheckpoint() error = %v, want wraps %v", err, context.Canceled)
+	}
+	if len(store.saveCalls) != 1 {
+		t.Fatalf("Save calls = %d, want 1 (no retry after cancellation)", len(store.saveCalls))
+	}
+}
+
+func TestSaveShardCompletionCheckpointRetriesTransientStoreFailure(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	store := &fakeCheckpointSaveStore{saveErrs: []error{errBoom}}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+	}
+	c.tuning.retryMaxAttempts = 2
+	c.tuning.retryBackoff = time.Millisecond
+
+	if err := c.saveShardCompletionCheckpoint(context.Background(), "shard-1", "sequence-1"); err != nil {
+		t.Fatalf("saveShardCompletionCheckpoint() error = %v, want nil after retries", err)
+	}
+	if len(store.saveCalls) != 2 {
+		t.Fatalf("Save calls = %d, want 2", len(store.saveCalls))
+	}
+	want := shardCompletionValue("sequence-1")
+	for i, call := range store.saveCalls {
+		if call.sequenceNumber != want {
+			t.Fatalf("Save call %d value = %q, want %q", i, call.sequenceNumber, want)
+		}
 	}
 }
 

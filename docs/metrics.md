@@ -130,7 +130,7 @@ batch.
 | `kinesis_consumer.dlq_records_published` | records | `stream`, `consumer_group`, `shard` | One poison record is successfully published. A failed publish is not counted. |
 | `kinesis_consumer.handler_retries` | retry attempts | `stream`, `consumer_group`, `shard`, `handler` | A handler attempt after the first is about to run. |
 | `kinesis_consumer.checkpoints_saved` | checkpoints | `stream`, `consumer_group`, `shard` | A regular, catch-up, drain, or shard-completion checkpoint save succeeds. |
-| `kinesis_consumer.checkpoint_failures` | failures | `stream`, `consumer_group`, `shard` | Any regular or shard-completion checkpoint save fails. |
+| `kinesis_consumer.checkpoint_failures` | failures | `stream`, `consumer_group`, `shard` | Any regular or shard-completion checkpoint save attempt fails, counted per attempt: saves retry up to the configured retry attempts with backoff, so one save that recovers on a later attempt still counts its earlier failures. |
 | `kinesis_consumer.lease_acquired` | leases | `stream`, `consumer_group`, `shard` | The ready-shard acquisition path used at startup and shard refresh obtains a lease. Rebalance acquisitions and claims are represented by `rebalance_moves`. |
 | `kinesis_consumer.lease_released` | leases | `stream`, `consumer_group`, `shard` | A worker's bounded shutdown release succeeds. |
 | `kinesis_consumer.lease_release_failures` | failures | `stream`, `consumer_group`, `shard` | A worker's bounded shutdown release fails or times out. |
@@ -170,7 +170,7 @@ type.
 | --- | --- | --- |
 | `kinesis_consumer.handler_duration` | `stream`, `consumer_group`, `shard`, `handler` | Every handler attempt, whether it succeeds, fails, or returns a context error. Retries are separate samples. |
 | `kinesis_consumer.get_records_duration` | `stream`, `consumer_group`, `shard` | Successful `GetRecords` calls only, including empty pages. Failed and expired-iterator calls are excluded. |
-| `kinesis_consumer.checkpoint_save_duration` | `stream`, `consumer_group`, `shard` | Successful regular and shard-completion saves only. |
+| `kinesis_consumer.checkpoint_save_duration` | `stream`, `consumer_group`, `shard` | Successful regular and shard-completion saves only. Covers the whole bounded-retry save, so failed attempts and backoff waits before the eventual success are included. |
 | `kinesis_consumer.lease_acquire_duration` | `stream`, `consumer_group`, `shard` | Successful lease-manager `Acquire` calls, whether or not they obtain the lease. Failed calls and `Claim` calls are excluded. |
 | `kinesis_consumer.rebalance_pass_duration` | `stream`, `consumer_group` | Every rebalance pass, including early returns and errors. |
 | `kinesis_consumer.drain_duration` | `stream`, `consumer_group` | Every enabled graceful-drain wait, including clean, worker-error, and timeout outcomes. |
