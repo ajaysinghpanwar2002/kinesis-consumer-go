@@ -36,6 +36,27 @@ var ErrNotOwned = errors.New("lease not owned by caller")
 // the way, they return (nil, false, nil) — false with no error — and reserve
 // a non-nil error for genuine backend failures.
 //
+// Clock model: the backend's clock owns stored expiry. Whether a lease or
+// worker entry is live is determined against backend time, so consumers with
+// skewed wall clocks still agree on which entries are live. Consumer-local
+// monotonic timers play a complementary role: they enforce bounded local
+// safety budgets measured in locally elapsed time. The heartbeat-staleness
+// fence stops the consumer before peers can treat it as dead; the renew
+// watchdog bounds how long a worker whose Renew hangs can keep processing
+// (within the TTL plus two renew intervals — a window that can extend past
+// backend-side expiry and is part of the documented transfer windows). That
+// division of labor is safe only under bounded clock-*rate* skew between the
+// two clocks — TTLs are sized in seconds while typical rate drift is parts
+// per million, so an entry must not expire meaningfully earlier or later
+// than its nominal ttl as measured by either clock.
+//
+// List and Workers are individually consistent snapshots, but a combined
+// (List, Workers) read is two calls and is not atomic across them: leases and
+// worker liveness can change between the calls, so a lease may reference an
+// owner absent from Workers and vice versa. Callers (the consumer's rebalance
+// pass) must tolerate such mutually inconsistent snapshots; damping and
+// re-reading on later ticks make them converge.
+//
 // Implementations must be safe for concurrent calls and return promptly when
 // ctx is done. A backend that ignores cancellation can delay consumer shutdown
 // or late worker cleanup.

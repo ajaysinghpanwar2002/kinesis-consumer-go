@@ -121,6 +121,7 @@ number.
 | IT-19 (#22) | `TestRebalanceUnevenShardCount` | An uneven shard count (5 shards, 2 consumers) redistributes to the fair split. |
 | IT-20 (#23) | `TestRebalanceCooldownPreventsImmediateReacquire` | After shedding a shard, a worker respects the cooldown before reacquiring it. |
 | IT-21 (#24) | `TestRebalanceMaxMovesPerTick` | Rebalancing moves at most `maxMoves` shards per tick (a stepwise waypoint, not a jump). |
+| IT-28 | `TestLiveClaimStopsOnlyTheDonorShard` | A real Valkey `Claim` stops only the donor's shard worker: the donor's subsequent `ErrNotOwned` renewal is not escalated into a run-wide failure, and both consumers stay live and delivering. |
 
 ### Group I — Key isolation & restart
 

@@ -125,7 +125,13 @@ func WithBatching(batchSize int32, checkpointEvery int) Option {
 	}
 }
 
-// WithShardConcurrency sets per-shard goroutines used for record handler processing.
+// WithShardConcurrency sets per-shard goroutines used for record handler
+// processing. Values above 1 trade ordering for throughput: records within a
+// page are handled concurrently, so strict per-shard (and therefore
+// per-partition-key) processing order is no longer preserved — later records
+// may complete before earlier ones. Keep the default of 1 when partition-key
+// ordering matters. Applies only to record handlers; batch handlers always
+// receive whole pages sequentially.
 func WithShardConcurrency(concurrency int) Option {
 	return func(cfg *options) error {
 		if concurrency < 1 {

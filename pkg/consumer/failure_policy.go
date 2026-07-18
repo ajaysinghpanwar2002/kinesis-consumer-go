@@ -28,7 +28,11 @@ const (
 	// entire failed batch-handler page and allows the page checkpoint to advance.
 	FailurePolicySkip FailurePolicy = "skip"
 	// FailurePolicySendToDLQ publishes failed records before allowing the page
-	// checkpoint to advance, then checkpoints past the page immediately once it
+	// checkpoint to advance. Granularity follows the handler mode: a record
+	// handler publishes only the failed record, while a batch handler fails
+	// the whole indivisible page, so every record in that GetRecords page —
+	// including ones that were not themselves poison — is published with
+	// batch metadata. It then checkpoints past the page immediately once it
 	// completes (instead of waiting for the next due checkpoint) to keep the
 	// crash-replay window small. The residual window cannot be closed: a crash
 	// between a successful publish and that checkpoint replays the page, so a

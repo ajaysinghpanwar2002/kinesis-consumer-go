@@ -16,18 +16,21 @@ import (
 // inactive worker only AFTER that worker's stale lease lapses, and never steals
 // a still-valid lease.
 //
-// A crashed worker leaves exactly this state in Valkey: a lease key that is
-// still valid until its TTL expires, with NO worker heartbeat renewing it. We
-// plant that state directly (via the lease manager's Acquire, which writes the
-// same SET NX PX key a real worker would and no heartbeat), then start a live
-// consumer B.
+// A crashed worker leaves exactly this state in Valkey: a lease entry that is
+// still live until its logical expiry lapses, with NO worker heartbeat
+// renewing it. There is no per-lease key in the v2 scheme — a lease is a
+// field in the shared owner hash plus a member of the expiration-index sorted
+// set (scored with the backend-clock expiry time). We plant that state
+// directly (via the lease manager's Acquire, which writes both entries
+// through the same if-absent Lua script a real worker would, and no
+// heartbeat), then start a live consumer B.
 //
 // FINDING (verified against source): the library reclaims a stale lease via
-// LEASE-KEY TTL EXPIRY, not via heartbeat expiry. Once the key lapses the shard
+// LEASE TTL EXPIRY, not via heartbeat expiry. Once the lease lapses the shard
 // becomes unowned and B acquires it on its ~1s shardSync tick. Heartbeat state
 // only sizes fair-share rebalancing; with a single shard and a single live
-// worker high==open==1, so a dead owner's within-share lease is never a claim
-// donor (count 1 is not > high 1) — takeover is provably via Acquire-after-
+// worker low==high==1, so a dead owner's within-share lease is never a claim
+// donor (count 1 is not > low 1) — takeover is provably via Acquire-after-
 // expiry, never Claim. The mid-window snapshot below asserts the dead owner is
 // absent from Workers() (no live heartbeat -> "considered inactive") while its
 // lease is still present, tying both halves of the scenario together.
@@ -63,8 +66,9 @@ func TestStaleLeaseReclaimedAfterTTLExpiry(t *testing.T) {
 		deadOwner      = "dead-owner"
 	)
 
-	// Plant the stale lease. plantedAt anchors the reclaim timeline; the key
-	// expires at approximately plantedAt+staleTTL. The returned lease is
+	// Plant the stale lease. plantedAt anchors the reclaim timeline; the
+	// lease's logical expiry (its expiration-index score, set by the backend
+	// clock) lands at approximately plantedAt+staleTTL. The returned lease is
 	// intentionally discarded — we never Renew/Release it, so it lapses on its
 	// own like an abandoned worker's lease.
 	plantedAt := time.Now()
