@@ -1376,6 +1376,10 @@ func TestStartCancellationIsBoundedByUncooperativeCallbacks(t *testing.T) {
 			c.tuning.retryMaxAttempts = 1
 			c.gracefulDrain = tt.graceful
 			c.drainTimeout = drainTimeout
+			// Force-stop joins workers for up to this budget so cooperative
+			// ones can release their leases; keep it small so the hung
+			// callback's abandonment stays inside schedulingBudget.
+			c.tuning.shardLeaseReleaseTimeout = drainTimeout
 
 			if tt.dlq {
 				c.handler = func(context.Context, Record) error {

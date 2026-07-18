@@ -229,7 +229,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 	case err := <-workerErrCh:
 		cancel()
 		<-orchestrationDone
-		stopAndReapShardWorkers(workers, &workerWG)
+		stopAndReapShardWorkers(workers, &workerWG, c.shardLeaseReleaseTimeout())
 		// A published heartbeat-validity loss is the root cause of whatever
 		// the workers it cancelled reported while stopping — the cancellation
 		// echoed back as context.Canceled, or cleanup like a lease release
@@ -243,7 +243,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 		cancel()
 		<-orchestrationDone
 		if ctx.Err() == nil {
-			stopAndReapShardWorkers(workers, &workerWG)
+			stopAndReapShardWorkers(workers, &workerWG, c.shardLeaseReleaseTimeout())
 			// Heartbeat-validity loss is checked before worker errors: the
 			// stale heartbeat is the root cause and the force-stopped
 			// workers' failures its consequence.
@@ -272,7 +272,7 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 			}
 			return ctx.Err()
 		} else {
-			stopAndReapShardWorkers(workers, &workerWG)
+			stopAndReapShardWorkers(workers, &workerWG, c.shardLeaseReleaseTimeout())
 		}
 	}
 
@@ -293,9 +293,11 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 // which is always caller-supplied) remains caller-owned and is never closed.
 //
 // If Start is running, Close stops it first: the run is cancelled promptly
-// (workers are force-stopped without a graceful drain) and Close blocks until
-// Start has returned — heartbeat and orchestration loops stopped — before the
-// lease manager is closed; that Start call returns ErrConsumerClosed. If the
+// (workers are force-stopped without a graceful drain), Start waits up to the
+// shard lease release timeout for the stopped workers to release their
+// leases, and Close blocks until Start has returned — heartbeat and
+// orchestration loops stopped, workers joined or abandoned — before the lease
+// manager is closed; that Start call returns ErrConsumerClosed. If the
 // caller's ctx was already cancelled and a graceful drain is in progress,
 // Close waits for the drain to finish rather than cutting it short. After
 // Close, the first Start call returns ErrConsumerClosed. Once a Start call has
