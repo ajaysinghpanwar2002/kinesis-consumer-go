@@ -420,8 +420,13 @@ func TestRebalanceShardsOnceShedsLocalOverageAndRecordsCooldown(t *testing.T) {
 	assertRebalanceCooldown(t, cooldown, map[string]time.Time{
 		"shard-a": now.Add(c.tuning.shardCooldownPeriod),
 	})
-	if workers.has("shard-a") {
-		t.Fatal("workers.has(shard-a) = true after shed, want false")
+	// The shed worker keeps its registration as the stale-worker fence until
+	// its deferred done runs; it is stopping, no longer running.
+	if !workers.has("shard-a") {
+		t.Fatal("workers.has(shard-a) = false after shed, want true until the worker finishes")
+	}
+	if workers.running("shard-a") {
+		t.Fatal("workers.running(shard-a) = true after shed, want false")
 	}
 	if !workers.has("shard-b") {
 		t.Fatal("workers.has(shard-b) = false after shed, want true")
@@ -439,6 +444,111 @@ func TestRebalanceShardsOnceShedsLocalOverageAndRecordsCooldown(t *testing.T) {
 		t.Fatalf("shard-c cancel calls = %d, want 0", got)
 	}
 	assertRebalanceExecutionCalls(t, manager.executionCalls, nil)
+}
+
+// TestStuckShedWorkerFencesShardUntilItsLeaseReleaseCompletes reproduces the
+// 2026-07-17 review's stale-handle hazard end to end: a shed worker whose
+// callback ignores cancellation outlives both the heartbeat TTL (its lease
+// expires, the listing shows the shard unowned) and any cooldown (the
+// cooldown map is empty here — long expired). Without the local fence this
+// consumer would re-acquire the shard on the next pass and the stuck
+// worker's later owner-checked Release would delete that successor lease
+// (same owner). With the fence, re-acquisition is impossible until the old
+// worker has finished — its Release strictly precedes any successor Acquire.
+func TestStuckShedWorkerFencesShardUntilItsLeaseReleaseCompletes(t *testing.T) {
+	t.Parallel()
+
+	oldLease := &recordingReleaseLease{released: make(chan struct{})}
+	manager := &recordingRebalanceOnceManager{
+		leaseOwners:  map[string]string{}, // old lease expired: shard unowned
+		workerOwners: []string{"self", "peer-1"},
+		acquireResults: []acquireResult{
+			{lease: &recordingReleaseLease{}, acquired: true},
+		},
+	}
+	c := newTestRebalanceOnceConsumer(manager)
+
+	finishWorker := make(chan struct{})
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		_ = ctx // deliberately uncooperative: ignores cancellation
+		_ = shardID
+		<-finishWorker
+		return "", 0, nil
+	}
+
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c.startRegisteredShardWorker(ctx, "shard-a", oldLease, workers, &workerWG, workerErrCh, cancel)
+	if !workers.stop("shard-a") { // the shed
+		t.Fatal("stop(shard-a) = false, want true")
+	}
+
+	// First pass: shard-a is unowned, below fair-share high, and out of
+	// cooldown — eligible by every duration-based rule. The fence alone must
+	// keep this consumer from re-acquiring it.
+	knownShards := shardMapForReadiness(testShard("shard-a", "", ""))
+	result, err := c.rebalanceShardsOnce(
+		ctx,
+		knownShards,
+		newShardCompletionState(),
+		map[string]time.Time{},
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("rebalanceShardsOnce() error = %v, want nil", err)
+	}
+	if result.started != 0 {
+		t.Fatalf("started = %d, want 0 while the old worker still runs", result.started)
+	}
+	assertRebalanceExecutionCalls(t, manager.executionCalls, nil)
+	select {
+	case <-oldLease.released:
+		t.Fatal("old lease released while the worker was still stuck")
+	default:
+	}
+
+	// The callback finally returns: the worker releases its lease and its
+	// deferred done lifts the fence.
+	close(finishWorker)
+	waitForRecordingRelease(t, oldLease)
+	waitForTrue(t, func() bool { return !workers.has("shard-a") }, "worker fence to lift")
+
+	// Second pass: the shard is re-acquired only now, strictly after the old
+	// worker's Release — the stale handle can no longer touch the new lease.
+	result, err = c.rebalanceShardsOnce(
+		ctx,
+		knownShards,
+		newShardCompletionState(),
+		map[string]time.Time{},
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatalf("rebalanceShardsOnce() error = %v, want nil", err)
+	}
+	if result.started != 1 {
+		t.Fatalf("started = %d, want 1 after the old worker finished", result.started)
+	}
+	assertRebalanceExecutionCalls(t, manager.executionCalls, []rebalanceExecutionCall{
+		{kind: rebalancePlanAcquireUnowned, shardID: "shard-a"},
+	})
+	if oldLease.calls != 1 {
+		t.Fatalf("old lease Release calls = %d, want 1 (before the re-acquire)", oldLease.calls)
+	}
+
+	workers.stopAll()
+	waitWorkerGroupDone(t, &workerWG)
 }
 
 func TestRebalanceShardsOnceReturnsReadyShardErrorWithoutSnapshots(t *testing.T) {

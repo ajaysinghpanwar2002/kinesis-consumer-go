@@ -6,8 +6,9 @@ import (
 )
 
 type shardWorkerRegistration struct {
-	gen    uint64
-	cancel context.CancelFunc
+	gen      uint64
+	cancel   context.CancelFunc
+	stopping bool
 }
 
 type shardWorkerSet struct {
@@ -37,11 +38,30 @@ func (s *shardWorkerSet) add(shardID string, cancel context.CancelFunc) uint64 {
 	return s.nextGen
 }
 
+// has reports whether any worker — running or stopping — is registered for
+// the shard. Acquisition and claim eligibility must use this: a stopped
+// worker keeps its registration until it has fully finished (lease released,
+// deferred done run), and re-engaging the shard before then would let the
+// old worker's stale lease handle release the successor's lease (the
+// owner-checked release passes because both handles carry the same owner).
+// No cooldown can bound that window — a callback may ignore its canceled
+// context for arbitrarily long.
 func (s *shardWorkerSet) has(shardID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	_, ok := s.workers[shardID]
 	return ok
+}
+
+// running reports whether a worker is registered for the shard and has not
+// been stopped. Shed selection uses this so an already-stopping worker (a
+// stuck callback awaiting its asynchronous reaper) cannot be re-picked and
+// burn a move-budget slot every rebalance tick.
+func (s *shardWorkerSet) running(shardID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	reg, ok := s.workers[shardID]
+	return ok && !reg.stopping
 }
 
 // done removes the registration only if it still belongs to the caller's
@@ -57,10 +77,21 @@ func (s *shardWorkerSet) done(shardID string, gen uint64) {
 	}
 }
 
+// stop cancels the shard's worker but keeps its registration, marked
+// stopping, until the worker's deferred done removes it. Deleting here would
+// drop the local stale-worker fence (see has) the moment the stop signal is
+// sent, long before the worker has actually finished. Returns true only on
+// the first stop of a running worker, so callers cannot double-count a move
+// for a worker that is still winding down.
 func (s *shardWorkerSet) stop(shardID string) bool {
 	s.mu.Lock()
 	reg, ok := s.workers[shardID]
-	delete(s.workers, shardID)
+	if ok && !reg.stopping {
+		reg.stopping = true
+		s.workers[shardID] = reg
+	} else {
+		ok = false
+	}
 	s.mu.Unlock()
 
 	if !ok {

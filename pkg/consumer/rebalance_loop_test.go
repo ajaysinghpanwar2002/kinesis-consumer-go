@@ -121,8 +121,13 @@ func TestRefreshAndRebalanceShardWorkersLoopShedsLocalOverageOnRebalanceTick(t *
 	if got := waitRebalanceDelay(t, delays); got != time.Hour {
 		t.Fatalf("next rebalance delay = %v, want %v", got, time.Hour)
 	}
-	if workers.has("shard-a") {
-		t.Fatal("workers.has(shard-a) = true after scheduled shed, want false")
+	// The shed worker keeps its registration as the stale-worker fence until
+	// its deferred done runs; it is stopping, no longer running.
+	if !workers.has("shard-a") {
+		t.Fatal("workers.has(shard-a) = false after scheduled shed, want true until the worker finishes")
+	}
+	if workers.running("shard-a") {
+		t.Fatal("workers.running(shard-a) = true after scheduled shed, want false")
 	}
 	if !workers.has("shard-b") {
 		t.Fatal("workers.has(shard-b) = false after scheduled shed, want true")

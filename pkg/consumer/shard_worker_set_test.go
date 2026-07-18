@@ -100,30 +100,54 @@ func TestShardWorkerSetStaleDoneDoesNotDeregisterReplacement(t *testing.T) {
 	}
 }
 
-func TestShardWorkerSetStopCancelsAndRemovesOneWorker(t *testing.T) {
+func TestShardWorkerSetStopCancelsOneWorkerAndKeepsItsFence(t *testing.T) {
 	t.Parallel()
 
 	workers := newShardWorkerSet()
 	var cancelledA int32
 	var cancelledB int32
 
-	workers.add("shard-a", func() { atomic.AddInt32(&cancelledA, 1) })
+	genA := workers.add("shard-a", func() { atomic.AddInt32(&cancelledA, 1) })
 	workers.add("shard-b", func() { atomic.AddInt32(&cancelledB, 1) })
 
 	if !workers.stop("shard-a") {
 		t.Fatal("stop(shard-a) = false, want true")
 	}
-	if workers.has("shard-a") {
-		t.Fatal("has(shard-a) = true after stop, want false")
+	// The registration must survive stop as the local stale-worker fence:
+	// the shard stays ineligible for re-acquire/claim until the worker's
+	// deferred done runs (after its lease release).
+	if !workers.has("shard-a") {
+		t.Fatal("has(shard-a) = false after stop, want true until the worker finishes")
+	}
+	if workers.running("shard-a") {
+		t.Fatal("running(shard-a) = true after stop, want false")
 	}
 	if !workers.has("shard-b") {
 		t.Fatal("has(shard-b) = false after stopping shard-a, want true")
+	}
+	if !workers.running("shard-b") {
+		t.Fatal("running(shard-b) = false after stopping shard-a, want true")
 	}
 	if got := atomic.LoadInt32(&cancelledA); got != 1 {
 		t.Fatalf("shard-a cancel calls = %d, want 1", got)
 	}
 	if got := atomic.LoadInt32(&cancelledB); got != 0 {
 		t.Fatalf("shard-b cancel calls = %d, want 0", got)
+	}
+
+	// A second stop of the stopping worker is a no-op: no double cancel, no
+	// phantom move for callers counting stop results.
+	if workers.stop("shard-a") {
+		t.Fatal("stop(shard-a) = true while already stopping, want false")
+	}
+	if got := atomic.LoadInt32(&cancelledA); got != 1 {
+		t.Fatalf("shard-a cancel calls after redundant stop = %d, want 1", got)
+	}
+
+	// The worker's deferred done lifts the fence.
+	workers.done("shard-a", genA)
+	if workers.has("shard-a") {
+		t.Fatal("has(shard-a) = true after done, want false")
 	}
 }
 

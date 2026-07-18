@@ -310,6 +310,40 @@ func TestSelectLocalRebalanceShedShardsSkipsCooldownAndNotRunning(t *testing.T) 
 	assertShardList(t, got, []string{"shard-b", "shard-d"})
 }
 
+func TestSelectLocalRebalanceShedShardsSkipsStoppingWorkers(t *testing.T) {
+	t.Parallel()
+
+	// An already-shed worker stuck in an uncooperative callback keeps its
+	// registration (the stale-worker fence) but must not be re-picked as a
+	// shed candidate: its stop would be a no-op that burns a move-budget
+	// slot every tick it spends winding down.
+	now := time.Date(2026, 6, 29, 1, 2, 3, 0, time.UTC)
+	snapshot := buildRebalanceOwnershipSnapshot(
+		[]string{"shard-a", "shard-b", "shard-c", "shard-d", "shard-e", "shard-x", "shard-y"},
+		map[string]string{
+			"shard-a": "self",
+			"shard-b": "self",
+			"shard-c": "self",
+			"shard-d": "self",
+			"shard-e": "self",
+			"shard-x": "worker-a",
+			"shard-y": "worker-b",
+		},
+		[]string{"self", "worker-a", "worker-b"},
+		"self",
+	)
+	workers := newShardWorkerSet()
+	for _, shardID := range []string{"shard-a", "shard-b", "shard-c", "shard-d", "shard-e"} {
+		workers.add(shardID, func() {})
+	}
+	if !workers.stop("shard-a") {
+		t.Fatal("stop(shard-a) = false, want true")
+	}
+
+	got := selectLocalRebalanceShedShards(snapshot, "self", nil, workers, now, 10)
+	assertShardList(t, got, []string{"shard-b", "shard-c"})
+}
+
 func TestSelectLocalRebalanceShedShardsNoopsWhenWithinCeiling(t *testing.T) {
 	t.Parallel()
 
