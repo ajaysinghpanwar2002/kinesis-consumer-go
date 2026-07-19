@@ -284,7 +284,7 @@ func TestOptionsApplyValues(t *testing.T) {
 		WithBatching(6, 7),
 		WithShardConcurrency(8),
 		WithRebalance(9*time.Second, 10*time.Second, 11*time.Second, 12),
-		WithHeartbeat(13*time.Second, 14*time.Second),
+		WithHeartbeat(13*time.Second, 45*time.Second),
 		WithFailurePolicy(FailurePolicySendToDLQ),
 		WithDLQPublisher(noopDLQPublisher{}),
 		WithDLQRetry(13, 14*time.Second),
@@ -362,8 +362,8 @@ func TestOptionsApplyValues(t *testing.T) {
 	if cfg.tuning.heartbeatInterval != 13*time.Second {
 		t.Fatalf("heartbeatInterval = %v, want %v", cfg.tuning.heartbeatInterval, 13*time.Second)
 	}
-	if cfg.tuning.heartbeatTTL != 14*time.Second {
-		t.Fatalf("heartbeatTTL = %v, want %v", cfg.tuning.heartbeatTTL, 14*time.Second)
+	if cfg.tuning.heartbeatTTL != 45*time.Second {
+		t.Fatalf("heartbeatTTL = %v, want %v", cfg.tuning.heartbeatTTL, 45*time.Second)
 	}
 	if cfg.tuning.idleTimeBetweenReads != 16*time.Millisecond {
 		t.Fatalf("idleTimeBetweenReads = %v, want %v", cfg.tuning.idleTimeBetweenReads, 16*time.Millisecond)
