@@ -316,12 +316,20 @@ func TestRefreshAndRebalanceShardWorkersLoopKeepsShardMapAcrossFailedPasses(t *t
 	}
 	c := newTestRebalanceOnceConsumer(manager)
 	c.store = &flakyReadinessStore{failShard: "shard-new", failErr: errBoom, remaining: 1 << 30}
-	c.client = &fakeKinesisClient{
-		outs: []*kinesis.ListShardsOutput{
-			{Shards: []types.Shard{{ShardId: aws.String("shard-new")}}},
-			{Shards: []types.Shard{{ShardId: aws.String("shard-new")}}},
-		},
+	// Every pass must keep failing until the test has observed two of them:
+	// once the scripted outputs run out the fake client returns empty listings,
+	// whose passes read nothing and SUCCEED — resetting ConsecutiveFailures to
+	// 0 and making the wait condition only transiently true (the historic
+	// ~1-in-20 flake in this test). Script enough failing listings to outlast
+	// any plausible scheduling delay.
+	failingListing := &kinesis.ListShardsOutput{
+		Shards: []types.Shard{{ShardId: aws.String("shard-new")}},
 	}
+	outs := make([]*kinesis.ListShardsOutput, 4096)
+	for i := range outs {
+		outs[i] = failingListing
+	}
+	c.client = &fakeKinesisClient{outs: outs}
 	knownShards := readyShardWorkerMap("shard-old")
 	workers := newShardWorkerSet()
 	var workerWG sync.WaitGroup

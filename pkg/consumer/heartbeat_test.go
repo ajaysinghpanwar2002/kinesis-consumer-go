@@ -362,10 +362,12 @@ func TestWorkerHeartbeatLoopShutdownIsNotReportedAsValidityLoss(t *testing.T) {
 	c.leaseManager = manager
 	c.reporter = reporter
 	// The interval doubles as the per-call send timeout; keep it far larger
-	// than the test so only the shutdown cancel — never the timeout — unparks
-	// the send, while ttl-interval keeps the validity deadline tiny.
-	c.tuning.heartbeatInterval = 5 * time.Second
-	c.tuning.heartbeatTTL = 5*time.Second + 50*time.Millisecond
+	// than any plausible test-process stall (a mere 5s could lapse on a loaded
+	// CI machine, unparking the send with a timeout error and flaking the
+	// negative assertions below) so only the shutdown cancel ever unparks the
+	// send, while ttl-interval keeps the validity deadline tiny.
+	c.tuning.heartbeatInterval = time.Hour
+	c.tuning.heartbeatTTL = time.Hour + 50*time.Millisecond
 
 	recorder := newStopRunRecorder()
 	ctx, cancel := context.WithCancel(context.Background())

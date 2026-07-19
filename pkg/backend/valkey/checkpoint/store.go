@@ -318,6 +318,14 @@ func newClient(cfg Config) (valkey.Client, error) {
 		// PingTimeout already expresses how long this deployment tolerates
 		// waiting on the backend.
 		ConnWriteTimeout: cfg.PingTimeout,
+		// The client must report network errors, not absorb them: valkey-go's
+		// built-in retry loops read-only commands under network errors for as
+		// long as the call's context allows — under the consumer's long-lived
+		// contexts (shard-sync readiness reads, lease List/Workers) that is an
+		// indefinite hang during an outage, which silently disables the
+		// documented failure accounting and staleness stops. The consumer owns
+		// bounded retry policy at every call site by design.
+		DisableRetry: true,
 	}
 	if cfg.Credentials != nil {
 		fn := cfg.Credentials

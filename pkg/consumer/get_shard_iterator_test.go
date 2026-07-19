@@ -311,7 +311,7 @@ func TestRefreshKnownShardsFeedsParentageIntoIteratorDerivation(t *testing.T) {
 	}
 
 	known := make(map[string]types.Shard)
-	if err := c.refreshKnownShards(context.Background(), known); err != nil {
+	if _, err := c.refreshKnownShards(context.Background(), known); err != nil {
 		t.Fatalf("refreshKnownShards() error = %v, want nil", err)
 	}
 

@@ -1239,7 +1239,11 @@ func TestRenewShardLeaseLoopWithWatchdogQuietWhileRenewalsSucceed(t *testing.T) 
 
 	shardLease := &recordingRenewLease{ch: make(chan renewCall, 1)}
 	logHandler := newCapturingHandler()
-	c := newTestLeaseLoopConsumer(time.Millisecond, 20*time.Millisecond)
+	// The TTL is deliberately generous relative to the 1ms renew interval: the
+	// watchdog fires only if no renew succeeds for a whole TTL, so a small TTL
+	// would let an ordinary scheduling stall on a loaded machine fire it
+	// spuriously and flake this negative assertion.
+	c := newTestLeaseLoopConsumer(time.Millisecond, 150*time.Millisecond)
 	c.logger = slog.New(logHandler)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1248,7 +1252,7 @@ func TestRenewShardLeaseLoopWithWatchdogQuietWhileRenewalsSucceed(t *testing.T) 
 
 	// Several full TTL windows of successful renews must keep the watchdog
 	// re-arming instead of firing.
-	time.Sleep(3 * 20 * time.Millisecond)
+	time.Sleep(3 * 150 * time.Millisecond)
 	cancel()
 	waitRenewLoopDone(t, done, nil)
 

@@ -160,9 +160,16 @@ func (c *Consumer) refreshAndStartReadyShardWorkers(
 	candidate := make(map[string]types.Shard, len(knownShards))
 	maps.Copy(candidate, knownShards)
 
-	if err := c.refreshKnownShards(ctx, candidate); err != nil {
+	listed, err := c.refreshKnownShards(ctx, candidate)
+	if err != nil {
 		return err
 	}
+	// Prune before computing readiness so an aged-out never-completed parent
+	// stops gating its children on this very pass. The completion cache,
+	// cooldown map, and parentage set are shared (not candidates): pruning
+	// them is safe even if the pass later fails, because it only drops state
+	// for shards a successful authoritative listing no longer contains.
+	pruneStaleShardState(candidate, listed, completionState, cooldown, &c.parentage, workers)
 	if err := c.acquireAndStartReadyShardWorkers(
 		ctx,
 		candidate,
@@ -177,6 +184,9 @@ func (c *Consumer) refreshAndStartReadyShardWorkers(
 		return err
 	}
 
+	// Replace, not merge: the candidate has been pruned against the listing,
+	// and a merge would resurrect the pruned entries in the shared map.
+	clear(knownShards)
 	maps.Copy(knownShards, candidate)
 	return nil
 }

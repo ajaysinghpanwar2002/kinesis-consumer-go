@@ -26,6 +26,20 @@ func (s *shardCompletionState) markCompleted(shardID string) {
 	s.completed[shardID] = struct{}{}
 }
 
+// prune drops cached completion entries whose shard the retain predicate no
+// longer wants (see pruneStaleShardState). The cache is re-derivable from the
+// checkpoint store, so pruning can never lose the completion fact — only the
+// memo of it.
+func (s *shardCompletionState) prune(retain func(shardID string) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for shardID := range s.completed {
+		if !retain(shardID) {
+			delete(s.completed, shardID)
+		}
+	}
+}
+
 func (s *shardCompletionState) isCompleted(shardID string) bool {
 	if shardID == "" {
 		return false

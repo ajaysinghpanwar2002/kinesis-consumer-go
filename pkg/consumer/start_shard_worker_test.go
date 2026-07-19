@@ -688,6 +688,130 @@ func TestRefreshAndStartReadyShardWorkersRefreshesKnownShardsAndStartsNewReadySh
 	}
 }
 
+func TestRefreshAndStartReadyShardWorkersPrunesAgedOutShardStateOnCommit(t *testing.T) {
+	t.Parallel()
+
+	manager := &recordingAcquireManager{}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	// The fresh listing no longer contains aged-out: Kinesis lists closed
+	// shards only until retention expires, so the pass must drop its entries
+	// from the shared shard map, the completion cache, and the cooldown map.
+	c.client = &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{Shards: []types.Shard{testShard("live", "", "")}},
+		},
+	}
+	knownShards := map[string]types.Shard{
+		"aged-out": testShard("aged-out", "", ""),
+		"live":     testShard("live", "", ""),
+	}
+	completionState := newShardCompletionState()
+	completionState.markCompleted("aged-out")
+	completionState.markCompleted("live")
+	cooldown := map[string]time.Time{
+		"aged-out": time.Now().Add(time.Minute),
+		"live":     time.Now().Add(time.Minute),
+	}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.refreshAndStartReadyShardWorkers(
+		ctx,
+		knownShards,
+		completionState,
+		cooldown,
+		time.Now(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if err != nil {
+		t.Fatalf("refreshAndStartReadyShardWorkers() error = %v, want nil", err)
+	}
+
+	if _, ok := knownShards["aged-out"]; ok {
+		t.Fatal("knownShards retains aged-out after a successful pass, want pruned")
+	}
+	if _, ok := knownShards["live"]; !ok {
+		t.Fatal("knownShards missing live, want retained")
+	}
+	if _, ok := cooldown["aged-out"]; ok {
+		t.Fatal("cooldown retains aged-out, want pruned")
+	}
+	if completionState.isCompleted("aged-out") {
+		t.Fatal("completion cache retains aged-out, want pruned")
+	}
+	if !completionState.isCompleted("live") {
+		t.Fatal("completion cache missing live, want retained")
+	}
+}
+
+func TestRefreshAndStartReadyShardWorkersUnblocksChildOfAgedOutNeverCompletedParent(t *testing.T) {
+	t.Parallel()
+
+	// The parent aged out of retention without ever being checkpointed as
+	// completed (no consumer finished it before its records expired). It is
+	// still in the known-shard map from earlier listings, so without pruning
+	// the child would stay parent-gated forever; the fresh listing without the
+	// parent must unblock the child on this very pass.
+	shardLease := &recordingReleaseLease{}
+	manager := &recordingAcquireManager{
+		results: []acquireResult{
+			{lease: shardLease, acquired: true},
+		},
+	}
+	c := newTestReadyShardWorkerConsumer(manager, nil)
+	c.client = &fakeKinesisClient{
+		outs: []*kinesis.ListShardsOutput{
+			{Shards: []types.Shard{testShard("child", "parent", "")}},
+		},
+	}
+	knownShards := map[string]types.Shard{
+		"parent": testShard("parent", "", ""),
+		"child":  testShard("child", "parent", ""),
+	}
+	workers := newShardWorkerSet()
+	var workerWG sync.WaitGroup
+	workerErrCh := make(chan error, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := c.refreshAndStartReadyShardWorkers(
+		ctx,
+		knownShards,
+		newShardCompletionState(),
+		nil,
+		time.Now(),
+		workers,
+		&workerWG,
+		workerErrCh,
+		cancel,
+	)
+	if err != nil {
+		t.Fatalf("refreshAndStartReadyShardWorkers() error = %v, want nil", err)
+	}
+
+	assertAcquireShardOrder(t, manager.calls, []string{"child"})
+	if !workers.has("child") {
+		t.Fatal("workers.has(child) = false, want a worker for the unblocked child")
+	}
+	if _, ok := knownShards["parent"]; ok {
+		t.Fatal("knownShards retains the aged-out parent, want pruned")
+	}
+
+	workers.stopAll()
+	waitWorkerGroupDone(t, &workerWG)
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
 func TestRefreshAndStartReadyShardWorkersReturnsRefreshErrorWithoutAcquire(t *testing.T) {
 	t.Parallel()
 
