@@ -17,19 +17,42 @@ type heartbeatCall struct {
 	ttl        time.Duration
 }
 
+type deregisterCall struct {
+	streamName string
+	owner      string
+}
+
+// recordingHeartbeatManager implements lease.Deregisterer (via Deregister) in
+// addition to recording heartbeats, so tests can assert the clean-shutdown
+// deregistration path.
 type recordingHeartbeatManager struct {
 	fakeLeaseManager
 
-	mu    sync.Mutex
-	calls []heartbeatCall
-	err   error
-	ch    chan heartbeatCall
+	mu              sync.Mutex
+	calls           []heartbeatCall
+	deregisterCalls []deregisterCall
+	err             error
+	ch              chan heartbeatCall
 }
 
 func newRecordingHeartbeatManager() *recordingHeartbeatManager {
 	return &recordingHeartbeatManager{
 		ch: make(chan heartbeatCall, 10),
 	}
+}
+
+func (m *recordingHeartbeatManager) Deregister(_ context.Context, streamName, owner string) error {
+	m.mu.Lock()
+	m.deregisterCalls = append(m.deregisterCalls, deregisterCall{streamName: streamName, owner: owner})
+	m.mu.Unlock()
+	return nil
+}
+
+// deregisters returns a copy of the recorded deregister calls.
+func (m *recordingHeartbeatManager) deregisters() []deregisterCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]deregisterCall(nil), m.deregisterCalls...)
 }
 
 func (m *recordingHeartbeatManager) Heartbeat(_ context.Context, streamName, owner string, ttl time.Duration) error {
@@ -152,6 +175,91 @@ func TestWorkerHeartbeatLoopStopsOnCancel(t *testing.T) {
 	_ = waitHeartbeat(t, manager)
 	cancel()
 	waitDone(t, done)
+}
+
+func TestWorkerHeartbeatLoopDeregistersOnCleanShutdown(t *testing.T) {
+	t.Parallel()
+
+	manager := newRecordingHeartbeatManager()
+	reporter := &recordingReporter{}
+	c := newTestHeartbeatConsumer(manager)
+	c.reporter = reporter
+	c.tuning.heartbeatInterval = time.Hour // only the immediate send fires
+	c.tuning.heartbeatTTL = 3 * time.Hour
+
+	recorder := newStopRunRecorder()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runHeartbeatLoop(ctx, c, recorder.stopRun)
+
+	_ = waitHeartbeat(t, manager)
+	cancel()
+	waitDone(t, done)
+
+	// Deregistration runs before the loop goroutine returns, so it is recorded
+	// by the time waitDone observes completion.
+	got := manager.deregisters()
+	if len(got) != 1 {
+		t.Fatalf("deregister calls = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].streamName != "group:stream" || got[0].owner != "owner" {
+		t.Fatalf("deregister call = %+v, want {group:stream owner}", got[0])
+	}
+	if n := len(reporter.countersNamed(metricWorkerDeregistered)); n != 1 {
+		t.Fatalf("worker_deregistered counter calls = %d, want 1", n)
+	}
+	assertNoStopRun(t, recorder)
+}
+
+func TestWorkerHeartbeatLoopDoesNotDeregisterOnStaleExit(t *testing.T) {
+	t.Parallel()
+
+	// A permanently failing heartbeat drives the staleness exit (the loop
+	// returns on its own via stopRun, never through ctx.Done), which must not
+	// deregister: the backend is unreachable and the entry expires by TTL.
+	manager := newRecordingHeartbeatManager()
+	manager.err = errors.New("heartbeat boom")
+	reporter := &recordingReporter{}
+	c := newTestHeartbeatConsumer(manager)
+	c.reporter = reporter
+	c.tuning.heartbeatInterval = 5 * time.Millisecond
+	c.tuning.heartbeatTTL = 25 * time.Millisecond
+
+	recorder := newStopRunRecorder()
+	done := runHeartbeatLoop(context.Background(), c, recorder.stopRun)
+
+	if err := waitStopRun(t, recorder); !errors.Is(err, ErrHeartbeatStale) {
+		t.Fatalf("stopRun error = %v, want wraps %v", err, ErrHeartbeatStale)
+	}
+	waitDone(t, done)
+
+	if got := manager.deregisters(); len(got) != 0 {
+		t.Fatalf("deregister calls on stale exit = %+v, want none", got)
+	}
+	if n := len(reporter.countersNamed(metricWorkerDeregistered)); n != 0 {
+		t.Fatalf("worker_deregistered counter calls = %d, want 0", n)
+	}
+}
+
+func TestDeregisterWorkerOnCleanShutdownNoopWhenUnsupported(t *testing.T) {
+	t.Parallel()
+
+	// A lease manager that does not implement lease.Deregisterer must be a safe
+	// no-op: no panic, no metric.
+	reporter := &recordingReporter{}
+	c := &Consumer{
+		cfg:          Config{StreamName: "stream", ConsumerGroup: "group"},
+		leaseManager: fakeLeaseManager{},
+		leaseOwner:   "owner",
+		tuning:       defaultTuning(),
+		logger:       slog.New(slog.DiscardHandler),
+		reporter:     reporter,
+	}
+
+	c.deregisterWorkerOnCleanShutdown()
+
+	if n := len(reporter.countersNamed(metricWorkerDeregistered)); n != 0 {
+		t.Fatalf("worker_deregistered counter calls = %d, want 0", n)
+	}
 }
 
 func TestWorkerHeartbeatLoopWarnsAndCountsFailures(t *testing.T) {

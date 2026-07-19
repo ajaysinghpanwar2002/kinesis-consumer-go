@@ -40,7 +40,7 @@ individual event; the two identity attributes are implicit everywhere.
 | Error | Reserved for one event: the consumer stopped because `Start` is returning an error. |
 | Warn | Data-affecting or otherwise-invisible failures: dropped/DLQ'd records, a failed worker, a lease release failure that the error path would swallow. |
 | Info | Rare lifecycle and ownership transitions: consumer and worker start/stop, rebalance moves, shard completion. |
-| Debug | Steady-state mechanics: lease acquire/release, checkpoint saves, rebalance plans. |
+| Debug | Steady-state mechanics: lease acquire/release, worker deregistration, checkpoint saves, rebalance plans. |
 
 A healthy consumer at Info level logs a few consumer-lifecycle lines plus one
 `shard worker started`/`stopped` pair per owned shard, an occasional rebalance
@@ -71,6 +71,8 @@ nothing per record, per poll, or per rebalance tick.
 | `shard lease renew failed; will retry` | Warn | `shard`, `since_last_renew`, `ttl`, `error` | A transient renew failure. The loop retries on subsequent heartbeat ticks while the TTL budget since the last successful renew lasts. `ErrNotOwned` and budget exhaustion are not retried; `ErrNotOwned` becomes the clean shard-local completion logged by the Info event above, while budget exhaustion surfaces through the worker-stop Warn. |
 | `shard lease validity expired; stopping worker` | Warn | `shard`, `since_last_renew`, `ttl` | The local lease-validity watchdog fired: no successful renew within the TTL on the local clock and no error from the renew loop either — the backend `Renew` call is presumed hung. The worker is stopped (fenced), because the backend lease has lapsed and a peer may already own the shard; continuing would risk dual processing. Surfaces through the worker-stop Warn like other terminal renew failures. |
 | `worker heartbeat failed` | Warn | `owner`, `consecutive_failures`, `staleness`, `error` | A worker-liveness heartbeat send failed (live context). Failures are survivable while the last successful indexed heartbeat entry is live; `staleness` is the time since that success. Once failures persist to one heartbeat interval before that entry expires — the point after which peers may treat this worker as dead and claim its shards away — the consumer stops with `ErrHeartbeatStale` instead of dual-processing, surfacing through the terminal `consumer stopped` Error. |
+| `worker deregistered on shutdown` | Debug | `owner` | On a clean shutdown this worker atomically removed its own liveness entry so peers recompute fair share from its absence immediately instead of waiting out the heartbeat TTL. Emitted only when the lease manager implements deregistration. |
+| `worker deregister on shutdown failed` | Warn | `owner`, `error` | The clean-shutdown worker deregistration failed. Benign and swallowed: the liveness entry expires by TTL exactly as after a crash, so shutdown neither blocks nor fails on it — peers just recompute fair share up to one TTL later. This site-level Warn is the only record. |
 
 `ErrNotOwned` is a shard-local ownership transition in every mode: it logs the
 Info event above and the worker stops cleanly without failing `Start`.
@@ -122,9 +124,9 @@ terminal `consumer stopped` Error repeats the cause. The exceptions are the
 events whose error the caller swallows or retries away, so the site-level
 Warn is the only record: `shard lease release failed`,
 `shard lease renew failed; will retry`, `get records failed; backing off`,
-`worker heartbeat failed`, `rebalance pass failed`, and `shard sync failed`
-(until their staleness bounds turn the heartbeat and shard-sync Warns into
-terminal errors).
+`worker heartbeat failed`, `worker deregister on shutdown failed`,
+`rebalance pass failed`, and `shard sync failed` (until their staleness bounds
+turn the heartbeat and shard-sync Warns into terminal errors).
 
 - **Checkpoint save failures, DLQ publish failures, and fail-fast handler
   errors** have no dedicated event; they surface through the worker and

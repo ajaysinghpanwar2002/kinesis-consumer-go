@@ -191,12 +191,16 @@ func TestMemoryBackendsRunConsumerSmoke(t *testing.T) {
 		t.Fatalf("checkpoint = %q, want SHARD_END:sequence-1", checkpointValue)
 	}
 
+	// A clean shutdown deregisters this worker (finding 4): the MemoryManager
+	// implements lease.Deregisterer, so the worker removes its own liveness
+	// entry as the heartbeat loop stops, letting peers recompute fair share from
+	// its absence immediately instead of waiting out the heartbeat TTL.
 	owners, err := leaseManager.Workers(context.Background(), "stream")
 	if err != nil {
 		t.Fatalf("Workers: %v", err)
 	}
-	if len(owners) != 1 || owners[0] != "owner" {
-		t.Fatalf("Workers = %v, want [owner]", owners)
+	if len(owners) != 0 {
+		t.Fatalf("Workers after clean shutdown = %v, want empty (worker deregistered)", owners)
 	}
 
 	if len(client.getShardIteratorCalls) != 1 {

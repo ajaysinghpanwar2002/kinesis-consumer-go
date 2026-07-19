@@ -279,6 +279,60 @@ func TestMemoryManagerWorkers(t *testing.T) {
 	})
 }
 
+func TestMemoryManagerDeregister(t *testing.T) {
+	t.Run("removes a live worker while leaving others", func(t *testing.T) {
+		m, _ := newTestManager()
+		ctx := context.Background()
+		for _, owner := range []string{"owner-a", "owner-b"} {
+			if err := m.Heartbeat(ctx, testStream, owner, testTTL); err != nil {
+				t.Fatalf("Heartbeat %s: %v", owner, err)
+			}
+		}
+
+		if err := m.Deregister(ctx, testStream, "owner-a"); err != nil {
+			t.Fatalf("Deregister: %v", err)
+		}
+
+		got, err := m.Workers(ctx, testStream)
+		if err != nil {
+			t.Fatalf("Workers: %v", err)
+		}
+		if len(got) != 1 || got[0] != "owner-b" {
+			t.Fatalf("Workers after Deregister = %v, want [owner-b]", got)
+		}
+	})
+
+	t.Run("absent owner is a no-op success", func(t *testing.T) {
+		m, _ := newTestManager()
+		ctx := context.Background()
+		if err := m.Heartbeat(ctx, testStream, "owner-a", testTTL); err != nil {
+			t.Fatalf("Heartbeat: %v", err)
+		}
+
+		// Never-registered owner, then the same owner twice: all no-ops.
+		if err := m.Deregister(ctx, testStream, "ghost"); err != nil {
+			t.Fatalf("Deregister absent owner: %v", err)
+		}
+		if err := m.Deregister(ctx, testStream, "owner-a"); err != nil {
+			t.Fatalf("Deregister owner-a: %v", err)
+		}
+		if err := m.Deregister(ctx, testStream, "owner-a"); err != nil {
+			t.Fatalf("Deregister owner-a again: %v", err)
+		}
+		if err := m.Deregister(ctx, "unknown-stream", "owner-a"); err != nil {
+			t.Fatalf("Deregister unknown stream: %v", err)
+		}
+
+		got, err := m.Workers(ctx, testStream)
+		if err != nil {
+			t.Fatalf("Workers: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("Workers after deregistering all = %v, want empty", got)
+		}
+	})
+}
+
 // TestMemoryManagerConcurrentAccess is meaningful under the race detector:
 // run with `go test -race ./pkg/lease/`.
 func TestMemoryManagerConcurrentAccess(t *testing.T) {

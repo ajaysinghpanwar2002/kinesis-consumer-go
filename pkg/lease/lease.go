@@ -92,6 +92,22 @@ type Manager interface {
 	Workers(ctx context.Context, streamName string) ([]string, error)
 }
 
+// Deregisterer is an optional Manager capability. A Manager that also
+// implements it can atomically remove a worker's liveness entry the moment the
+// worker shuts down cleanly, so surviving peers recompute fair share from the
+// worker's absence immediately instead of counting it (via Workers) until its
+// heartbeat entry expires by TTL. The consumer type-asserts for this capability
+// and skips deregistration when a Manager does not implement it — worker entries
+// then simply expire by TTL, exactly as they do after a crash.
+type Deregisterer interface {
+	// Deregister atomically removes owner from streamName's live-worker set. It
+	// must not touch shard leases — those are released separately. Removing an
+	// owner that is already absent (expired, never registered, or already
+	// deregistered) is a no-op success; a non-nil error is reserved for genuine
+	// backend failures. It must return promptly when ctx is done.
+	Deregister(ctx context.Context, streamName, owner string) error
+}
+
 // Provider supplies a lease manager from another dependency such as a checkpoint store.
 type Provider interface {
 	LeaseManager() (Manager, error)

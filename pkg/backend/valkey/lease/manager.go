@@ -20,8 +20,9 @@ import (
 
 // Manager and valkeyLease satisfy the core lease contracts.
 var (
-	_ consumerlease.Manager = (*Manager)(nil)
-	_ consumerlease.Lease   = (*valkeyLease)(nil)
+	_ consumerlease.Manager      = (*Manager)(nil)
+	_ consumerlease.Deregisterer = (*Manager)(nil)
+	_ consumerlease.Lease        = (*valkeyLease)(nil)
 )
 
 // Config controls how the lease manager connects and where it writes keys.
@@ -55,13 +56,14 @@ func validateTTL(ttl time.Duration) error {
 // sent once and later calls — renews and heartbeats fire every few seconds
 // per worker — reference it by hash.
 var (
-	leaseAcquireScript    = valkey.NewLuaScript(backend.LeaseAcquireScript)
-	leaseClaimScript      = valkey.NewLuaScript(backend.LeaseClaimScript)
-	leaseRenewScript      = valkey.NewLuaScript(backend.LeaseRenewScript)
-	leaseReleaseScript    = valkey.NewLuaScript(backend.LeaseReleaseScript)
-	leaseListScript       = valkey.NewLuaScript(backend.LeaseListScript)
-	workerHeartbeatScript = valkey.NewLuaScript(backend.WorkerHeartbeatScript)
-	workerListScript      = valkey.NewLuaScript(backend.WorkerListScript)
+	leaseAcquireScript     = valkey.NewLuaScript(backend.LeaseAcquireScript)
+	leaseClaimScript       = valkey.NewLuaScript(backend.LeaseClaimScript)
+	leaseRenewScript       = valkey.NewLuaScript(backend.LeaseRenewScript)
+	leaseReleaseScript     = valkey.NewLuaScript(backend.LeaseReleaseScript)
+	leaseListScript        = valkey.NewLuaScript(backend.LeaseListScript)
+	workerHeartbeatScript  = valkey.NewLuaScript(backend.WorkerHeartbeatScript)
+	workerListScript       = valkey.NewLuaScript(backend.WorkerListScript)
+	workerDeregisterScript = valkey.NewLuaScript(backend.WorkerDeregisterScript)
 )
 
 // Manager coordinates shard ownership across consumer workers using Valkey
@@ -246,6 +248,18 @@ func (m *Manager) Workers(ctx context.Context, streamName string) ([]string, err
 		owners = append(owners, owner)
 	}
 	return owners, nil
+}
+
+// Deregister removes this worker from the stream's live-worker set so surviving
+// peers recompute fair share from its absence immediately on a clean shutdown,
+// instead of counting it until its heartbeat entry expires. Removing an
+// already-absent owner is a no-op success; it never touches shard leases.
+func (m *Manager) Deregister(ctx context.Context, streamName, owner string) error {
+	key := m.keys(streamName).Workers
+	if err := workerDeregisterScript.Exec(ctx, m.client, []string{key}, []string{owner}).Error(); err != nil {
+		return fmt.Errorf("deregister %s/%s: %w", streamName, owner, err)
+	}
+	return nil
 }
 
 func (m *Manager) keys(streamName string) backend.CoordinationKeys {

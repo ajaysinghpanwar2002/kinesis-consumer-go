@@ -319,4 +319,20 @@ if #latest > 0 then
 end
 return result
 `
+
+	// WorkerDeregisterScript removes one worker from the live-worker set on a
+	// clean shutdown and recomputes the key's expiry from the remaining workers'
+	// latest score, so peers stop counting the departed worker immediately.
+	// Removing an owner that is already absent is a no-op. Removing the last
+	// worker deletes the key outright (Redis drops an emptied sorted set), so
+	// there is no remaining expiry to recompute.
+	// KEYS[1]=workers zset, ARGV[1]=owner.
+	WorkerDeregisterScript = `
+redis.call("zrem", KEYS[1], ARGV[1])
+local latest = redis.call("zrevrange", KEYS[1], 0, 0, "withscores")
+if #latest > 0 then
+  redis.call("pexpireat", KEYS[1], latest[2])
+end
+return 1
+`
 )
