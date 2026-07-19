@@ -533,8 +533,13 @@ func TestStartSurvivesTransientRefreshCheckpointReadError(t *testing.T) {
 		},
 		manager,
 	)
-	c.store = &flakyReadinessStore{failShard: "shard-2", failErr: errBoom, remaining: 1}
+	// The blip outlasts the bounded in-pass read retries (readShardCheckpoint
+	// absorbs shorter ones without failing the pass), so the pass itself fails
+	// and the pass-level recovery under test — candidate discard + rediscovery
+	// on a fresh listing — is what acquires shard-2.
+	c.store = &flakyReadinessStore{failShard: "shard-2", failErr: errBoom, remaining: c.tuning.retryMaxAttempts}
 	c.tuning.shardSyncInterval = time.Millisecond
+	c.tuning.retryBackoff = time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := runStart(ctx, c)
@@ -1776,7 +1781,9 @@ func TestStartGracefulDrainKeepsHeartbeatingDuringDrain(t *testing.T) {
 func waitForTrue(t *testing.T, cond func() bool, what string) {
 	t.Helper()
 
-	deadline := time.Now().Add(time.Second)
+	// 5s: generous for anything the fakes-based tests wait on — a shorter
+	// deadline has flaked under load (a passing run never gets near it).
+	deadline := time.Now().Add(5 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)

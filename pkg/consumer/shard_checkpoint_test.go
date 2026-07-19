@@ -27,6 +27,8 @@ type fakeCheckpointSaveStore struct {
 	getCalls   []checkpointGetCall
 	checkpoint string
 	getErr     error
+	getErrs    []error // per-call errors, consumed before getErr applies
+	onGet      func()  // runs after each Get call is recorded
 	saveCalls  []checkpointSaveCall
 	saveErr    error
 	saveErrs   []error // per-call errors, consumed before saveErr applies
@@ -39,6 +41,16 @@ func (s *fakeCheckpointSaveStore) Get(ctx context.Context, streamName, shardID s
 		streamName: streamName,
 		shardID:    shardID,
 	})
+	if s.onGet != nil {
+		s.onGet()
+	}
+	if len(s.getErrs) > 0 {
+		err := s.getErrs[0]
+		s.getErrs = s.getErrs[1:]
+		if err != nil {
+			return "", err
+		}
+	}
 	if s.getErr != nil {
 		return "", s.getErr
 	}
@@ -192,6 +204,105 @@ func TestReadShardCheckpointWrapsStoreError(t *testing.T) {
 	}
 	if seq != "" {
 		t.Fatalf("readShardCheckpoint() sequence = %q, want empty", seq)
+	}
+}
+
+func TestReadShardCheckpointRetriesTransientStoreFailure(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	store := &fakeCheckpointSaveStore{
+		checkpoint: "sequence-1",
+		getErrs:    []error{errBoom, errBoom},
+	}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+	}
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = time.Millisecond
+
+	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
+	if err != nil {
+		t.Fatalf("readShardCheckpoint() error = %v, want nil after retries", err)
+	}
+	if seq != "sequence-1" {
+		t.Fatalf("readShardCheckpoint() sequence = %q, want %q", seq, "sequence-1")
+	}
+	if len(store.getCalls) != 3 {
+		t.Fatalf("Get calls = %d, want 3", len(store.getCalls))
+	}
+}
+
+func TestReadShardCheckpointReturnsLastErrorAfterExhaustedRetries(t *testing.T) {
+	t.Parallel()
+
+	errFirst := errors.New("first boom")
+	errSecond := errors.New("second boom")
+	errLast := errors.New("last boom")
+	store := &fakeCheckpointSaveStore{getErrs: []error{errFirst, errSecond, errLast}}
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+	}
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = time.Millisecond
+
+	seq, err := c.readShardCheckpoint(context.Background(), "shard-1")
+	if !errors.Is(err, errLast) {
+		t.Fatalf("readShardCheckpoint() error = %v, want wraps final attempt error %v", err, errLast)
+	}
+	if errors.Is(err, errFirst) || errors.Is(err, errSecond) {
+		t.Fatalf("readShardCheckpoint() error = %v, want only the final attempt's error", err)
+	}
+	if err == nil || err.Error() != "read shard checkpoint shard-1: last boom" {
+		t.Fatalf("readShardCheckpoint() error = %v, want %q", err, "read shard checkpoint shard-1: last boom")
+	}
+	if seq != "" {
+		t.Fatalf("readShardCheckpoint() sequence = %q, want empty", seq)
+	}
+	if len(store.getCalls) != 3 {
+		t.Fatalf("Get calls = %d, want 3", len(store.getCalls))
+	}
+}
+
+func TestReadShardCheckpointRetryWaitStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &fakeCheckpointSaveStore{getErr: errBoom}
+	store.onGet = cancel // ctx is done before the backoff wait begins
+	c := &Consumer{
+		logger:   slog.New(slog.DiscardHandler),
+		reporter: metrics.Nop{},
+		cfg:      Config{StreamName: "stream"},
+		store:    store,
+	}
+	c.tuning.retryMaxAttempts = 3
+	c.tuning.retryBackoff = time.Hour // only ctx cancellation can end the wait
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.readShardCheckpoint(ctx, "shard-1")
+		done <- err
+	}()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("readShardCheckpoint did not return after context cancellation")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("readShardCheckpoint() error = %v, want wraps %v", err, context.Canceled)
+	}
+	if len(store.getCalls) != 1 {
+		t.Fatalf("Get calls = %d, want 1 (no retry after cancellation)", len(store.getCalls))
 	}
 }
 

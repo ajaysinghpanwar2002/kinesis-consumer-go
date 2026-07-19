@@ -131,3 +131,14 @@ number.
 | IT-23 (#26) | `TestStoreDerivedLeasePrefix` | A store-provided lease manager leases under the derived `<checkpointPrefix>-lease` prefix. |
 | IT-24 (#27) | `TestRestartOverReleasedLeaseResumesFromCheckpoint` | After a clean stop releases the lease, a fresh consumer resumes over the leftover checkpoint. |
 | IT-25 | `TestConsumerGroupsIsolateAndShareCoordination` | Different groups on one stream independently checkpoint and lease every shard; two workers in one group share checkpoints and distribute the same lease set. |
+
+### Group J — Backend outage staleness
+
+A per-test TCP proxy severs the consumer's Valkey path mid-run (what a stopped
+container looks like to the client) while the test keeps a healthy direct
+connection for its assertions.
+
+| IT | Test | Proves |
+| --- | --- | --- |
+| IT-29 | `TestValkeyOutageStopsRunWithHeartbeatStaleWhileWorkerKeyLive` | A Valkey outage is survivable at first (heartbeat failures recorded, run alive), then stops the run with `ErrHeartbeatStale` while the worker key written by the last successful heartbeat is still live — before peers may treat the worker as dead. |
+| IT-30 | `TestValkeyOutageStopsRunWithShardSyncStale` | A Valkey outage fails shard-sync passes survivably (failures recorded, run alive) until `WithShardSyncMaxStaleness` lapses, then stops the run with `ErrShardSyncStale`. |

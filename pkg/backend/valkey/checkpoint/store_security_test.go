@@ -204,10 +204,15 @@ func TestCredentialsProviderRotation(t *testing.T) {
 	// rather than reusing the "49" roundtrip.)
 	ctx := context.Background()
 	waitForReconnect(t, func() error { return store.Save(ctx, "grp:stream", "shard-1", "50") })
-	got, err := store.Get(ctx, "grp:stream", "shard-1")
-	if err != nil {
-		t.Fatalf("Get after reconnect: %v", err)
-	}
+	// The client reports rather than retries network errors (DisableRetry),
+	// so a read landing on a not-yet-reaped stale pooled connection can
+	// surface one EOF before the pool heals — retry it like the Save above.
+	var got string
+	waitForReconnect(t, func() error {
+		var err error
+		got, err = store.Get(ctx, "grp:stream", "shard-1")
+		return err
+	})
 	if got != "50" {
 		t.Fatalf("Get after reconnect = %q, want %q", got, "50")
 	}

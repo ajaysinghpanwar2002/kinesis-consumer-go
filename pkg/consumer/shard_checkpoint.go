@@ -7,12 +7,42 @@ import (
 	"time"
 )
 
+// readShardCheckpoint reads one checkpoint value through the store, retrying
+// failures with the shared bounded retry policy (retryMaxAttempts /
+// retryBackoff), mirroring saveCheckpointValueWithRetry: the store client
+// reports network errors instead of absorbing them, so without consumer-owned
+// retries a single dropped connection on a readiness read during Start's
+// initial acquisition — the one pass whose errors are deliberately fatal —
+// would kill the whole run. The backoff wait aborts as soon as ctx is done and
+// returns the ctx error, so a shutdown mid-retry surfaces as the shutdown.
 func (c *Consumer) readShardCheckpoint(ctx context.Context, shardID string) (string, error) {
-	seq, err := c.store.Get(ctx, c.coordinationKey(), shardID)
-	if err != nil {
-		return "", fmt.Errorf("read shard checkpoint %s: %w", shardID, err)
+	maxAttempts := c.tuning.retryMaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
-	return seq, nil
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		seq, err := c.store.Get(ctx, c.coordinationKey(), shardID)
+		if err == nil {
+			return seq, nil
+		}
+		lastErr = err
+
+		if attempt == maxAttempts {
+			break
+		}
+		c.logger.Warn("shard checkpoint read failed; will retry",
+			slog.String("shard", shardID),
+			slog.Int("attempt", attempt),
+			slog.Any("error", err),
+		)
+		if err := sleepWithContext(ctx, c.tuning.retryBackoff); err != nil {
+			return "", err
+		}
+	}
+
+	return "", fmt.Errorf("read shard checkpoint %s: %w", shardID, lastErr)
 }
 
 // saveCheckpointValueWithRetry writes one checkpoint value through the store,

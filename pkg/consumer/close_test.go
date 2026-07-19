@@ -491,8 +491,9 @@ func TestCloseDuringStartStopsRunAndClosesManagerAfterLastUse(t *testing.T) {
 				t.Fatalf("lease manager Close calls = %d, want 1", got)
 			}
 			// The heartbeat loop was fully stopped before the manager was
-			// closed; give any stray loop a moment to prove it is gone.
-			time.Sleep(20 * time.Millisecond)
+			// closed; give any stray loop a generous moment to prove it is
+			// gone (a wider window only strengthens this negative assertion).
+			time.Sleep(100 * time.Millisecond)
 			manager.closable.assertLifecycleClean(t)
 		})
 	}
@@ -653,10 +654,12 @@ func TestCloseWaitsForInProgressGracefulDrain(t *testing.T) {
 	go func() {
 		closeDone <- c.Close()
 	}()
+	// A generous window: Close returning at any point inside it is the bug
+	// under test, so widening only strengthens this negative assertion.
 	select {
 	case err := <-closeDone:
 		t.Fatalf("Close() returned %v while the drain was still running", err)
-	case <-time.After(20 * time.Millisecond):
+	case <-time.After(100 * time.Millisecond):
 	}
 	if got := manager.closable.closeCount(); got != 0 {
 		t.Fatalf("lease manager Close calls during drain = %d, want 0", got)

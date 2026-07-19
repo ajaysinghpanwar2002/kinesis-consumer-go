@@ -14,11 +14,14 @@ import (
 // would anchor at the child's tip at worker-start time and silently drop
 // every record written between the reshard and pickup).
 //
-// Entries are monotonic: parents are created before their children and a
-// shard's parent IDs never change, so once a shard is listed alongside one of
-// its parents that fact stays true. Shards whose parent IDs reference shards
-// aged out of retention (absent from every listing this consumer saw) are
-// treated as parentless and keep StartPosition semantics.
+// Entries are monotonic while their shard exists: parents are created before
+// their children and a shard's parent IDs never change, so once a shard is
+// listed alongside one of its parents that fact stays true. Shards whose
+// parent IDs reference shards aged out of retention (absent from every listing
+// this consumer saw) are treated as parentless and keep StartPosition
+// semantics. Entries for shards that have themselves aged out of the listing
+// are pruned (see pruneStaleShardState) — no worker will ever derive an
+// iterator for such a shard again.
 //
 // Written from the orchestration paths (the initial listing at Start and the
 // shard-sync refresh); read concurrently by shard workers deriving iterators.
@@ -49,6 +52,18 @@ func (p *shardParentage) record(shards map[string]types.Shard) {
 			}
 			p.hasParents[shardID] = struct{}{}
 			break
+		}
+	}
+}
+
+// prune drops entries whose shard the retain predicate no longer wants (see
+// pruneStaleShardState).
+func (p *shardParentage) prune(retain func(shardID string) bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for shardID := range p.hasParents {
+		if !retain(shardID) {
+			delete(p.hasParents, shardID)
 		}
 	}
 }
