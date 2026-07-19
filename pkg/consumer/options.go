@@ -216,7 +216,12 @@ func WithShardSyncMaxStaleness(maxStaleness time.Duration) Option {
 
 // WithHeartbeat configures the worker heartbeat interval and TTL. Both values
 // must be whole milliseconds because the built-in Valkey backend stores TTLs
-// with millisecond precision.
+// with millisecond precision. The TTL must also be at least three times the
+// interval: a heartbeat/renew call can run for a full interval and staleness is
+// only checked after it returns, so ttl >= 3*interval is what guarantees a call
+// still completes before the ttl-interval safety deadline. A looser ratio would
+// let a lease expire while its worker is mid-call and a peer could reclaim the
+// shard.
 func WithHeartbeat(interval, ttl time.Duration) Option {
 	return func(cfg *options) error {
 		if err := validateHeartbeatDurations(interval, ttl); err != nil {

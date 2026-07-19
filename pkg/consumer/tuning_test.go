@@ -138,7 +138,7 @@ func TestTuningValidate(t *testing.T) {
 				cfg.heartbeatInterval = 10 * time.Second
 				cfg.heartbeatTTL = 10 * time.Second
 			},
-			want: "heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)",
+			want: "heartbeat ttl must be >= 3x heartbeat interval",
 		},
 		{
 			name: "heartbeat interval exceeds ttl",
@@ -146,13 +146,29 @@ func TestTuningValidate(t *testing.T) {
 				cfg.heartbeatInterval = 30 * time.Second
 				cfg.heartbeatTTL = 5 * time.Second
 			},
-			want: "heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)",
+			want: "heartbeat ttl must be >= 3x heartbeat interval",
 		},
 		{
 			name: "heartbeat interval just below ttl",
 			edit: func(cfg *tuningConfig) {
 				cfg.heartbeatInterval = 10*time.Second - time.Millisecond
 				cfg.heartbeatTTL = 10 * time.Second
+			},
+			want: "heartbeat ttl must be >= 3x heartbeat interval",
+		},
+		{
+			name: "heartbeat ttl just below 3x interval",
+			edit: func(cfg *tuningConfig) {
+				cfg.heartbeatInterval = 7 * time.Second
+				cfg.heartbeatTTL = 20 * time.Second
+			},
+			want: "heartbeat ttl must be >= 3x heartbeat interval",
+		},
+		{
+			name: "heartbeat ttl exactly 3x interval",
+			edit: func(cfg *tuningConfig) {
+				cfg.heartbeatInterval = 7 * time.Second
+				cfg.heartbeatTTL = 21 * time.Second
 			},
 		},
 		{
@@ -235,15 +251,35 @@ func TestHeartbeatValidationBoundariesAtOptionAndFinalizedTuning(t *testing.T) {
 			want:     "heartbeat ttl must be a whole number of milliseconds",
 		},
 		{
-			name:     "minimum whole milliseconds",
+			name:     "minimum whole milliseconds at 3x",
+			interval: time.Millisecond,
+			ttl:      3 * time.Millisecond,
+		},
+		{
+			name:     "ttl just below 3x interval",
 			interval: time.Millisecond,
 			ttl:      2 * time.Millisecond,
+			want:     "heartbeat ttl must be >= 3x heartbeat interval",
 		},
 		{
 			name:     "interval equals ttl",
 			interval: time.Millisecond,
 			ttl:      time.Millisecond,
-			want:     "heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)",
+			want:     "heartbeat ttl must be >= 3x heartbeat interval",
+		},
+		{
+			// Integer-division floor edge: the check is interval > ttl/3, and
+			// 20ms/3 = 6ms (floor) < 7ms interval, so the pair is rejected —
+			// matching 3*7 = 21 > 20.
+			name:     "ttl below 3x interval (floor edge)",
+			interval: 7 * time.Millisecond,
+			ttl:      20 * time.Millisecond,
+			want:     "heartbeat ttl must be >= 3x heartbeat interval",
+		},
+		{
+			name:     "ttl exactly 3x interval (floor edge)",
+			interval: 7 * time.Millisecond,
+			ttl:      21 * time.Millisecond,
 		},
 		{
 			name:     "largest non-overflowing watchdog deadline",

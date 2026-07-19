@@ -119,11 +119,19 @@ func validateHeartbeatDurations(interval, ttl time.Duration) error {
 	if ttl%time.Millisecond != 0 {
 		return errors.New("heartbeat ttl must be a whole number of milliseconds")
 	}
-	// A renew tick must land well inside the TTL, or every lease expires
-	// before its renewal and peers systematically claim shards away from a
-	// live worker (dual ownership).
-	if interval >= ttl {
-		return errors.New("heartbeat interval must be < heartbeat ttl (recommend ttl >= 3x interval)")
+	// A heartbeat/renew call can itself run for up to one interval, and
+	// staleness is only checked after it returns. After a success at t=0 the
+	// next call can start near t=interval and return near t=2*interval, so it
+	// must finish before the documented safety deadline ttl-interval — which
+	// requires ttl >= 3*interval. A looser ratio lets a lease expire (and a peer
+	// reclaim the shard) while the old worker is still inside an in-flight call,
+	// widening the split-processing window beyond the contract. Compared
+	// overflow-safe as interval > ttl/3, which is exactly equivalent to
+	// 3*interval > ttl for the positive, whole-millisecond durations validated
+	// above and never multiplies, so 3*interval cannot wrap time.Duration. This
+	// subsumes interval < ttl (ttl >= 3*interval implies ttl > interval).
+	if interval > ttl/3 {
+		return errors.New("heartbeat ttl must be >= 3x heartbeat interval")
 	}
 	// renewShardLeaseLoopWithWatchdog derives its first watchdog deadline by
 	// adding these durations. Check before adding so an accepted configuration
