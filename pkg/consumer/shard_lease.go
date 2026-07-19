@@ -305,6 +305,21 @@ func (c *Consumer) releaseShardLeaseWithTimeout(shardID string, shardLease lease
 	defer cancel()
 
 	if err := shardLease.Release(releaseCtx); err != nil {
+		if errors.Is(err, lease.ErrNotOwned) {
+			// A peer already owns this shard: the lease was taken over or expired
+			// and reclaimed before this cleanup release ran (a routine rebalance
+			// race, e.g. a shed donor whose renew loop was cancelled before it
+			// observed the loss). Ownership loss is shard-local — the peer resumes
+			// from the last checkpoint — so treat it as a successful handoff, not a
+			// consumer-fatal release failure. Count it as a lost lease (mirroring
+			// the renew-loop handoff path) instead of polluting the release-failure
+			// counter, and return nil so the worker stops cleanly. Checked before
+			// the deadline branch below so a genuine release timeout stays fatal.
+			c.reporter.Counter(metricLeaseLost, 1, c.shardTags(shardID))
+			c.logger.Info("shard lease already claimed by peer at release; treating as handoff",
+				slog.String("shard", shardID))
+			return nil
+		}
 		releaseErr := fmt.Errorf("release shard lease %s: %w", shardID, err)
 		if errors.Is(err, context.DeadlineExceeded) {
 			releaseErr = fmt.Errorf("release shard lease %s timed out: %w", shardID, err)

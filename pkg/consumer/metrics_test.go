@@ -654,6 +654,40 @@ func TestReleaseShardLeaseWithTimeoutCountsReleaseFailure(t *testing.T) {
 	}
 }
 
+// TestReleaseShardLeaseWithTimeoutCountsReleaseFailureOnTimeout is the timeout
+// regression guard for Finding 2: a genuine release timeout must stay fatal and
+// still increment the release-failure counter — the ErrNotOwned handoff branch
+// must not swallow it. (blockingReleaseLease blocks until its context deadline,
+// so Release returns context.DeadlineExceeded.)
+func TestReleaseShardLeaseWithTimeoutCountsReleaseFailureOnTimeout(t *testing.T) {
+	t.Parallel()
+
+	reporter := &recordingReporter{}
+	c := newMetricsTestConsumer(reporter)
+	c.tuning.shardLeaseReleaseTimeout = time.Millisecond
+
+	err := c.releaseShardLeaseWithTimeout("shard-1", &blockingReleaseLease{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("releaseShardLeaseWithTimeout() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+
+	failures := reporter.countersNamed(metricLeaseReleaseFailures)
+	if len(failures) != 1 {
+		t.Fatalf("lease_release_failures calls = %d, want 1", len(failures))
+	}
+	assertCounterTags(t, failures[0], map[string]string{
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+	})
+	if lost := reporter.countersNamed(metricLeaseLost); len(lost) != 0 {
+		t.Fatalf("lease_lost calls = %d, want 0 (a timeout is not a handoff)", len(lost))
+	}
+	if released := reporter.countersNamed(metricLeaseReleased); len(released) != 0 {
+		t.Fatalf("lease_released calls = %d, want 0", len(released))
+	}
+}
+
 func TestRenewShardLeaseLoopCountsRenewals(t *testing.T) {
 	t.Parallel()
 
