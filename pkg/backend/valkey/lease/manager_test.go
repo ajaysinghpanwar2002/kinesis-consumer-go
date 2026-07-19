@@ -510,6 +510,82 @@ func TestManagerHeartbeatExpiresWorker(t *testing.T) {
 	}
 }
 
+func TestManagerDeregisterWorker(t *testing.T) {
+	t.Parallel()
+
+	mgr, server := newTestManager(t)
+	ctx := context.Background()
+	anchor := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
+	server.SetTime(anchor)
+	key := mgr.keys("stream").Workers
+
+	// Staggered deadlines: worker-a is the latest, so the workers key expiry is
+	// anchored to it (10m), not to worker-b (1m).
+	if err := mgr.Heartbeat(ctx, "stream", "worker-a", 10*time.Minute); err != nil {
+		t.Fatalf("Heartbeat worker-a: %v", err)
+	}
+	if err := mgr.Heartbeat(ctx, "stream", "worker-b", time.Minute); err != nil {
+		t.Fatalf("Heartbeat worker-b: %v", err)
+	}
+	if ttl := server.TTL(key); ttl != 10*time.Minute {
+		t.Fatalf("workers key TTL after heartbeats = %v, want %v (worker-a is latest)", ttl, 10*time.Minute)
+	}
+
+	// Deregister the latest-expiry worker. The script must recompute the key
+	// expiry from the remaining latest worker (worker-b). Inspect the raw key
+	// TTL BEFORE Workers(): Workers() independently recomputes the expiry, so
+	// asserting after it would mask a deregistration that failed to recompute.
+	if err := mgr.Deregister(ctx, "stream", "worker-a"); err != nil {
+		t.Fatalf("Deregister worker-a: %v", err)
+	}
+	if ttl := server.TTL(key); ttl != time.Minute {
+		t.Fatalf("workers key TTL after Deregister = %v, want %v (recomputed from worker-b)", ttl, time.Minute)
+	}
+
+	// worker-a left the set; worker-b survives.
+	members, err := server.ZMembers(key)
+	if err != nil {
+		t.Fatalf("ZMembers after Deregister: %v", err)
+	}
+	if !slices.Equal(members, []string{"worker-b"}) {
+		t.Fatalf("workers zset members after Deregister = %v, want [worker-b]", members)
+	}
+	owners, err := mgr.Workers(ctx, "stream")
+	if err != nil {
+		t.Fatalf("Workers: %v", err)
+	}
+	if !slices.Equal(owners, []string{"worker-b"}) {
+		t.Fatalf("workers after Deregister = %v, want [worker-b]", owners)
+	}
+
+	// Deregistering an absent owner (and worker-a again) is a no-op success and
+	// leaves worker-b's recomputed expiry untouched.
+	if err := mgr.Deregister(ctx, "stream", "ghost"); err != nil {
+		t.Fatalf("Deregister absent owner: %v", err)
+	}
+	if err := mgr.Deregister(ctx, "stream", "worker-a"); err != nil {
+		t.Fatalf("Deregister worker-a again: %v", err)
+	}
+	if ttl := server.TTL(key); ttl != time.Minute {
+		t.Fatalf("workers key TTL after no-op deregisters = %v, want %v", ttl, time.Minute)
+	}
+
+	// Deregistering the last worker deletes the key (Redis drops an emptied set).
+	if err := mgr.Deregister(ctx, "stream", "worker-b"); err != nil {
+		t.Fatalf("Deregister worker-b: %v", err)
+	}
+	if server.Exists(key) {
+		t.Fatal("workers key still exists after deregistering the last worker")
+	}
+	owners, err = mgr.Workers(ctx, "stream")
+	if err != nil {
+		t.Fatalf("Workers after emptying: %v", err)
+	}
+	if len(owners) != 0 {
+		t.Fatalf("workers after deregistering all = %v, want empty", owners)
+	}
+}
+
 func TestManagerLeaseExpires(t *testing.T) {
 	t.Parallel()
 

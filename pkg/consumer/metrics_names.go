@@ -30,6 +30,7 @@ const (
 	metricShardsCompleted       = "kinesis_consumer.shards_completed"
 	metricWorkerStarts          = "kinesis_consumer.worker_starts"
 	metricWorkerStops           = "kinesis_consumer.worker_stops"
+	metricWorkerDeregistered    = "kinesis_consumer.worker_deregistered"
 
 	metricOwnedShards        = "kinesis_consumer.owned_shards"
 	metricActiveWorkers      = "kinesis_consumer.active_workers"

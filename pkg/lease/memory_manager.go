@@ -32,7 +32,10 @@ type leaseEntry struct {
 	expiry time.Time
 }
 
-var _ Manager = (*MemoryManager)(nil)
+var (
+	_ Manager      = (*MemoryManager)(nil)
+	_ Deregisterer = (*MemoryManager)(nil)
+)
 
 // NewMemoryManager returns an empty in-memory lease manager backed by the real
 // clock.
@@ -131,6 +134,18 @@ func (m *MemoryManager) Workers(_ context.Context, streamName string) ([]string,
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+// Deregister removes owner from the stream's live-worker set. Removing an owner
+// that is already absent is a no-op success, mirroring the reference backend.
+func (m *MemoryManager) Deregister(_ context.Context, streamName, owner string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if owners := m.workers[streamName]; owners != nil {
+		delete(owners, owner)
+	}
+	return nil
 }
 
 func (m *MemoryManager) setLeaseLocked(streamName, shardID, owner string, expiry time.Time) {

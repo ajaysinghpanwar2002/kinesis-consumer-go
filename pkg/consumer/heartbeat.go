@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 func (c *Consumer) canonicalStreamName() string {
@@ -96,6 +98,7 @@ func (c *Consumer) workerHeartbeatLoop(ctx context.Context, stopRun func(error))
 	for {
 		select {
 		case <-ctx.Done():
+			c.deregisterWorkerOnCleanShutdown()
 			return
 		case <-ticker.C:
 			if send() {
@@ -103,4 +106,42 @@ func (c *Consumer) workerHeartbeatLoop(ctx context.Context, stopRun func(error))
 			}
 		}
 	}
+}
+
+// deregisterWorkerOnCleanShutdown best-effort removes this worker's liveness
+// entry once the heartbeat loop stops on a clean shutdown (its context being
+// cancelled), so surviving peers recompute fair share from this worker's
+// absence immediately instead of counting it (via the lease manager's Workers)
+// for up to one heartbeat TTL — the gap that would otherwise leave cleanly
+// released shards idle across a rolling deploy or scale-down.
+//
+// It runs only on the clean ctx-cancelled exit, never the staleness exit: a
+// stale heartbeat means the backend is already unreachable, so the entry will
+// expire by TTL and a Deregister call would only fail against the same backend.
+// It is a no-op when the lease manager does not implement lease.Deregisterer;
+// entries then expire by TTL, exactly as after a crash.
+//
+// The heartbeat context is already cancelled by the time this runs, so it uses
+// a fresh context bounded by the shard-lease-release timeout (the same cleanup
+// budget worker lease release uses). Start's heartbeat-stop defer waits on the
+// loop goroutine's completion before Start returns, so this finishes before an
+// owned lease manager is closed. Failures are logged and swallowed: shutdown
+// must neither block nor fail on a best-effort cleanup.
+func (c *Consumer) deregisterWorkerOnCleanShutdown() {
+	deregisterer, ok := c.leaseManager.(lease.Deregisterer)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.shardLeaseReleaseTimeout())
+	defer cancel()
+
+	if err := deregisterer.Deregister(ctx, c.coordinationKey(), c.leaseOwner); err != nil {
+		c.logger.Warn("worker deregister on shutdown failed",
+			slog.String("owner", c.leaseOwner),
+			slog.Any("error", err))
+		return
+	}
+	c.reporter.Counter(metricWorkerDeregistered, 1, c.streamTags())
+	c.logger.Debug("worker deregistered on shutdown", slog.String("owner", c.leaseOwner))
 }

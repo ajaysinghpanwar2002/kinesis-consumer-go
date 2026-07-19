@@ -614,6 +614,33 @@ func waitForLeaseWorkers(t *testing.T, manager lease.Manager, stream string, min
 	}
 }
 
+// waitForWorkerCount waits until the live-worker set has exactly want members,
+// returning that set. Unlike waitForLeaseWorkers (which waits for AT LEAST a
+// count), this asserts an exact size, so it can prove a departed worker left the
+// set within a window far shorter than its heartbeat TTL — the observable effect
+// of clean-shutdown deregistration.
+func waitForWorkerCount(t *testing.T, manager lease.Manager, stream string, want int, timeout time.Duration) []string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last []string
+	var lastErr error
+	for {
+		workers, err := manager.Workers(context.Background(), integrationCoordinationIdentity(stream))
+		if err == nil {
+			last = workers
+			if len(workers) == want {
+				return workers
+			}
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream %s did not reach exactly %d active workers within %s; workers=%v lastErr=%v", stream, want, timeout, last, lastErr)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // waitForStableLeaseOwners waits until the shard->owner map covers all shards
 // across at least minOwners owners AND has stayed identical for stableFor,
 // returning that stable map. Used before measuring steady-state behavior so a

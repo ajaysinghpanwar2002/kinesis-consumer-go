@@ -145,6 +145,7 @@ batch.
 | `kinesis_consumer.shards_completed` | shards | `stream`, `consumer_group`, `shard` | A closed shard's `SHARD_END` completion checkpoint is saved successfully. |
 | `kinesis_consumer.worker_starts` | workers | `stream`, `consumer_group`, `shard` | A registered shard-worker goroutine starts. |
 | `kinesis_consumer.worker_stops` | workers | `stream`, `consumer_group`, `shard`, `outcome` | A shard worker returns; `clean` means nil and `error` means its processing, renewal, or release path returned an error. |
+| `kinesis_consumer.worker_deregistered` | workers | `stream`, `consumer_group` | On a clean shutdown this worker atomically removed its own liveness entry, so surviving peers recompute fair share from its absence immediately instead of counting it until its heartbeat entry expires by TTL. Emitted at most once per run, and only when the lease manager supports deregistration; a failed or unsupported deregistration is not counted (the entry then expires by TTL, as after a crash). |
 
 ## Gauge catalog
 
