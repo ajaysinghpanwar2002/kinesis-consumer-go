@@ -249,6 +249,41 @@ func TestRunShardWorkerReturnsReleaseTimeout(t *testing.T) {
 	}
 }
 
+// TestRunShardWorkerTreatsCleanupReleaseErrNotOwnedAsHandoff pins Finding 2's
+// consumer-fatal path: the worker stops cleanly (cancellation, no renew-loop
+// lease-loss observed, so leaseLost stays false), and only the cleanup Release
+// reports ErrNotOwned because a peer claimed the shard during a rebalance race.
+// That is a shard-local handoff, so runShardWorker must return nil instead of
+// escalating it into a run-fatal error that would stop unrelated workers.
+func TestRunShardWorkerTreatsCleanupReleaseErrNotOwnedAsHandoff(t *testing.T) {
+	t.Parallel()
+
+	processStarted := make(chan string, 1)
+	// Renew returns nil, so the renew loop never observes loss (leaseLost stays
+	// false); only Release reports ErrNotOwned. A wide interval keeps both the
+	// renew ticker and the validity watchdog from firing before cancellation.
+	shardLease := &recordingReleaseLease{err: lease.ErrNotOwned}
+	c := newTestShardWorkerConsumer(time.Hour, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, shardID string) (string, int, error) {
+		processStarted <- shardID
+		<-ctx.Done()
+		return "", 0, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runShardWorker(ctx, c, "shard-1", shardLease)
+
+	if got := <-processStarted; got != "shard-1" {
+		t.Fatalf("processed shard = %q, want shard-1", got)
+	}
+	cancel()
+	waitShardWorkerDone(t, done, nil)
+
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
 func newTestShardWorkerConsumer(heartbeatInterval, heartbeatTTL time.Duration) *Consumer {
 	return &Consumer{
 		tuning: tuningConfig{

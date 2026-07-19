@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -1392,6 +1393,66 @@ func TestReleaseShardLeaseWithTimeoutReturnsDeadlineExceeded(t *testing.T) {
 	}
 	if shardLease.calls != 1 {
 		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+}
+
+// TestReleaseShardLeaseWithTimeoutTreatsErrNotOwnedAsHandoff pins Finding 2: a
+// cleanup Release that returns ErrNotOwned means a peer already claimed the
+// shard (a routine rebalance race), so it is a successful shard-local handoff —
+// not a consumer-fatal release failure. It must return nil, count the loss, and
+// leave the release-failure counter clean.
+func TestReleaseShardLeaseWithTimeoutTreatsErrNotOwnedAsHandoff(t *testing.T) {
+	t.Parallel()
+
+	reporter := &recordingReporter{}
+	c := newMetricsTestConsumer(reporter)
+	shardLease := &recordingReleaseLease{err: lease.ErrNotOwned}
+
+	err := c.releaseShardLeaseWithTimeout("shard-1", shardLease)
+	if err != nil {
+		t.Fatalf("releaseShardLeaseWithTimeout() error = %v, want nil (peer already owns the shard)", err)
+	}
+	if shardLease.calls != 1 {
+		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
+	}
+
+	lost := reporter.countersNamed(metricLeaseLost)
+	if len(lost) != 1 {
+		t.Fatalf("lease_lost calls = %d, want 1", len(lost))
+	}
+	assertCounterTags(t, lost[0], map[string]string{
+		"stream":         "stream",
+		"consumer_group": "group",
+		"shard":          "shard-1",
+	})
+	if failures := reporter.countersNamed(metricLeaseReleaseFailures); len(failures) != 0 {
+		t.Fatalf("lease_release_failures calls = %d, want 0 (routine handoff, not a failure)", len(failures))
+	}
+	if released := reporter.countersNamed(metricLeaseReleased); len(released) != 0 {
+		t.Fatalf("lease_released calls = %d, want 0 (nothing was released)", len(released))
+	}
+}
+
+// TestReleaseShardLeaseWithTimeoutErrNotOwnedTakesPrecedenceOverDeadline guards
+// that the ErrNotOwned handoff branch is checked before the deadline branch: an
+// ErrNotOwned that also happens to wrap a cancelled context must still be a
+// handoff, while a genuine release timeout (below) stays fatal.
+func TestReleaseShardLeaseWithTimeoutErrNotOwnedTakesPrecedenceOverDeadline(t *testing.T) {
+	t.Parallel()
+
+	reporter := &recordingReporter{}
+	c := newMetricsTestConsumer(reporter)
+	wrapped := fmt.Errorf("%w: %w", lease.ErrNotOwned, context.DeadlineExceeded)
+	shardLease := &recordingReleaseLease{err: wrapped}
+
+	if err := c.releaseShardLeaseWithTimeout("shard-1", shardLease); err != nil {
+		t.Fatalf("releaseShardLeaseWithTimeout() error = %v, want nil (ErrNotOwned wins over deadline)", err)
+	}
+	if lost := reporter.countersNamed(metricLeaseLost); len(lost) != 1 {
+		t.Fatalf("lease_lost calls = %d, want 1", len(lost))
+	}
+	if failures := reporter.countersNamed(metricLeaseReleaseFailures); len(failures) != 0 {
+		t.Fatalf("lease_release_failures calls = %d, want 0", len(failures))
 	}
 }
 
