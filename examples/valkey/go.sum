@@ -1,3 +1,7 @@
+github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.1.0 h1:aeGsT4GdMimNIvVPtZvuevPMbQA2YaACoXm1ZnkcfJY=
+github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.1.0/go.mod h1:Md6dNe498SvHmX9MMkl//FuxbYVLdafNrltnG2BVNsU=
+github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.1.0 h1:R5cPjMwfALrfnwGjSymUkJTMuZrlOiAho52969dt4Fs=
+github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.1.0/go.mod h1:hlK7gB+B0b0v0w6F8HmQhQNXBre9xJuxHBhbKNWeiRs=
 github.com/alicebob/miniredis/v2 v2.35.0 h1:QwLphYqCEAo1eu1TqPRN2jgVMPBweeQcR21jeqDCONI=
 github.com/alicebob/miniredis/v2 v2.35.0/go.mod h1:TcL7YfarKPGDAthEtl5NBeHZfeUQj6OXMm/+iu5cLMM=
 github.com/aws/aws-sdk-go-v2 v1.42.1 h1:9eOTgu1z/dVtYpNZ3/8/XbbaX0x/BqE3HUzAzs6K0ek=
