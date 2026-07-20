@@ -12,7 +12,7 @@ released together and share the version numbers below.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-14
+## [0.1.0] - 2026-07-20
 
 Initial public release. The library is pre-1.0: the API is frozen for this
 line but may still change in a future minor version (see
