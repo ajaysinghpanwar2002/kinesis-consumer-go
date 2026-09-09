@@ -2,6 +2,10 @@ package consumer
 
 import "errors"
 
+// ErrStaleDelivery marks an acknowledgment handle that is no longer valid.
+// Match it with errors.Is.
+var ErrStaleDelivery = errors.New("stale delivery")
+
 // ErrDrainTimeout is returned (wrapped) from Start when a graceful drain does
 // not finish within the WithGracefulDrain timeout. The returned error also
 // names the elapsed timeout in its message; match it with errors.Is.
