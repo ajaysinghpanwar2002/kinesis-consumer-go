@@ -16,4 +16,7 @@ use (
 // (see docs/releasing.md).
 replace github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.1.0 => .
 
+// The backend needs core APIs added after v0.1.0; keep its interim pin local too.
+replace github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.1.1-0.20260910080014-ead049a1d854 => .
+
 replace github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.1.0 => ./pkg/backend/valkey
