@@ -2,6 +2,8 @@ package lease
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"sort"
 	"sync"
 	"time"
@@ -28,8 +30,9 @@ type MemoryManager struct {
 }
 
 type leaseEntry struct {
-	owner  string
-	expiry time.Time
+	owner      string
+	generation string
+	expiry     time.Time
 }
 
 var (
@@ -55,24 +58,31 @@ func expired(expiry, t time.Time) bool {
 
 // Acquire claims a shard for owner when no live lease exists. It returns
 // (nil, false, nil) when the shard is already owned by a live lease.
-func (m *MemoryManager) Acquire(_ context.Context, streamName, shardID, owner string, ttl time.Duration) (Lease, bool, error) {
+func (m *MemoryManager) Acquire(ctx context.Context, streamName, shardID, owner string, ttl time.Duration) (Lease, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 
 	now := m.now()
 	if entry, ok := m.leases[streamName][shardID]; ok && !expired(entry.expiry, now) {
 		return nil, false, nil
 	}
 
-	m.setLeaseLocked(streamName, shardID, owner, now.Add(ttl))
-	return m.newLease(streamName, shardID, owner), true, nil
+	generation := newGeneration()
+	m.setLeaseLocked(streamName, shardID, owner, generation, now.Add(ttl))
+	return m.newLease(streamName, shardID, owner, generation), true, nil
 }
 
 // Claim transfers a shard from expectedOwner to newOwner when a live lease is
 // still held by expectedOwner. It returns (nil, false, nil) otherwise.
-func (m *MemoryManager) Claim(_ context.Context, streamName, shardID, expectedOwner, newOwner string, ttl time.Duration) (Lease, bool, error) {
+func (m *MemoryManager) Claim(ctx context.Context, streamName, shardID, expectedOwner, newOwner string, ttl time.Duration) (Lease, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 
 	now := m.now()
 	entry, ok := m.leases[streamName][shardID]
@@ -80,8 +90,9 @@ func (m *MemoryManager) Claim(_ context.Context, streamName, shardID, expectedOw
 		return nil, false, nil
 	}
 
-	m.setLeaseLocked(streamName, shardID, newOwner, now.Add(ttl))
-	return m.newLease(streamName, shardID, newOwner), true, nil
+	generation := newGeneration()
+	m.setLeaseLocked(streamName, shardID, newOwner, generation, now.Add(ttl))
+	return m.newLease(streamName, shardID, newOwner, generation), true, nil
 }
 
 // List returns the current live shard owners for a stream.
@@ -148,62 +159,78 @@ func (m *MemoryManager) Deregister(_ context.Context, streamName, owner string) 
 	return nil
 }
 
-func (m *MemoryManager) setLeaseLocked(streamName, shardID, owner string, expiry time.Time) {
+func (m *MemoryManager) setLeaseLocked(streamName, shardID, owner, generation string, expiry time.Time) {
 	shards := m.leases[streamName]
 	if shards == nil {
 		shards = make(map[string]leaseEntry)
 		m.leases[streamName] = shards
 	}
-	shards[shardID] = leaseEntry{owner: owner, expiry: expiry}
+	shards[shardID] = leaseEntry{owner: owner, generation: generation, expiry: expiry}
 }
 
-func (m *MemoryManager) newLease(streamName, shardID, owner string) *memoryLease {
-	return &memoryLease{mgr: m, stream: streamName, shard: shardID, owner: owner}
+func newGeneration() string {
+	var token [32]byte
+	_, _ = rand.Read(token[:]) // crypto/rand.Read cannot fail on supported Go versions.
+	return hex.EncodeToString(token[:])
 }
 
-// renew extends the lease TTL when owner still holds a live lease.
-func (m *MemoryManager) renew(streamName, shardID, owner string, ttl time.Duration) error {
+func (m *MemoryManager) newLease(streamName, shardID, owner, generation string) *memoryLease {
+	return &memoryLease{mgr: m, stream: streamName, shard: shardID, owner: owner, generation: generation}
+}
+
+// WithLease executes fn while holding the ownership lock after validating a
+// matching memory lease. It is the memory checkpoint backend's atomic write
+// boundary. fn must not call the manager or lease, or retain access after return.
+// A callback error does not invalidate ownership.
+func (m *MemoryManager) WithLease(ctx context.Context, held FencedLease, stream, shard string, fn func() error) error {
+	l, ok := held.(*memoryLease)
+	if !ok || l == nil || l.mgr != m || l.stream != stream || l.shard != shard {
+		return ErrLeaseMismatch
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	now := m.now()
-	entry, ok := m.leases[streamName][shardID]
-	if !ok || expired(entry.expiry, now) || entry.owner != owner {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entry, ok := m.leases[stream][shard]
+	if l.invalid || !ok || entry.owner != l.owner || entry.generation != l.generation || expired(entry.expiry, m.now()) {
+		l.invalid = true
 		return ErrNotOwned
 	}
-	m.setLeaseLocked(streamName, shardID, owner, now.Add(ttl))
-	return nil
+	return fn()
 }
 
-// release deletes the lease when owner still holds a live lease.
-func (m *MemoryManager) release(streamName, shardID, owner string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	entry, ok := m.leases[streamName][shardID]
-	if !ok || expired(entry.expiry, m.now()) || entry.owner != owner {
-		return ErrNotOwned
-	}
-	delete(m.leases[streamName], shardID)
-	return nil
-}
-
-// memoryLease is a single owned shard lease bound to its MemoryManager.
 type memoryLease struct {
-	mgr    *MemoryManager
-	stream string
-	shard  string
-	owner  string
+	mgr                              *MemoryManager
+	stream, shard, owner, generation string
+	invalid                          bool // guarded by mgr.mu
 }
 
-var _ Lease = (*memoryLease)(nil)
+var _ FencedLease = (*memoryLease)(nil)
 
-// Renew extends the lease TTL if the caller still owns it, else ErrNotOwned.
-func (l *memoryLease) Renew(_ context.Context, ttl time.Duration) error {
-	return l.mgr.renew(l.stream, l.shard, l.owner, ttl)
+func (l *memoryLease) Generation() string { return l.generation }
+
+func (l *memoryLease) Validate(ctx context.Context) error {
+	return l.mgr.WithLease(ctx, l, l.stream, l.shard, func() error { return nil })
 }
 
-// Release removes the lease if the caller still owns it, else ErrNotOwned.
-func (l *memoryLease) Release(_ context.Context) error {
-	return l.mgr.release(l.stream, l.shard, l.owner)
+func (l *memoryLease) Invalidate() {
+	l.mgr.mu.Lock()
+	defer l.mgr.mu.Unlock()
+	l.invalid = true
+}
+
+func (l *memoryLease) Renew(ctx context.Context, ttl time.Duration) error {
+	return l.mgr.WithLease(ctx, l, l.stream, l.shard, func() error {
+		l.mgr.setLeaseLocked(l.stream, l.shard, l.owner, l.generation, l.mgr.now().Add(ttl))
+		return nil
+	})
+}
+
+func (l *memoryLease) Release(ctx context.Context) error {
+	return l.mgr.WithLease(ctx, l, l.stream, l.shard, func() error {
+		delete(l.mgr.leases[l.stream], l.shard)
+		l.invalid = true
+		return nil
+	})
 }
