@@ -2,7 +2,8 @@
 
 `lease.FencedLease` and `checkpoint.FencedStore` are optional capabilities for
 binding progress to a single lease acquisition. This foundation implements them
-in memory. Consumer activation and Valkey support follow in later slices.
+in memory. [Valkey support](fenced-valkey.md) implements matching contracts.
+Consumer activation follows in a later slice.
 Existing consumer execution still uses the legacy store interface.
 
 Construct matching dependencies explicitly:

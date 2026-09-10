@@ -89,9 +89,10 @@ type CoordinationKeys struct {
 	LeaseOwners      string
 	LeaseExpirations string
 	Workers          string
+	LeaseGenerations string
 }
 
-// LeaseCoordinationKeys returns the v2 aggregate coordination keys. All keys
+// LeaseCoordinationKeys returns the v3 aggregate coordination keys. All keys
 // share one Redis Cluster hash tag and therefore route to the same slot.
 func LeaseCoordinationKeys(prefix, coordinationIdentity string) CoordinationKeys {
 	identity := base64.RawURLEncoding.EncodeToString([]byte(coordinationIdentity))
@@ -103,11 +104,12 @@ func LeaseCoordinationKeys(prefix, coordinationIdentity string) CoordinationKeys
 	}
 	// Escape prefix delimiters injectively so a custom prefix cannot introduce
 	// an earlier (or empty) hash tag.
-	base := fmt.Sprintf("%s:v2:{%s}", keyPrefixEscaper.Replace(prefix), identity)
+	base := fmt.Sprintf("%s:v3:{%s}", keyPrefixEscaper.Replace(prefix), identity)
 	return CoordinationKeys{
 		LeaseOwners:      base + ":lease-owners",
 		LeaseExpirations: base + ":lease-expirations",
 		Workers:          base + ":workers",
+		LeaseGenerations: base + ":lease-generations",
 	}
 }
 
@@ -183,8 +185,8 @@ local now = (time[1] * 1000) + math.floor(time[2] / 1000)
 `
 
 	// LeaseAcquireScript creates a lease only when no live lease exists.
-	// KEYS[1]=owners hash, KEYS[2]=expiration zset,
-	// ARGV[1]=shard, ARGV[2]=owner, ARGV[3]=ttl ms.
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset, KEYS[3]=generations hash,
+	// ARGV[1]=shard, ARGV[2]=owner, ARGV[3]=ttl ms, ARGV[4]=generation.
 	LeaseAcquireScript = leaseNowMilliseconds + `
 local expiration = redis.call("zscore", KEYS[2], ARGV[1])
 local current_owner = redis.call("hget", KEYS[1], ARGV[1])
@@ -192,76 +194,87 @@ if expiration and tonumber(expiration) > now and current_owner then
   return 0
 end
 redis.call("hdel", KEYS[1], ARGV[1])
+redis.call("hdel", KEYS[3], ARGV[1])
 redis.call("zrem", KEYS[2], ARGV[1])
 redis.call("hset", KEYS[1], ARGV[1], ARGV[2])
+redis.call("hset", KEYS[3], ARGV[1], ARGV[4])
 redis.call("zadd", KEYS[2], now + tonumber(ARGV[3]), ARGV[1])
 local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
 redis.call("pexpireat", KEYS[1], latest[2])
+redis.call("pexpireat", KEYS[3], latest[2])
 redis.call("pexpireat", KEYS[2], latest[2])
 return 1
 `
 
 	// LeaseClaimScript transfers a live lease only if its owner matches.
-	// KEYS[1]=owners hash, KEYS[2]=expiration zset,
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset, KEYS[3]=generations hash,
 	// ARGV[1]=shard, ARGV[2]=expected owner, ARGV[3]=ttl ms,
-	// ARGV[4]=new owner.
+	// ARGV[4]=new owner, ARGV[5]=new generation.
 	LeaseClaimScript = `
 ` + leaseNowMilliseconds + `
 local expiration = redis.call("zscore", KEYS[2], ARGV[1])
 local current_owner = redis.call("hget", KEYS[1], ARGV[1])
 if expiration and tonumber(expiration) > now and current_owner == ARGV[2] then
   redis.call("hset", KEYS[1], ARGV[1], ARGV[4])
+  redis.call("hset", KEYS[3], ARGV[1], ARGV[5])
   redis.call("zadd", KEYS[2], now + tonumber(ARGV[3]), ARGV[1])
   local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
   redis.call("pexpireat", KEYS[1], latest[2])
+  redis.call("pexpireat", KEYS[3], latest[2])
   redis.call("pexpireat", KEYS[2], latest[2])
   return 1
 end
 if not current_owner or not expiration or tonumber(expiration) <= now then
   redis.call("hdel", KEYS[1], ARGV[1])
+  redis.call("hdel", KEYS[3], ARGV[1])
   redis.call("zrem", KEYS[2], ARGV[1])
 end
 return 0
 `
 
 	// LeaseRenewScript extends the TTL only if the caller still owns the lease.
-	// KEYS[1]=owners hash, KEYS[2]=expiration zset,
-	// ARGV[1]=shard, ARGV[2]=owner, ARGV[3]=ttl ms.
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset, KEYS[3]=generations hash,
+	// ARGV[1]=shard, ARGV[2]=owner, ARGV[3]=ttl ms, ARGV[4]=generation.
 	LeaseRenewScript = leaseNowMilliseconds + `
 local expiration = redis.call("zscore", KEYS[2], ARGV[1])
 local current_owner = redis.call("hget", KEYS[1], ARGV[1])
-if expiration and tonumber(expiration) > now and current_owner == ARGV[2] then
+if expiration and tonumber(expiration) > now and current_owner == ARGV[2] and redis.call("hget", KEYS[3], ARGV[1]) == ARGV[4] then
   redis.call("zadd", KEYS[2], now + tonumber(ARGV[3]), ARGV[1])
   local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
   redis.call("pexpireat", KEYS[1], latest[2])
+  redis.call("pexpireat", KEYS[3], latest[2])
   redis.call("pexpireat", KEYS[2], latest[2])
   return 1
 end
 if not current_owner or not expiration or tonumber(expiration) <= now then
   redis.call("hdel", KEYS[1], ARGV[1])
+  redis.call("hdel", KEYS[3], ARGV[1])
   redis.call("zrem", KEYS[2], ARGV[1])
 end
 return 0
 `
 
 	// LeaseReleaseScript deletes the lease only if the caller still owns it.
-	// KEYS[1]=owners hash, KEYS[2]=expiration zset,
-	// ARGV[1]=shard, ARGV[2]=owner.
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset, KEYS[3]=generations hash,
+	// ARGV[1]=shard, ARGV[2]=owner, ARGV[3]=unused, ARGV[4]=generation.
 	LeaseReleaseScript = leaseNowMilliseconds + `
 local expiration = redis.call("zscore", KEYS[2], ARGV[1])
 local current_owner = redis.call("hget", KEYS[1], ARGV[1])
-if expiration and tonumber(expiration) > now and current_owner == ARGV[2] then
+if expiration and tonumber(expiration) > now and current_owner == ARGV[2] and redis.call("hget", KEYS[3], ARGV[1]) == ARGV[4] then
   redis.call("hdel", KEYS[1], ARGV[1])
+  redis.call("hdel", KEYS[3], ARGV[1])
   redis.call("zrem", KEYS[2], ARGV[1])
   local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
   if #latest > 0 then
     redis.call("pexpireat", KEYS[1], latest[2])
+    redis.call("pexpireat", KEYS[3], latest[2])
     redis.call("pexpireat", KEYS[2], latest[2])
   end
   return 1
 end
 if not current_owner or not expiration or tonumber(expiration) <= now then
   redis.call("hdel", KEYS[1], ARGV[1])
+  redis.call("hdel", KEYS[3], ARGV[1])
   redis.call("zrem", KEYS[2], ARGV[1])
 end
 return 0
@@ -269,7 +282,7 @@ return 0
 
 	// LeaseListScript returns a flat shard/owner array containing only live
 	// leases and removes expired or one-sided hash/zset entries atomically.
-	// KEYS[1]=owners hash, KEYS[2]=expiration zset.
+	// KEYS[1]=owners hash, KEYS[2]=expiration zset, KEYS[3]=generations hash.
 	LeaseListScript = leaseNowMilliseconds + `
 local result = {}
 local indexed = redis.call("zrange", KEYS[2], 0, -1, "withscores")
@@ -282,6 +295,7 @@ for i = 1, #indexed, 2 do
     result[#result + 1] = owner
   else
     redis.call("hdel", KEYS[1], shard)
+    redis.call("hdel", KEYS[3], shard)
     redis.call("zrem", KEYS[2], shard)
   end
 end
@@ -289,11 +303,13 @@ local owned = redis.call("hkeys", KEYS[1])
 for i = 1, #owned do
   if not redis.call("zscore", KEYS[2], owned[i]) then
     redis.call("hdel", KEYS[1], owned[i])
+    redis.call("hdel", KEYS[3], owned[i])
   end
 end
 local latest = redis.call("zrevrange", KEYS[2], 0, 0, "withscores")
 if #latest > 0 then
   redis.call("pexpireat", KEYS[1], latest[2])
+  redis.call("pexpireat", KEYS[3], latest[2])
   redis.call("pexpireat", KEYS[2], latest[2])
 end
 return result

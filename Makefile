@@ -158,6 +158,11 @@ integration:
 	$(DOCKER) compose -f $(INTEGRATION_COMPOSE) down -v; \
 	exit $$status
 
+# Real Valkey cluster and AOF crash/restart coverage. Tests own isolated containers.
+.PHONY: valkey-integration
+valkey-integration:
+	$(GO) test -tags integration -count=1 -timeout 300s ./pkg/backend/valkey/checkpoint
+
 .PHONY: docker-build
 docker-build:
 	$(DOCKER) build --build-arg GO_VERSION=$(DOCKER_GO_VERSION) -t $(DOCKER_IMAGE) .
