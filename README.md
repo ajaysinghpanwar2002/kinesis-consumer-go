@@ -43,6 +43,7 @@ go get github.com/ajaysinghpanwar2002/kinesis-consumer-go
 - [Handler failure policy, DLQ, and shard concurrency](docs/handler-behavior.md)
 - [Logging](docs/logging.md) — enabling `WithLogger`, the complete structured event catalog with levels and attributes, and production guidance.
 - [Metrics](docs/metrics.md) — enabling `WithMetrics`, the complete metric and tag catalog, statsd wire conventions, and the Telegraf/InfluxDB/Grafana path.
+- [Fenced memory storage](docs/fenced-memory.md) — optional lease/session contracts, recovery state, and durability limits; consumer integration is pending.
 - [Integration test suite](docs/testing.md) — a verifiable ledger of every integration scenario and the behavior it proves.
 
 ## Examples

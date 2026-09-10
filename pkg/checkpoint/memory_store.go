@@ -4,25 +4,31 @@ import (
 	"context"
 	"strings"
 	"sync"
+
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 // MemoryStore is an in-memory Store implementation intended for tests and
 // local development. It keeps per-shard sequence numbers in a map guarded by a
-// read/write mutex and never returns an error.
+// read/write mutex. Fenced sessions additionally share the lease ownership lock.
+// State survives lease cleanup, but not process termination.
 //
 // The key scheme streamName + ":" + shardID is ambiguous in the abstract, but
 // AWS stream and shard names cannot contain ':', so no real collision is
 // reachable.
 type MemoryStore struct {
-	mu   sync.RWMutex
-	data map[string]string
+	mu       sync.RWMutex
+	data     map[string]string
+	initial  map[string]string
+	registry map[string]RecoveryKind
+	manager  *lease.MemoryManager
 }
 
 var _ Store = (*MemoryStore)(nil)
 
 // NewMemoryStore returns an empty in-memory checkpoint store.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{data: make(map[string]string)}
+	return &MemoryStore{data: make(map[string]string), initial: make(map[string]string), registry: make(map[string]RecoveryKind)}
 }
 
 // Get returns the stored sequence number for the shard, or ("", nil) when no
@@ -43,6 +49,11 @@ func (m *MemoryStore) Save(_ context.Context, streamName, shardID, sequenceNumbe
 	key := m.key(streamName, shardID)
 	if checkpointAdvances(m.data[key], sequenceNumber) {
 		m.data[key] = sequenceNumber
+		m.registry[key] = RecoveryCheckpoint
+		if strings.HasPrefix(sequenceNumber, CompletedPrefix) {
+			m.registry[key] = RecoveryCompleted
+		}
+		delete(m.initial, key)
 	}
 	return nil
 }
@@ -75,7 +86,10 @@ func checkpointAdvances(current, next string) bool {
 func (m *MemoryStore) Delete(_ context.Context, streamName, shardID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.data, m.key(streamName, shardID))
+	key := m.key(streamName, shardID)
+	delete(m.data, key)
+	delete(m.initial, key)
+	delete(m.registry, key)
 	return nil
 }
 
