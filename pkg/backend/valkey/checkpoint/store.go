@@ -16,6 +16,7 @@ import (
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/internal/backend"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/internal/layout"
 	valkeylease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/lease"
 	corecheckpoint "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
 	consumerlease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
@@ -40,7 +41,23 @@ var ErrInvalidStoredCheckpoint = errors.New("stored checkpoint value is not a va
 // checkpointSaveScript wraps the save script for EVALSHA execution: the
 // script body is sent once and subsequent saves — the store's hot path —
 // reference it by hash.
-var checkpointSaveScript = valkey.NewLuaScript(backend.CheckpointSaveScript)
+var checkpointSaveScript = valkey.NewLuaScript(`
+local registryType = redis.call("type",KEYS[2]).ok
+if registryType ~= "none" and registryType ~= "hash" then
+ return redis.error_reply("INVALIDCHECKPOINT invalid registry type")
+end
+local function save()
+` + backend.CheckpointSaveScript + `
+end
+local result = save()
+if result == 1 then
+ local kind = "checkpoint"
+ if string.sub(ARGV[1],1,#ARGV[2]) == ARGV[2] then kind = "completed" end
+ redis.call("hset",KEYS[2],ARGV[3],kind)
+ redis.call("del",KEYS[3])
+end
+return result
+`)
 
 // Config controls how the checkpoint store connects and where it writes keys.
 type Config = backend.CheckpointConfig
@@ -64,7 +81,7 @@ type Store struct {
 // New creates a Store connected to addr. Keys are written in the versioned
 // injective format:
 //
-//	<escapedKeyPrefix>:v2:<enc(coordinationIdentity)>:<enc(shardID)>
+//	<escapedKeyPrefix>:v3:{<enc(coordinationIdentity)>}:recovery:<enc(shardID)>
 //
 // where enc is unpadded base64url and hash-tag delimiters in the prefix are
 // escaped, mirroring the lease key encoding. The consumer supplies
@@ -101,6 +118,10 @@ func New(addr string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("ping valkey: %w", err)
 	}
 
+	if err := layout.Check(ctx, client, cfg.KeyPrefix, cfg.LeasePrefix, cfg.LeasePrefix+"-worker"); err != nil {
+		client.Close()
+		return nil, err
+	}
 	return &Store{
 		client:    client,
 		keyPrefix: cfg.KeyPrefix,
@@ -149,8 +170,8 @@ func (s *Store) Get(ctx context.Context, streamName, shardID string) (string, er
 // an error wrapping ErrInvalidStoredCheckpoint rather than silently
 // discarding it.
 func (s *Store) Save(ctx context.Context, streamName, shardID, sequenceNumber string) error {
-	resp := checkpointSaveScript.Exec(ctx, s.client, []string{s.key(streamName, shardID)},
-		[]string{sequenceNumber, corecheckpoint.CompletedPrefix})
+	resp := checkpointSaveScript.Exec(ctx, s.client, []string{s.key(streamName, shardID), backend.RecoveryRegistryKey(s.keyPrefix, streamName), s.key(streamName, shardID) + ":initial"},
+		[]string{sequenceNumber, corecheckpoint.CompletedPrefix, shardID})
 	if err := resp.Error(); err != nil {
 		// Only a server error reply whose message carries the script's error
 		// code is the corruption signal; anything else stays a plain backend
@@ -163,10 +184,11 @@ func (s *Store) Save(ctx context.Context, streamName, shardID, sequenceNumber st
 	return nil
 }
 
-// Delete removes the checkpoint for a shard. Deleting a missing key is a no-op.
+// Delete resets checkpoint, initial position, and registry entry for a shard.
+// This unfenced administrative operation requires consumers to be stopped.
 func (s *Store) Delete(ctx context.Context, streamName, shardID string) error {
 	key := s.key(streamName, shardID)
-	if err := s.client.Do(ctx, s.client.B().Del().Key(key).Build()).Error(); err != nil {
+	if err := checkpointDeleteScript.Exec(ctx, s.client, []string{key, backend.RecoveryRegistryKey(s.keyPrefix, streamName), key + ":initial"}, []string{shardID}).Error(); err != nil {
 		return fmt.Errorf("delete checkpoint %s/%s: %w", streamName, shardID, err)
 	}
 	return nil
@@ -342,3 +364,9 @@ func newClient(cfg Config) (valkey.Client, error) {
 	}
 	return valkey.NewClient(opts)
 }
+
+var checkpointDeleteScript = valkey.NewLuaScript(`
+redis.call("hdel",KEYS[2],ARGV[1])
+redis.call("del",KEYS[1],KEYS[3])
+return 1
+`)

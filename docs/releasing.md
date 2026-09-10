@@ -56,6 +56,18 @@ builds the pruned module graph for a transitively-imported dependency, and a
 The replacement versions must match the `require` versions in the `go.mod`
 files. When you bump the release version, update both (see below).
 
+Between releases, backend changes may require core APIs newer than the latest
+release tag. Pin the backend to a reachable core commit's Go pseudo-version and
+record its checksums with `GOWORK=off go mod tidy`; do not leave a release pin that
+cannot build the backend independently. Add a matching `go.work` replacement so
+workspace development still uses the local core. Slice 3 currently pins core
+`v0.1.1-0.20260910080014-ead049a1d854`, which contains its fenced APIs and v3 keys.
+The example and integration modules retain their matched released dependency
+pins outside workspace mode. At the next coordinated release, replace the
+interim pseudo-version and remove its workspace replacement along with the other
+version updates below.
+
+
 ## Cutting a release
 
 1. Decide the new version `vX.Y.Z`.
