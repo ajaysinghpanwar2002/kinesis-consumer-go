@@ -45,9 +45,9 @@ func newTestManager(t *testing.T, opts ...Option) (*Manager, *miniredis.Miniredi
 func seedIndexedLease(t *testing.T, mgr *Manager, streamName, shardID, owner string, ttl time.Duration) {
 	t.Helper()
 	keys := mgr.keys(streamName)
-	res, err := mgr.client.Do(context.Background(), mgr.client.B().Eval().Script(backend.LeaseAcquireScript).Numkeys(2).
-		Key(keys.LeaseOwners, keys.LeaseExpirations).
-		Arg(shardID, owner, strconv.FormatInt(ttl.Milliseconds(), 10)).Build()).ToInt64()
+	res, err := mgr.client.Do(context.Background(), mgr.client.B().Eval().Script(backend.LeaseAcquireScript).Numkeys(3).
+		Key(keys.LeaseOwners, keys.LeaseExpirations, keys.LeaseGenerations).
+		Arg(shardID, owner, strconv.FormatInt(ttl.Milliseconds(), 10), "seed-generation").Build()).ToInt64()
 	if err != nil || res != 1 {
 		t.Fatalf("seed indexed lease = (%d, %v), want (1, nil)", res, err)
 	}

@@ -90,25 +90,18 @@ func FinalizeCheckpointConfig(cfg CheckpointConfig, backendName string) (Checkpo
 	return cfg, nil
 }
 
-// CheckpointKey formats the versioned key used to store a shard checkpoint:
-//
-//	<escapedPrefix>:v2:<enc(streamName)>:<enc(shardID)>
-//
-// where enc is unpadded base64url. The encoding is injective — the base64url
-// alphabet excludes the ":" delimiter, so distinct (stream, shard) pairs can
-// never collide even when a segment itself contains ":" — and the v2 segment
-// anchors future format migrations, mirroring the lease layer's encoding.
-// The consumer passes its coordination identity ("<group>:<stream>") as
-// streamName, so the encoded segment equals the lease keys' identity64.
-// Unlike lease keys there is no cluster hash tag: every checkpoint operation
-// is single-key, and untagged per-shard keys stay spread across cluster
-// slots.
+// CheckpointKey shares the coordination hash tag with ownership and registry keys.
 func CheckpointKey(prefix, streamName, shardID string) string {
-	return fmt.Sprintf("%s:v2:%s:%s",
-		keyPrefixEscaper.Replace(prefix),
-		base64.RawURLEncoding.EncodeToString([]byte(streamName)),
-		base64.RawURLEncoding.EncodeToString([]byte(shardID)),
-	)
+	return RecoveryRegistryKey(prefix, streamName) + ":" + base64.RawURLEncoding.EncodeToString([]byte(shardID))
+}
+
+// RecoveryRegistryKey stores persistent shard initialization kinds separately from values.
+func RecoveryRegistryKey(prefix, streamName string) string {
+	identity := base64.RawURLEncoding.EncodeToString([]byte(streamName))
+	if identity == "" {
+		identity = "-"
+	}
+	return fmt.Sprintf("%s:v3:{%s}:recovery", keyPrefixEscaper.Replace(prefix), identity)
 }
 
 // DefaultLeasePrefix derives a lease prefix from a checkpoint prefix. The

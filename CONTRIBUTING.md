@@ -42,3 +42,10 @@ resolves the newest patched toolchain (`check-latest`), so a stale local
 toolchain is never the version of record.
 
 Useful targets: `make test`, `make build`, `make vet`, `make fmt-check`, `make lint`, `make integration-build`, `make test-race`, `make vulncheck`, `make tidy`.
+
+`make valkey-integration` runs the Valkey fencing tests against three real cluster
+primaries and an AOF-backed server killed and restarted with its data intact.
+It requires Docker and free loopback ports 17000–17002 and 17379. Each test
+creates and removes its own containers and volumes. `make integration` remains
+the LocalStack/Kinesis consumer suite. See [Valkey recovery](docs/fenced-valkey.md)
+for the supported durability profile and development reset procedure.

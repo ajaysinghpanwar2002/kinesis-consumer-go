@@ -133,7 +133,7 @@ func TestFinalizeCheckpointConfigDefaultsAndPreservation(t *testing.T) {
 	}
 }
 
-// TestCheckpointKey pins the stored v2 key format; changing any literal here
+// TestCheckpointKey pins the stored v3 key format; changing any literal here
 // is a breaking stored-format change and needs a version bump plus a
 // migration note in docs/configuration.md.
 func TestCheckpointKey(t *testing.T) {
@@ -151,21 +151,21 @@ func TestCheckpointKey(t *testing.T) {
 			prefix: "kinesis-checkpoint",
 			stream: "stream",
 			shard:  "shard-1",
-			want:   "kinesis-checkpoint:v2:c3RyZWFt:c2hhcmQtMQ",
+			want:   "kinesis-checkpoint:v3:{c3RyZWFt}:recovery:c2hhcmQtMQ",
 		},
 		{
 			name:   "coordination identity encodes with its group delimiter",
 			prefix: "kinesis-checkpoint",
 			stream: "group-a:orders",
 			shard:  "shard-1",
-			want:   "kinesis-checkpoint:v2:Z3JvdXAtYTpvcmRlcnM:c2hhcmQtMQ",
+			want:   "kinesis-checkpoint:v3:{Z3JvdXAtYTpvcmRlcnM}:recovery:c2hhcmQtMQ",
 		},
 		{
 			name:   "prefix hash-tag delimiters are escaped like lease keys",
 			prefix: "ten{ant}%",
 			stream: "stream",
 			shard:  "shard-1",
-			want:   "ten%7Bant%7D%25:v2:c3RyZWFt:c2hhcmQtMQ",
+			want:   "ten%7Bant%7D%25:v3:{c3RyZWFt}:recovery:c2hhcmQtMQ",
 		},
 	}
 
