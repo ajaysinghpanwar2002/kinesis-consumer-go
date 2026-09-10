@@ -6,7 +6,9 @@ package lease
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"sync"
@@ -15,6 +17,8 @@ import (
 	valkey "github.com/valkey-io/valkey-go"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/internal/backend"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/internal/ctxlock"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/internal/layout"
 	consumerlease "github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
@@ -70,9 +74,10 @@ var (
 // (exclusive in steady state — see the lease.Manager contract for the
 // ownership-transfer windows). Versioned aggregate keys are written as:
 //
-//	<EscapedKeyPrefix>:v2:{<base64url(coordinationIdentity)>}:lease-owners
-//	<EscapedKeyPrefix>:v2:{<base64url(coordinationIdentity)>}:lease-expirations
-//	<EscapedKeyPrefix>:v2:{<base64url(coordinationIdentity)>}:workers
+//	<EscapedKeyPrefix>:v3:{<base64url(coordinationIdentity)>}:lease-generations
+//	<EscapedKeyPrefix>:v3:{<base64url(coordinationIdentity)>}:lease-owners
+//	<EscapedKeyPrefix>:v3:{<base64url(coordinationIdentity)>}:lease-expirations
+//	<EscapedKeyPrefix>:v3:{<base64url(coordinationIdentity)>}:workers
 //
 // The shared hash tag routes every structure for an identity to one Redis
 // Cluster slot. The consumer supplies coordinationIdentity as
@@ -82,6 +87,7 @@ type Manager struct {
 	client    valkey.Client
 	keyPrefix string
 	slots     *backend.SlotTracker
+	cfg       Config
 }
 
 // NewManager creates a Manager connected to addr. It validates the resulting
@@ -116,7 +122,12 @@ func NewManager(addr string, opts ...Option) (*Manager, error) {
 		return nil, fmt.Errorf("ping valkey: %w", err)
 	}
 
+	if err := layout.Check(ctx, client, cfg.KeyPrefix, cfg.KeyPrefix+"-worker"); err != nil {
+		client.Close()
+		return nil, err
+	}
 	return &Manager{
+		cfg:       cfg,
 		client:    client,
 		keyPrefix: cfg.KeyPrefix,
 		slots:     backend.NewSlotTracker(cfg.MaxLeases),
@@ -138,6 +149,11 @@ func (m *Manager) Acquire(ctx context.Context, streamName, shardID, owner string
 		return nil, false, fmt.Errorf("acquire lease %s/%s: %w", streamName, shardID, err)
 	}
 	keys := m.keys(streamName)
+	token := make([]byte, 32)
+	if _, err := rand.Read(token); err != nil {
+		return nil, false, fmt.Errorf("lease generation: %w", err)
+	}
+	generation := hex.EncodeToString(token)
 	slotKey := keys.LeaseOwners + "\x00" + shardID
 	releaseSlot, ok := m.slots.Reserve(slotKey)
 	if !ok {
@@ -145,8 +161,8 @@ func (m *Manager) Acquire(ctx context.Context, streamName, shardID, owner string
 	}
 
 	resp := leaseAcquireScript.Exec(ctx, m.client,
-		[]string{keys.LeaseOwners, keys.LeaseExpirations},
-		[]string{shardID, owner, strconv.FormatInt(ttl.Milliseconds(), 10)})
+		[]string{keys.LeaseOwners, keys.LeaseExpirations, keys.LeaseGenerations},
+		[]string{shardID, owner, strconv.FormatInt(ttl.Milliseconds(), 10), generation})
 	res, err := resp.ToInt64()
 	if err != nil {
 		releaseSlot()
@@ -158,12 +174,16 @@ func (m *Manager) Acquire(ctx context.Context, streamName, shardID, owner string
 	}
 
 	return &valkeyLease{
-		client:      m.client,
-		ownersKey:   keys.LeaseOwners,
-		expiriesKey: keys.LeaseExpirations,
-		shardID:     shardID,
-		owner:       owner,
-		done:        releaseSlot,
+		client:         m.client,
+		manager:        m,
+		stream:         streamName,
+		generation:     generation,
+		generationsKey: keys.LeaseGenerations,
+		ownersKey:      keys.LeaseOwners,
+		expiriesKey:    keys.LeaseExpirations,
+		shardID:        shardID,
+		owner:          owner,
+		done:           releaseSlot,
 	}, true, nil
 }
 
@@ -171,7 +191,7 @@ func (m *Manager) Acquire(ctx context.Context, streamName, shardID, owner string
 func (m *Manager) List(ctx context.Context, streamName string) (map[string]string, error) {
 	keys := m.keys(streamName)
 	result, err := leaseListScript.Exec(ctx, m.client,
-		[]string{keys.LeaseOwners, keys.LeaseExpirations}, nil).AsStrMap()
+		[]string{keys.LeaseOwners, keys.LeaseExpirations, keys.LeaseGenerations}, nil).AsStrMap()
 	if err != nil {
 		return nil, fmt.Errorf("list leases %s: %w", streamName, err)
 	}
@@ -187,6 +207,11 @@ func (m *Manager) Claim(ctx context.Context, streamName, shardID, expectedOwner,
 		return nil, false, fmt.Errorf("claim lease %s/%s: %w", streamName, shardID, err)
 	}
 	keys := m.keys(streamName)
+	token := make([]byte, 32)
+	if _, err := rand.Read(token); err != nil {
+		return nil, false, fmt.Errorf("lease generation: %w", err)
+	}
+	generation := hex.EncodeToString(token)
 	slotKey := keys.LeaseOwners + "\x00" + shardID
 	releaseSlot, ok := m.slots.Reserve(slotKey)
 	if !ok {
@@ -194,8 +219,8 @@ func (m *Manager) Claim(ctx context.Context, streamName, shardID, expectedOwner,
 	}
 
 	resp := leaseClaimScript.Exec(ctx, m.client,
-		[]string{keys.LeaseOwners, keys.LeaseExpirations},
-		[]string{shardID, expectedOwner, strconv.FormatInt(ttl.Milliseconds(), 10), newOwner})
+		[]string{keys.LeaseOwners, keys.LeaseExpirations, keys.LeaseGenerations},
+		[]string{shardID, expectedOwner, strconv.FormatInt(ttl.Milliseconds(), 10), newOwner, generation})
 	res, err := resp.ToInt64()
 	if err != nil {
 		releaseSlot()
@@ -207,12 +232,16 @@ func (m *Manager) Claim(ctx context.Context, streamName, shardID, expectedOwner,
 	}
 
 	return &valkeyLease{
-		client:      m.client,
-		ownersKey:   keys.LeaseOwners,
-		expiriesKey: keys.LeaseExpirations,
-		shardID:     shardID,
-		owner:       newOwner,
-		done:        releaseSlot,
+		client:         m.client,
+		manager:        m,
+		stream:         streamName,
+		generation:     generation,
+		generationsKey: keys.LeaseGenerations,
+		ownersKey:      keys.LeaseOwners,
+		expiriesKey:    keys.LeaseExpirations,
+		shardID:        shardID,
+		owner:          newOwner,
+		done:           releaseSlot,
 	}, true, nil
 }
 
@@ -270,12 +299,16 @@ func (m *Manager) keys(streamName string) backend.CoordinationKeys {
 // SlotTracker reservation and is guarded by once so it runs at most once across
 // Renew (on loss of ownership) and Release.
 type valkeyLease struct {
-	client      valkey.Client
-	ownersKey   string
-	expiriesKey string
-	shardID     string
-	owner       string
-	done        func()
+	manager                            *Manager
+	stream, generation, generationsKey string
+	mu                                 ctxlock.Mutex
+	invalid                            bool
+	client                             valkey.Client
+	ownersKey                          string
+	expiriesKey                        string
+	shardID                            string
+	owner                              string
+	done                               func()
 
 	once sync.Once
 }
@@ -285,29 +318,45 @@ type valkeyLease struct {
 // below one millisecond is an error: it would truncate the live lease to a
 // zero lifetime.
 func (l *valkeyLease) Renew(ctx context.Context, ttl time.Duration) error {
+	if err := l.mu.Lock(ctx); err != nil {
+		return err
+	}
+	defer l.mu.Unlock()
+	if l.invalid {
+		return consumerlease.ErrNotOwned
+	}
 	if err := validateTTL(ttl); err != nil {
 		return fmt.Errorf("renew lease %s: %w", l.shardID, err)
 	}
 	resp := leaseRenewScript.Exec(ctx, l.client,
-		[]string{l.ownersKey, l.expiriesKey},
-		[]string{l.shardID, l.owner, strconv.FormatInt(ttl.Milliseconds(), 10)})
+		[]string{l.ownersKey, l.expiriesKey, l.generationsKey},
+		[]string{l.shardID, l.owner, strconv.FormatInt(ttl.Milliseconds(), 10), l.generation})
 	res, err := resp.ToInt64()
 	if err != nil {
 		return fmt.Errorf("renew lease %s: %w", l.shardID, err)
 	}
 	if res == 0 {
-		l.once.Do(l.done)
+		l.invalidateLocked()
 		return consumerlease.ErrNotOwned
 	}
 	return nil
 }
 
-// Release deletes the key only when owned by the caller. It always releases the
-// slot reservation, and returns ErrNotOwned when the caller no longer owns the
-// lease.
+// Release deletes ownership only when owned by the caller. Once serialization
+// is acquired, it always releases the local slot reservation. Cancellation while
+// queued leaves the lease unchanged, allowing the caller to retry cleanup.
+// It returns ErrNotOwned when the caller no longer owns the lease.
 func (l *valkeyLease) Release(ctx context.Context) error {
+	if err := l.mu.Lock(ctx); err != nil {
+		return err
+	}
+	defer l.mu.Unlock()
+	if l.invalid {
+		return consumerlease.ErrNotOwned
+	}
+	defer l.invalidateLocked()
 	resp := leaseReleaseScript.Exec(ctx, l.client,
-		[]string{l.ownersKey, l.expiriesKey}, []string{l.shardID, l.owner})
+		[]string{l.ownersKey, l.expiriesKey, l.generationsKey}, []string{l.shardID, l.owner, "", l.generation})
 	res, err := resp.ToInt64()
 	l.once.Do(l.done)
 	if err != nil {

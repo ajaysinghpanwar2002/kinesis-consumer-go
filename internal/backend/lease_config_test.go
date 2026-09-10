@@ -110,7 +110,7 @@ func TestFinalizeLeaseConfigDefaultsAndPreservation(t *testing.T) {
 
 func TestLeaseCoordinationKeys(t *testing.T) {
 	keys := LeaseCoordinationKeys("kinesis-lease", "group:stream")
-	wantBase := "kinesis-lease:v2:{Z3JvdXA6c3RyZWFt}"
+	wantBase := "kinesis-lease:v3:{Z3JvdXA6c3RyZWFt}"
 	if keys.LeaseOwners != wantBase+":lease-owners" {
 		t.Fatalf("LeaseOwners = %q, want %q", keys.LeaseOwners, wantBase+":lease-owners")
 	}
@@ -132,7 +132,7 @@ func TestLeaseCoordinationKeysEncodeHashTagDelimiters(t *testing.T) {
 		if strings.Count(key, "{") != 1 || strings.Count(key, "}") != 1 {
 			t.Fatalf("%s key %q contains an injectable hash tag", name, key)
 		}
-		if !strings.HasPrefix(key, "prefix%7B%7D%257B:v2:") {
+		if !strings.HasPrefix(key, "prefix%7B%7D%257B:v3:") {
 			t.Fatalf("%s key %q does not injectively escape the prefix", name, key)
 		}
 	}

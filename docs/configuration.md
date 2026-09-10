@@ -139,10 +139,13 @@ Valkey without sharing progress or ownership:
 
 | State | Format | Default prefix |
 | --- | --- | --- |
-| Checkpoint | `<escapedCheckpointPrefix>:v2:<identity64>:<shard64>` | `kinesis-checkpoint` |
-| Lease owners (hash) | `<escapedLeasePrefix>:v2:{<identity64>}:lease-owners` | `kinesis-lease` |
-| Lease expirations (sorted set) | `<escapedLeasePrefix>:v2:{<identity64>}:lease-expirations` | `kinesis-lease` |
-| Worker expirations (sorted set) | `<escapedLeasePrefix>:v2:{<identity64>}:workers` | `kinesis-lease` |
+| Checkpoint | `<escapedCheckpointPrefix>:v3:{<identity64>}:recovery:<shard64>` | `kinesis-checkpoint` |
+| Initial position | `<escapedCheckpointPrefix>:v3:{<identity64>}:recovery:<shard64>:initial` | `kinesis-checkpoint` |
+| Recovery registry (hash) | `<escapedCheckpointPrefix>:v3:{<identity64>}:recovery` | `kinesis-checkpoint` |
+| Lease generations (hash) | `<escapedLeasePrefix>:v3:{<identity64>}:lease-generations` | `kinesis-lease` |
+| Lease owners (hash) | `<escapedLeasePrefix>:v3:{<identity64>}:lease-owners` | `kinesis-lease` |
+| Lease expirations (sorted set) | `<escapedLeasePrefix>:v3:{<identity64>}:lease-expirations` | `kinesis-lease` |
+| Worker expirations (sorted set) | `<escapedLeasePrefix>:v3:{<identity64>}:workers` | `kinesis-lease` |
 
 `<group>` is `ConsumerGroup`. `<stream>` is the canonical Kinesis stream name:
 `StreamName` directly, or the name extracted from the `stream/<name>` resource
@@ -153,12 +156,11 @@ stream therefore share one coordination namespace.
 `<group>:<stream>`, and `<shard64>` the same encoding of the shard ID. The
 base64url alphabet excludes the `:` delimiter, so the keys are injective —
 group, stream, or shard values containing `:` can never make two distinct
-identities collide — and the `v2` segment anchors future format migrations.
-Braces in the lease keys are the Redis Cluster hash tag: all three aggregate
-coordination structures for one identity route to one slot, so their Lua
-updates are atomic. Checkpoint keys deliberately carry no hash tag — every
-checkpoint operation is single-key, and untagged per-shard keys stay spread
-across cluster slots. Lease hashes map shard ID to owner; lease and worker
+identities collide — and the `v3` segment anchors future format migrations.
+Braces are the Redis Cluster hash tag: ownership and persistent recovery keys
+for one identity route to one slot, allowing atomic fenced writes. An empty
+identity uses `-` as its tag to avoid Redis ignoring an empty hash tag.
+Lease hashes map shard ID to owner; lease and worker
 sorted sets map their member to an absolute server-time expiration in
 milliseconds. Snapshots query only these aggregate keys, remove expired or
 inconsistent entries atomically, and do not scan unrelated database keys or
@@ -173,48 +175,9 @@ the store derives `<checkpointPrefix>-lease` — any standalone manager in that
 deployment must be given the matching prefix explicitly, or its workers will
 lease in a separate namespace and process every shard twice.
 
-### Migration note: v2 checkpoint key encoding
+### Upgrade to v3
 
-The `v2` checkpoint key format (escaped prefix, versioned segment,
-base64url-encoded identity and shard) replaces the earlier raw
-`<prefix>:<group>:<stream>:<shard>` join. This is a pre-v1 breaking
-stored-format change with no legacy dual-read: old checkpoints are not
-visible under the new keys. No published tag used the old scheme, so no
-deployment migration exists; if a pre-release deployment must retain
-progress, copy checkpoint values to their v2 keys out of band before
-restarting, and never run old and new workers concurrently.
-
-### Migration note: indexed lease and heartbeat scheme
-
-The `v2` aggregate lease/heartbeat structures replace the earlier per-shard
-lease and per-worker heartbeat keys. This is a pre-v1 breaking format change
-with no legacy dual-read or dual-write. Lease and heartbeat state is ephemeral,
-but old and new workers do not coordinate: stop every old worker, upgrade the
-whole group, and then restart. Never perform a rolling mixed-version deployment.
-Checkpoints are unchanged and consumption resumes from the existing progress.
-
-### Historical migration note: consumer-group key scheme
-
-The consumer-group segment is a pre-v1 breaking key-format change. There is no
-legacy dual-read or automatic checkpoint migration because no published tag
-used the old scheme. Old checkpoints are not visible under the new keys, and
-old and new workers do not coordinate. Stop every old worker before upgrading,
-then restart all workers with the same intended `ConsumerGroup`; do not perform
-a rolling mixed-version deployment. Copy or rename checkpoint keys out of band
-before restart only when retaining the old progress is required.
-
-### Historical migration note: default lease prefix change
-
-Store-provided lease managers with default prefixes previously wrote lease
-and worker-heartbeat keys under `kinesis-checkpoint-lease(-worker)`; they now
-use `kinesis-lease(-worker)`, matching the standalone default. When upgrading
-a deployment that used the old default:
-
-- Checkpoints are unaffected; lease and heartbeat keys are ephemeral TTL
-  state that simply regrows under the new prefix.
-- Do **not** roll the upgrade gradually: old and new workers would
-  coordinate in different namespaces and dual-process every shard until the
-  last old worker stops. Stop all workers, upgrade, then restart.
-- At the time, the old prefix could be pinned explicitly with
-  `WithLeasePrefix("kinesis-checkpoint-lease")`. Prefix selection does not
-  restore the pre-v2 per-member format described above.
+Constructors reject older state under configured prefixes without resetting it.
+Stop consumers before upgrading; mixed-version operation is unsupported. Recovery
+state persists independently of lease and worker TTLs. See [fenced Valkey storage](fenced-valkey.md)
+for durability assumptions, incompatibility detection, and explicit development resets.

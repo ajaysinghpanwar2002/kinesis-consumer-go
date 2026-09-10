@@ -281,21 +281,23 @@ All coordination state lives under consumer-group and canonical-stream
 segments plus configurable key prefixes, so multiple applications and streams
 can share one Valkey without colliding:
 
-- Checkpoints: `<escapedCheckpointPrefix>:v2:<identity64>:<shard64>` (default prefix
+- Checkpoints: `<escapedCheckpointPrefix>:v3:{<identity64>}:recovery:<shard64>` (default prefix
   `kinesis-checkpoint`; override with `WithKeyPrefix`). `<shard64>` is
   unpadded base64url of the shard ID, so keys stay injective even when a
   group, stream, or shard name contains `:`.
-- Lease owners and expirations: per-identity hash/sorted-set structures under
-  `<leasePrefix>:v2:{<identity64>}:lease-*`, where `leasePrefix` defaults to
+- Lease owners, generations, and expirations: per-identity hash/sorted-set structures under
+  `<leasePrefix>:v3:{<identity64>}:lease-*`, where `leasePrefix` defaults to
   `kinesis-lease` (a custom checkpoint prefix derives an adjacent lease prefix
   unless explicitly overridden).
 - Worker heartbeat expirations:
-  `<leasePrefix>:v2:{<identity64>}:workers`.
+  `<leasePrefix>:v3:{<identity64>}:workers`.
 
 `<identity64>` is unpadded base64url of `<group>:<stream>`. Its Redis Cluster
 hash tag keeps one identity's coordination keys in one slot. Atomic snapshot
 scripts remove expired/inconsistent entries and read only the target identity;
-they never perform a database-wide or cluster-node SCAN.
+they never perform a database-wide or cluster-node SCAN. Constructors scan for
+incompatible older layouts before use. Initial replay positions and a separate
+recovery registry persist alongside checkpoints. See [Valkey recovery](fenced-valkey.md).
 
 ## Observability
 
