@@ -134,3 +134,18 @@ type Lease interface {
 	// callers should treat as fatal.
 	Release(ctx context.Context) error
 }
+
+// FencedLease identifies one acquisition, including same-owner reacquisitions.
+// Validate checks owner, generation, and backend expiry. ErrNotOwned permanently
+// invalidates the handle; transient backend errors do not. Invalidate is local
+// and permanent and does not release backend ownership.
+// Implementations must be safe for concurrent calls.
+type FencedLease interface {
+	Lease
+	Generation() string
+	Validate(context.Context) error
+	Invalidate()
+}
+
+// ErrLeaseMismatch indicates a lease from a different backend or shard.
+var ErrLeaseMismatch = errors.New("lease backend or shard mismatch")
