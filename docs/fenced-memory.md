@@ -2,9 +2,9 @@
 
 `lease.FencedLease` and `checkpoint.FencedStore` are optional capabilities for
 binding progress to a single lease acquisition. This foundation implements them
-in memory. [Valkey support](fenced-valkey.md) implements matching contracts.
-Consumer activation follows in a later slice.
-Existing consumer execution still uses the legacy store interface.
+in memory. [Valkey support](fenced-valkey.md) implements matching contracts, and
+[fenced consumer recovery](fenced-recovery.md) describes how the consumer uses
+them.
 
 Construct matching dependencies explicitly:
 
@@ -61,8 +61,8 @@ Lease release, expiry, worker expiry, and cleanup leave recovery metadata intact
 The registry separately identifies which value is required. Missing or invalid
 required metadata, inconsistent values, and regression observed by a session
 return `checkpoint.ErrRecoveryState`. Halt on that error; do not fall back to
-`LATEST` or silently initialize again. Iterator anchor verification is a later
-consumer integration requirement.
+`LATEST` or silently initialize again. The consumer additionally verifies that a
+required sequence anchor is still readable before resuming from it.
 
 Memory storage is for tests and local development; all state disappears with the
 process. Losing both recovery values and every initialization record can look like

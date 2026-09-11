@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 	"github.com/aws/smithy-go"
 
@@ -112,7 +113,9 @@ func getRecordsErrorKind(err error) string {
 // of a worker, or after an expired-iterator reset) the pass derives one from the
 // stored checkpoint — or, with no checkpoint, from TRIM_HORIZON for a reshard
 // child with a known parent and from the configured StartPosition otherwise
-// (see getShardIterator).
+// (see getShardIterator). A fenced worker resuming from a recovery anchor gets
+// back the page that proved the anchor readable instead of an iterator, and
+// handles it before reading again.
 // When the pass catches up it returns the last NextShardIterator so the loop can
 // keep polling from exactly there. This matters for StartLatest: re-deriving a
 // fresh LATEST iterator every pass would re-anchor to the moving shard tip and
@@ -127,7 +130,14 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 	lastSeq := ""
 	count := processedSinceCheckpoint
 	readFailures := 0
+	session := shardSessionFrom(ctx)
 	var lastReadAt time.Time
+	// A page already read on this shard's behalf — recovery reads the anchor
+	// itself — that still has to be handled. It is only ever held together with
+	// an empty iterator, so a pass that ends before handling it leaves the next
+	// one to derive the position again from unchanged recovery state, rather
+	// than resuming past records it never delivered.
+	var pending *pendingShardPage
 	// Lazily seeded on the first retryable read failure; healthy passes never
 	// pay for it.
 	var backoffRng *rand.Rand
@@ -145,94 +155,141 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			return lastSeq, count, iterator, nil
 		}
 
-		if iterator == "" {
-			derived, err := c.getShardIterator(ctx, shardID)
+		if iterator == "" && pending == nil {
+			derived, derivedPage, err := c.getShardIterator(ctx, shardID)
 			if err != nil {
 				return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 			}
-			if derived == "" {
+			if derived == "" && derivedPage == nil {
 				return lastSeq, count, "", fmt.Errorf("process shard records pass %s: empty shard iterator", shardID)
 			}
-			iterator = derived
+			iterator, pending = derived, derivedPage
 		}
 
-		// Pace successive reads: the Kinesis limit is 5 reads/sec/shard, and a
-		// catch-up loop with zero delay between non-empty pages manufactures
-		// the throttling that would otherwise kill the pass.
-		if wait := c.tuning.idleTimeBetweenReads - time.Since(lastReadAt); !lastReadAt.IsZero() && wait > 0 {
-			if err := c.sleep(ctx, wait); err != nil {
-				if errors.Is(ctx.Err(), context.Canceled) {
-					return lastSeq, count, iterator, nil
-				}
-				return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
-			}
-		}
-
-		getRecordsStart := time.Now()
-		out, err := c.getRecords(ctx, iterator)
-		lastReadAt = time.Now()
-		if err != nil {
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return lastSeq, count, iterator, nil
-			}
-			// Count every failed read (per attempt) by kind; shutdown
-			// cancellation above is not a failure.
-			c.reporter.Counter(metricGetRecordsFailures, 1,
-				c.shardTags(shardID, metrics.Tag{Key: metricTagKind, Value: getRecordsErrorKind(err)}))
-			var expired *types.ExpiredIteratorException
-			if errors.As(err, &expired) {
-				// The held iterator outlived its ~5-minute TTL (e.g. a large
-				// pollInterval or a slow handler stretched the gap between reads).
-				// Drop it and re-derive from the stored checkpoint on the next
-				// iteration instead of failing the shard. Re-derivation reads only
-				// the *stored* checkpoint, so flush unsaved in-memory progress
-				// first: with StartLatest and no checkpoint yet, a re-derived
-				// LATEST iterator would re-anchor to the current tip and silently
-				// skip everything since the last processed page (LIB-2); with a
-				// checkpoint, stale progress replays needlessly.
-				if count > 0 && lastSeq != "" && ctx.Err() == nil {
-					if err := c.saveShardCheckpoint(ctx, shardID, lastSeq); err != nil {
-						return lastSeq, count, "", fmt.Errorf("process shard records pass expired-iterator checkpoint %s: %w", shardID, err)
-					}
-					count = 0
-				}
-				iterator = ""
-				continue
-			}
-			if ctx.Err() == nil && retryableGetRecordsError(err) {
-				// Throttling, a server fault, or a network blip: survive it
-				// in-place instead of failing the shard (which would stop the
-				// whole consumer). The same iterator stays valid for the retry.
-				readFailures++
-				if backoffRng == nil {
-					backoffRng = rand.New(rand.NewSource(time.Now().UnixNano()))
-				}
-				backoff := getRecordsRetryDelay(readFailures, backoffRng)
-				c.logger.Warn("get records failed; backing off",
-					slog.String("shard", shardID),
-					slog.Int("consecutive_failures", readFailures),
-					slog.Duration("backoff", backoff),
-					slog.Any("error", err),
-				)
-				if err := c.sleep(ctx, backoff); err != nil {
+		var out *kinesis.GetRecordsOutput
+		// Set when this page held nothing but the anchor an exclusive
+		// continuation dropped. It is empty because of what was removed from
+		// it, so it says nothing about the shard being caught up.
+		emptiedPage := false
+		if pending != nil {
+			// Recovery already read this page to prove its anchor. Handling it
+			// here, instead of reading again from a fresh iterator, is what
+			// keeps the resume point exact.
+			out = pending.output
+			lastReadAt = pending.readAt
+			emptiedPage = pending.emptied
+			c.reporter.Timing(metricGetRecordsDuration, pending.took, c.shardTags(shardID))
+			pending = nil
+		} else {
+			// Pace successive reads: the Kinesis limit is 5 reads/sec/shard, and a
+			// catch-up loop with zero delay between non-empty pages manufactures
+			// the throttling that would otherwise kill the pass.
+			if wait := c.tuning.idleTimeBetweenReads - time.Since(lastReadAt); !lastReadAt.IsZero() && wait > 0 {
+				if err := c.sleep(ctx, wait); err != nil {
 					if errors.Is(ctx.Err(), context.Canceled) {
 						return lastSeq, count, iterator, nil
 					}
 					return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 				}
-				continue
 			}
-			return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
+
+			getRecordsStart := time.Now()
+			fetched, err := c.getRecords(ctx, iterator)
+			lastReadAt = time.Now()
+			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return lastSeq, count, iterator, nil
+				}
+				// Count every failed read (per attempt) by kind; shutdown
+				// cancellation above is not a failure.
+				c.reporter.Counter(metricGetRecordsFailures, 1,
+					c.shardTags(shardID, metrics.Tag{Key: metricTagKind, Value: getRecordsErrorKind(err)}))
+				var expired *types.ExpiredIteratorException
+				if errors.As(err, &expired) {
+					// The held iterator outlived its ~5-minute TTL (e.g. a large
+					// pollInterval or a slow handler stretched the gap between
+					// reads).
+					if session != nil && lastSeq != "" {
+						// Still the same worker generation, so resume from what
+						// this worker last fetched. Re-reading persisted state
+						// would replay every record since the last checkpoint; a
+						// successor, which has no local position, still recovers
+						// from persisted state.
+						_, refreshed, refreshErr := c.anchoredShardRead(ctx, shardID, lastSeq, false)
+						if refreshErr != nil {
+							return lastSeq, count, "", fmt.Errorf("process shard records pass expired-iterator refresh %s: %w", shardID, refreshErr)
+						}
+						iterator, pending = "", refreshed
+						continue
+					}
+					// Re-derive on the next iteration instead of failing the
+					// shard. Unfenced re-derivation reads only the *stored*
+					// checkpoint, so flush unsaved in-memory progress first: with
+					// StartLatest and no checkpoint yet, a re-derived LATEST
+					// iterator would re-anchor to the current tip and silently skip
+					// everything since the last processed page (LIB-2); with a
+					// checkpoint, stale progress replays needlessly. A fenced
+					// worker that has fetched nothing has no progress to flush and
+					// recovers its exact position from the session instead.
+					if session == nil && count > 0 && lastSeq != "" && ctx.Err() == nil {
+						if err := c.saveShardCheckpoint(ctx, shardID, lastSeq); err != nil {
+							return lastSeq, count, "", fmt.Errorf("process shard records pass expired-iterator checkpoint %s: %w", shardID, err)
+						}
+						count = 0
+					}
+					iterator = ""
+					continue
+				}
+				if ctx.Err() == nil && retryableGetRecordsError(err) {
+					// Throttling, a server fault, or a network blip: survive it
+					// in-place instead of failing the shard (which would stop the
+					// whole consumer). The same iterator stays valid for the retry.
+					readFailures++
+					if backoffRng == nil {
+						backoffRng = rand.New(rand.NewSource(time.Now().UnixNano()))
+					}
+					backoff := getRecordsRetryDelay(readFailures, backoffRng)
+					c.logger.Warn("get records failed; backing off",
+						slog.String("shard", shardID),
+						slog.Int("consecutive_failures", readFailures),
+						slog.Duration("backoff", backoff),
+						slog.Any("error", err),
+					)
+					if err := c.sleep(ctx, backoff); err != nil {
+						if errors.Is(ctx.Err(), context.Canceled) {
+							return lastSeq, count, iterator, nil
+						}
+						return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
+					}
+					continue
+				}
+				return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
+			}
+			c.reporter.Timing(metricGetRecordsDuration, time.Since(getRecordsStart), c.shardTags(shardID))
+			out = fetched
 		}
 		readFailures = 0
 		// Health().Processing.LastReadSuccess: every successful read counts,
 		// including empty tip pages — the signal is "the delivery loop is
 		// turning", not "records arrived".
-		c.processingHealth.recordRead(time.Now())
-		c.reporter.Timing(metricGetRecordsDuration, time.Since(getRecordsStart), c.shardTags(shardID))
+		c.processingHealth.recordRead(lastReadAt)
 		c.reporter.Counter(metricPagesFetched, 1, c.shardTags(shardID))
 		if out.MillisBehindLatest != nil {
 			c.reporter.Gauge(metricMillisBehindLatest, float64(*out.MillisBehindLatest), c.shardTags(shardID))
+		}
+
+		if session != nil && len(out.Records) > 0 && session.needsInitialPosition() {
+			// First-record protection starts here: the shard's first observed
+			// sequence becomes its inclusive replay position before any record
+			// of this page can be admitted.
+			resume, initErr := c.initializeShardRecovery(ctx, shardID, session, out.Records[0])
+			if initErr != nil {
+				return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, initErr)
+			}
+			if resume {
+				iterator = ""
+				continue
+			}
 		}
 
 		pageLastSeq, pageCount, err := c.processRecordsPageWithCheckpoint(ctx, shardID, out, count)
@@ -262,6 +319,18 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 		// dereferenced above, so an empty page is the only caught-up signal to
 		// check here.
 		if len(out.Records) == 0 {
+			if emptiedPage {
+				// Not the shard tip: this page carried only the anchor, and
+				// the exclusive continuation dropped it. With one record per
+				// page — WithBatching(1, ...) — that is every checkpoint
+				// resumption. Reading it as "caught up" would sleep a poll
+				// interval before every resumption, and a poll interval longer
+				// than the iterator's ~5-minute life would expire the iterator
+				// each time, so the shard would re-verify the same anchor
+				// forever and never deliver anything. Read on from this page
+				// instead.
+				continue
+			}
 			// Caught up to the shard tip. Flush any processed-but-not-yet-
 			// checkpointed records so a FAILOVER/RESTART (a fresh worker re-enters
 			// with an empty iterator and re-derives from the checkpoint) resumes
