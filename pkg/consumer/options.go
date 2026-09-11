@@ -13,6 +13,7 @@ import (
 type Option func(*options) error
 
 type options struct {
+	inFlight          *InFlightLimits
 	batchHandler      BatchHandlerFunc
 	failurePolicy     FailurePolicy
 	dlqPublisher      DLQPublisher
@@ -68,6 +69,7 @@ func applyOptions(opts []Option) (options, error) {
 
 // WithBatchHandler switches the consumer to call the provided batch handler
 // once per GetRecords response instead of invoking the per-record handler.
+// WithInFlightLimits splits responses into ordered prefixes that fit capacity.
 func WithBatchHandler(handler BatchHandlerFunc) Option {
 	if handler == nil {
 		return func(*options) error {
@@ -131,7 +133,7 @@ func WithBatching(batchSize int32, checkpointEvery int) Option {
 // per-partition-key) processing order is no longer preserved — later records
 // may complete before earlier ones. Keep the default of 1 when partition-key
 // ordering matters. Applies only to record handlers; batch handlers always
-// receive whole pages sequentially.
+// receive pages (or capacity-limited prefixes) sequentially.
 func WithShardConcurrency(concurrency int) Option {
 	return func(cfg *options) error {
 		if concurrency < 1 {

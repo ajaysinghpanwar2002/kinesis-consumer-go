@@ -30,7 +30,7 @@ func TestVerifyShardAnchorPageAcceptsReadableAnchor(t *testing.T) {
 	stream := newFakeStream(testShardID, sequences(100, 3)...)
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "101"); err != nil {
+	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "101", nil); err != nil {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want nil", err)
 	}
 }
@@ -39,7 +39,7 @@ func TestVerifyShardAnchorPageReturnsThePageThatProvesTheAnchor(t *testing.T) {
 	stream := newFakeStream(testShardID, sequences(100, 3)...)
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	page, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100")
+	page, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil)
 	if err != nil {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want nil", err)
 	}
@@ -58,7 +58,7 @@ func TestVerifyShardAnchorPageKeepsReadingThroughEmptyPages(t *testing.T) {
 	stream.emptyPagesBeforeRecords = 3
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100"); err != nil {
+	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil); err != nil {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want nil: an empty page alone does not prove the anchor is gone", err)
 	}
 	if stream.getRecordsN < 4 {
@@ -73,7 +73,7 @@ func TestVerifyShardAnchorPageRejectsTrimmedAnchor(t *testing.T) {
 	reporter := &recordingReporter{}
 	cons.reporter = reporter
 
-	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100")
+	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil)
 	if !errors.Is(err, checkpoint.ErrRecoveryState) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, checkpoint.ErrRecoveryState)
 	}
@@ -93,12 +93,12 @@ func TestVerifyShardAnchorPageDoesNotCountSuccessOrCancellation(t *testing.T) {
 	reporter := &recordingReporter{}
 	cons.reporter = reporter
 
-	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100"); err != nil {
+	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil); err != nil {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want nil", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := cons.verifyShardAnchorPage(ctx, testShardID, "100"); !errors.Is(err, context.Canceled) {
+	if _, err := cons.verifyShardAnchorPage(ctx, testShardID, "100", nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, context.Canceled)
 	}
 	if got := len(reporter.countersNamed(metricRecoveryFailures)); got != 0 {
@@ -112,7 +112,7 @@ func TestVerifyShardAnchorPageRejectsAnchorPastClosedShardEnd(t *testing.T) {
 	stream.closed = true
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100")
+	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil)
 	if !errors.Is(err, checkpoint.ErrRecoveryState) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, checkpoint.ErrRecoveryState)
 	}
@@ -123,7 +123,7 @@ func TestVerifyShardAnchorPageRejectsSequenceOutsideShard(t *testing.T) {
 	stream.invalidUnknownAnchor = true
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "9999")
+	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "9999", nil)
 	if !errors.Is(err, checkpoint.ErrRecoveryState) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, checkpoint.ErrRecoveryState)
 	}
@@ -138,7 +138,7 @@ func TestVerifyShardAnchorPageRejectsMissingStream(t *testing.T) {
 	stream.getRecordsErrs = []error{&types.ResourceNotFoundException{Message: aws.String("gone")}}
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100")
+	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil)
 	if !errors.Is(err, checkpoint.ErrRecoveryState) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, checkpoint.ErrRecoveryState)
 	}
@@ -156,7 +156,7 @@ func TestVerifyShardAnchorPageRetriesTransientFailures(t *testing.T) {
 	}
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100"); err != nil {
+	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil); err != nil {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want nil after a throttled read", err)
 	}
 	if stream.getRecordsN != 2 {
@@ -171,7 +171,7 @@ func TestVerifyShardAnchorPageFailsWhenBudgetIsSpent(t *testing.T) {
 	stream.emptyPagesBeforeRecords = 1 << 30
 	cons := newAnchorConsumer(t, stream, 20*time.Millisecond)
 
-	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100")
+	_, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil)
 	if !errors.Is(err, checkpoint.ErrRecoveryState) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, checkpoint.ErrRecoveryState)
 	}
@@ -188,7 +188,7 @@ func TestVerifyShardAnchorPageReturnsCancellationNotRecoveryFailure(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	stream.onGetRecords = func(int) { cancel() }
 
-	_, err := cons.verifyShardAnchorPage(ctx, testShardID, "100")
+	_, err := cons.verifyShardAnchorPage(ctx, testShardID, "100", nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, context.Canceled)
 	}
@@ -201,7 +201,7 @@ func TestVerifyShardAnchorPageRejectsEmptyRecoverySequence(t *testing.T) {
 	stream := newFakeStream(testShardID, sequences(100, 1)...)
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, ""); !errors.Is(err, checkpoint.ErrRecoveryState) {
+	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "", nil); !errors.Is(err, checkpoint.ErrRecoveryState) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, checkpoint.ErrRecoveryState)
 	}
 	if stream.getRecordsN != 0 {
@@ -214,7 +214,7 @@ func TestVerifyShardAnchorPageRederivesAfterExpiredIterator(t *testing.T) {
 	stream.getRecordsErrs = []error{&types.ExpiredIteratorException{Message: aws.String("expired")}, nil}
 	cons := newAnchorConsumer(t, stream, time.Second)
 
-	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100"); err != nil {
+	if _, err := cons.verifyShardAnchorPage(context.Background(), testShardID, "100", nil); err != nil {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want nil after re-deriving an expired iterator", err)
 	}
 	if got := len(stream.iteratorRequests()); got != 2 {
