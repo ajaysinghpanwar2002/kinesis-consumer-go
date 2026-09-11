@@ -4,7 +4,8 @@ import "context"
 
 // Delivery is a record with an explicit acknowledgment handle. Copies share
 // acknowledgment state. Changing Record or ShardID does not change that state.
-// Consumers do not yet expose an explicit handler mode.
+// Explicit handler options are reserved; New rejects their use until worker
+// lifecycle integration is complete.
 type Delivery struct {
 	Record  Record
 	ShardID string

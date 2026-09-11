@@ -478,6 +478,16 @@ func validateConstructorInputs(client KinesisAPI, store checkpoint.Store) error 
 }
 
 func resolveHandlers(handler HandlerFunc, opt options) (HandlerFunc, BatchHandlerFunc, error) {
+	if opt.explicit.enabled() {
+		if err := opt.explicit.validate(handler, opt.batchHandler); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, ErrExplicitModeUnavailable
+	}
+	if opt.checkpointInterval != 0 {
+		return nil, nil, errors.New("checkpoint interval requires explicit mode")
+	}
+
 	if handler == nil && opt.batchHandler == nil {
 		return nil, nil, errors.New("handler is required (provide WithBatchHandler for batch processing)")
 	}

@@ -31,17 +31,39 @@ end
 var validateScript = valkey.NewLuaScript(OwnershipScript + "return {'ok'}")
 
 func (l *valkeyLease) Generation() string { return l.generation }
-func (l *valkeyLease) invalidateLocked() {
-	l.invalid = true
+func (l *valkeyLease) markInvalid() {
+	l.invalid.Store(true)
 	l.once.Do(l.done)
 }
 func (l *valkeyLease) Invalidate() {
 	_ = l.mu.Lock(context.Background())
 	defer l.mu.Unlock()
-	l.invalidateLocked()
+	l.markInvalid()
 }
 func (l *valkeyLease) Validate(ctx context.Context) error {
-	_, err := (&Binding{held: l}).Exec(ctx, validateScript, nil, nil)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if l.invalid.Load() {
+		return core.ErrNotOwned
+	}
+	// Ownership reads do not take the mutation mutex: a slow checkpoint must
+	// not serialize Acks behind its network I/O. The server still checks owner,
+	// generation, and expiry atomically. Recheck permanent local invalidation
+	// after I/O so an old successful response cannot revive this acquisition.
+	_, err := validateScript.Exec(ctx, l.client,
+		[]string{l.ownersKey, l.expiriesKey, l.generationsKey},
+		[]string{l.shardID, l.owner, l.generation}).AsStrSlice()
+	if ve, ok := valkey.IsValkeyErr(err); ok && strings.HasPrefix(ve.Error(), "NOTOWNED ") {
+		l.markInvalid()
+		return core.ErrNotOwned
+	}
+	if l.invalid.Load() {
+		return core.ErrNotOwned
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return err
 }
 
@@ -70,14 +92,17 @@ func (b *Binding) Exec(ctx context.Context, script *valkey.Lua, keys, args []str
 		return nil, err
 	}
 	defer l.mu.Unlock()
-	if l.invalid {
+	if l.invalid.Load() {
 		return nil, core.ErrNotOwned
 	}
 	keys = append([]string{l.ownersKey, l.expiriesKey, l.generationsKey}, keys...)
 	args = append([]string{l.shardID, l.owner, l.generation}, args...)
 	result, err := script.Exec(ctx, l.client, keys, args).AsStrSlice()
 	if ve, ok := valkey.IsValkeyErr(err); ok && strings.HasPrefix(ve.Error(), "NOTOWNED ") {
-		l.invalidateLocked()
+		l.markInvalid()
+		return nil, core.ErrNotOwned
+	}
+	if l.invalid.Load() {
 		return nil, core.ErrNotOwned
 	}
 	return result, err

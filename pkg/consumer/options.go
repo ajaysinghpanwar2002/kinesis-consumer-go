@@ -13,18 +13,20 @@ import (
 type Option func(*options) error
 
 type options struct {
-	inFlight          *InFlightLimits
-	batchHandler      BatchHandlerFunc
-	failurePolicy     FailurePolicy
-	dlqPublisher      DLQPublisher
-	dlqRetryAttempts  int
-	dlqRetryBackoff   time.Duration
-	dlqAttemptTimeout time.Duration
-	lease             leaseOptions
-	shutdown          shutdownOptions
-	tuning            tuningConfig
-	logger            *slog.Logger
-	reporter          metrics.Reporter
+	explicit           explicitHandlers
+	checkpointInterval time.Duration
+	inFlight           *InFlightLimits
+	batchHandler       BatchHandlerFunc
+	failurePolicy      FailurePolicy
+	dlqPublisher       DLQPublisher
+	dlqRetryAttempts   int
+	dlqRetryBackoff    time.Duration
+	dlqAttemptTimeout  time.Duration
+	lease              leaseOptions
+	shutdown           shutdownOptions
+	tuning             tuningConfig
+	logger             *slog.Logger
+	reporter           metrics.Reporter
 }
 
 type leaseOptions struct {
