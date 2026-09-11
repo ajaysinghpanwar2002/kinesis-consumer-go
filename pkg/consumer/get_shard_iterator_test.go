@@ -27,7 +27,7 @@ func TestGetShardIteratorForwardsContextStreamShardAndIteratorType(t *testing.T)
 		store:  &fakeCheckpointSaveStore{},
 	}
 
-	got, err := c.getShardIterator(ctx, "shard-1")
+	got, _, err := c.getShardIterator(ctx, "shard-1")
 	if err != nil {
 		t.Fatalf("getShardIterator() error = %v, want nil", err)
 	}
@@ -69,7 +69,7 @@ func TestGetShardIteratorUsesStreamARN(t *testing.T) {
 		store:  &fakeCheckpointSaveStore{},
 	}
 
-	if _, err := c.getShardIterator(context.Background(), "shard-1"); err != nil {
+	if _, _, err := c.getShardIterator(context.Background(), "shard-1"); err != nil {
 		t.Fatalf("getShardIterator() error = %v, want nil", err)
 	}
 	if len(client.getShardIteratorCalls) != 1 {
@@ -140,7 +140,7 @@ func TestGetShardIteratorUsesConfiguredStartPositionWithoutCheckpoint(t *testing
 				store:  &fakeCheckpointSaveStore{},
 			}
 
-			if _, err := c.getShardIterator(context.Background(), "shard-1"); err != nil {
+			if _, _, err := c.getShardIterator(context.Background(), "shard-1"); err != nil {
 				t.Fatalf("getShardIterator() error = %v, want nil", err)
 			}
 			if len(client.getShardIteratorCalls) != 1 {
@@ -211,7 +211,7 @@ func TestGetShardIteratorUsesTrimHorizonForChildWithKnownParentWithoutCheckpoint
 				"child-1": shardWithParents("child-1", "parent", ""),
 			})
 
-			if _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
+			if _, _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
 				t.Fatalf("getShardIterator() error = %v, want nil", err)
 			}
 			if len(client.getShardIteratorCalls) != 1 {
@@ -246,7 +246,7 @@ func TestGetShardIteratorKeepsStartPositionWhenParentsAgedOut(t *testing.T) {
 		"child-1": shardWithParents("child-1", "expired-parent", ""),
 	})
 
-	if _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
+	if _, _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
 		t.Fatalf("getShardIterator() error = %v, want nil", err)
 	}
 	if len(client.getShardIteratorCalls) != 1 {
@@ -276,7 +276,7 @@ func TestGetShardIteratorPrefersCheckpointOverParentage(t *testing.T) {
 		"child-1": shardWithParents("child-1", "parent", ""),
 	})
 
-	if _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
+	if _, _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
 		t.Fatalf("getShardIterator() error = %v, want nil", err)
 	}
 	if len(client.getShardIteratorCalls) != 1 {
@@ -318,7 +318,7 @@ func TestRefreshKnownShardsFeedsParentageIntoIteratorDerivation(t *testing.T) {
 	// Both the first derivation and any expired-iterator re-derivation go
 	// through getShardIterator with only the shard ID: the refresh recording
 	// must be what carries the parent info to it.
-	if _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
+	if _, _, err := c.getShardIterator(context.Background(), "child-1"); err != nil {
 		t.Fatalf("getShardIterator() error = %v, want nil", err)
 	}
 	if len(client.getShardIteratorCalls) != 1 {
@@ -329,7 +329,7 @@ func TestRefreshKnownShardsFeedsParentageIntoIteratorDerivation(t *testing.T) {
 	}
 
 	client.getShardIteratorCalls = nil
-	if _, err := c.getShardIterator(context.Background(), "parent"); err != nil {
+	if _, _, err := c.getShardIterator(context.Background(), "parent"); err != nil {
 		t.Fatalf("getShardIterator() error = %v, want nil", err)
 	}
 	if len(client.getShardIteratorCalls) != 1 {
@@ -350,7 +350,7 @@ func TestGetShardIteratorReturnsCompletedForShardEndCheckpoint(t *testing.T) {
 		store:  &fakeCheckpointSaveStore{checkpoint: "SHARD_END:sequence-1"},
 	}
 
-	got, err := c.getShardIterator(context.Background(), "shard-1")
+	got, _, err := c.getShardIterator(context.Background(), "shard-1")
 	if !errors.Is(err, errShardCompleted) {
 		t.Fatalf("getShardIterator() error = %v, want %v", err, errShardCompleted)
 	}
@@ -384,7 +384,7 @@ func TestGetShardIteratorUsesCheckpointSequence(t *testing.T) {
 		store:  &fakeCheckpointSaveStore{checkpoint: "sequence-1"},
 	}
 
-	got, err := c.getShardIterator(context.Background(), "shard-1")
+	got, _, err := c.getShardIterator(context.Background(), "shard-1")
 	if err != nil {
 		t.Fatalf("getShardIterator() error = %v, want nil", err)
 	}
@@ -426,7 +426,7 @@ func TestGetShardIteratorWrapsCheckpointReadError(t *testing.T) {
 		store:  &fakeCheckpointSaveStore{getErr: errBoom},
 	}
 
-	_, err := c.getShardIterator(context.Background(), "shard-1")
+	_, _, err := c.getShardIterator(context.Background(), "shard-1")
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("getShardIterator() error = %v, want wraps %v", err, errBoom)
 	}
@@ -449,7 +449,7 @@ func TestGetShardIteratorWrapsClientError(t *testing.T) {
 		store:  &fakeCheckpointSaveStore{},
 	}
 
-	_, err := c.getShardIterator(context.Background(), "shard-1")
+	_, _, err := c.getShardIterator(context.Background(), "shard-1")
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("getShardIterator() error = %v, want wraps %v", err, errBoom)
 	}
@@ -469,7 +469,7 @@ func TestGetShardIteratorRejectsNilOutputWithoutCheckpointMutation(t *testing.T)
 		store:  store,
 	}
 
-	iterator, err := c.getShardIterator(context.Background(), "shard-1")
+	iterator, _, err := c.getShardIterator(context.Background(), "shard-1")
 	if !errors.Is(err, errNilKinesisOutput) {
 		t.Fatalf("getShardIterator() error = %v, want wraps %v", err, errNilKinesisOutput)
 	}

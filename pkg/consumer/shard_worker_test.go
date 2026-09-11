@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
@@ -468,4 +470,148 @@ func TestRunShardWorkerKeepsCanceledErrorWithoutStopSignal(t *testing.T) {
 	if shardLease.calls != 1 {
 		t.Fatalf("Release calls = %d, want 1", shardLease.calls)
 	}
+}
+
+// notOwnedLease reports that the shard has been taken over on its first renew
+// and signals when it has done so.
+type notOwnedLease struct {
+	lost         chan struct{}
+	once         sync.Once
+	releaseCalls atomic.Int64
+}
+
+func (l *notOwnedLease) Renew(context.Context, time.Duration) error {
+	l.once.Do(func() { close(l.lost) })
+	return lease.ErrNotOwned
+}
+
+func (l *notOwnedLease) Release(context.Context) error {
+	l.releaseCalls.Add(1)
+	return nil
+}
+
+// A takeover can be seen by the renew loop and by a fenced session write at the
+// same time. Whichever reports first, the shard is handed off and the consumer
+// run must survive it.
+func TestRunShardWorkerStopsCleanlyWhenRenewalAndProcessingBothLoseOwnership(t *testing.T) {
+	t.Parallel()
+
+	shardLease := &notOwnedLease{lost: make(chan struct{})}
+	c := newTestShardWorkerConsumer(time.Millisecond, 30*time.Millisecond)
+	c.processShardRecordsLoopFn = func(ctx context.Context, _ string) (string, int, error) {
+		// Let the renew loop record the loss first, then report the same loss
+		// from a fenced checkpoint write.
+		<-shardLease.lost
+		return "", 0, fmt.Errorf("save shard checkpoint shard-1: %w", lease.ErrNotOwned)
+	}
+
+	done := runShardWorker(context.Background(), c, "shard-1", shardLease)
+	waitShardWorkerDone(t, done, nil)
+
+	if got := shardLease.releaseCalls.Load(); got != 0 {
+		t.Fatalf("Release calls = %d, want 0: the lease belongs to a peer now", got)
+	}
+}
+
+func TestRunShardWorkerRenewsTheLeaseWhileBindingIsStillRunning(t *testing.T) {
+	t.Parallel()
+
+	manager := lease.NewMemoryManager()
+	gate := make(chan struct{})
+	store := &stubFencedStore{Store: checkpoint.NewMemoryStore(), bindGate: gate}
+	held := newRecordingFencedLease(acquireFencedLease(t, manager, testShardID))
+	cons := newTestConsumer(t, newFakeStream(testShardID), store, manager,
+		WithHeartbeat(time.Millisecond, time.Second))
+
+	processing := make(chan struct{})
+	cons.processShardRecordsLoopFn = func(ctx context.Context, _ string) (string, int, error) {
+		close(processing)
+		<-ctx.Done()
+		return "", 0, nil
+	}
+
+	// Binding cannot finish until the lease has been renewed at least once.
+	// A worker that binds before starting its renewal loop never gets past
+	// this, which is exactly what makes a bind slow enough to outlast the
+	// heartbeat TTL — a retried transient failure, say — lose an owned lease.
+	go func() {
+		<-held.renewed
+		close(gate)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runShardWorker(ctx, cons, testShardID, held)
+
+	select {
+	case <-processing:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the shard never started processing: binding ran with no lease renewal behind it")
+	}
+	cancel()
+	waitShardWorkerDone(t, done, nil)
+}
+
+func TestRunShardWorkerReleasesTheLeaseWhenBindingFails(t *testing.T) {
+	t.Parallel()
+
+	manager := lease.NewMemoryManager()
+	store := &stubFencedStore{
+		Store:   checkpoint.NewMemoryStore(),
+		bindErr: fmt.Errorf("%w: registry and value disagree", checkpoint.ErrRecoveryState),
+	}
+	held := newRecordingFencedLease(acquireFencedLease(t, manager, testShardID))
+	cons := newTestConsumer(t, newFakeStream(testShardID), store, manager)
+
+	err := cons.runShardWorker(context.Background(), testShardID, held)
+	if !errors.Is(err, checkpoint.ErrRecoveryState) {
+		t.Fatalf("runShardWorker() error = %v, want %v", err, checkpoint.ErrRecoveryState)
+	}
+	if got := held.releaseCalls.Load(); got != 1 {
+		t.Fatalf("Release calls = %d, want 1: a shard that cannot bind still owns its lease", got)
+	}
+}
+
+func TestRunShardWorkerKeepsTheLeaseWhenBindingFindsOwnershipGone(t *testing.T) {
+	t.Parallel()
+
+	manager := lease.NewMemoryManager()
+	store := &stubFencedStore{Store: checkpoint.NewMemoryStore(), bindErr: lease.ErrNotOwned}
+	held := newRecordingFencedLease(acquireFencedLease(t, manager, testShardID))
+	cons := newTestConsumer(t, newFakeStream(testShardID), store, manager)
+
+	if err := cons.runShardWorker(context.Background(), testShardID, held); err != nil {
+		t.Fatalf("runShardWorker() error = %v, want nil: ownership moved before the session bound", err)
+	}
+	if got := held.releaseCalls.Load(); got != 0 {
+		t.Fatalf("Release calls = %d, want 0: the lease belongs to a peer now", got)
+	}
+}
+
+// recordingFencedLease wraps a real fenced lease to report its first renewal
+// and count releases, which is how the binding tests observe the renewal
+// lifecycle running around a bind.
+type recordingFencedLease struct {
+	lease.FencedLease
+
+	renewedOnce  sync.Once
+	renewed      chan struct{}
+	releaseCalls atomic.Int32
+}
+
+func newRecordingFencedLease(held lease.FencedLease) *recordingFencedLease {
+	return &recordingFencedLease{FencedLease: held, renewed: make(chan struct{})}
+}
+
+func (l *recordingFencedLease) Renew(ctx context.Context, ttl time.Duration) error {
+	err := l.FencedLease.Renew(ctx, ttl)
+	if err == nil {
+		l.renewedOnce.Do(func() { close(l.renewed) })
+	}
+	return err
+}
+
+func (l *recordingFencedLease) Release(ctx context.Context) error {
+	l.releaseCalls.Add(1)
+	return l.FencedLease.Release(ctx)
 }

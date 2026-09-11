@@ -26,7 +26,8 @@ so you can plan around the gaps.
 | DLQ | Pluggable `DLQPublisher` with rich poison-record metadata |
 | Throughput | Per-shard record-handler concurrency |
 | Shutdown | Optional graceful drain (finish in-flight work, checkpoint, release leases) |
-| Backends | Built-in Valkey; pluggable `checkpoint.Store` + `lease.Manager` interfaces |
+| Backends | Built-in Valkey and memory; pluggable `checkpoint.Store` + `lease.Manager` interfaces |
+| Fenced recovery | Built-in backends bind a generation-fenced session per shard: recovery-driven resumption, first-record protection, anchor verification, and ownership-validated writes ([fenced-recovery.md](fenced-recovery.md)) |
 | Multi-tenancy | Consumer-group plus key-prefix isolation for checkpoint, lease, and worker keys |
 | Logging | Opt-in structured `log/slog` events for lifecycle, leases, rebalance, and record outcomes ([logging.md](logging.md)) |
 | Metrics | Opt-in counters, gauges, and timings through `metrics.Reporter`, with a statsd/Telegraf/InfluxDB/Grafana path ([metrics.md](metrics.md)) |
@@ -76,6 +77,12 @@ its message).
   stream).
 - **Resume:** when a checkpoint exists for a shard, the consumer resumes strictly
   after the checkpointed sequence number, ignoring `StartPosition`.
+- **Fenced backends:** with a fenced store and lease manager (both built-in
+  pairs qualify), resumption comes from persisted recovery state rather than the
+  checkpoint value alone. A shard whose first record was recorded but never
+  checkpointed replays that record inclusively, and a recorded sequence is
+  verified as still readable before the shard resumes from it. See
+  [fenced-recovery.md](fenced-recovery.md).
 
 ## Shard discovery and resharding
 
