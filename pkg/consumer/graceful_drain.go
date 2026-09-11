@@ -50,6 +50,9 @@ func (c *Consumer) drainShardWorkers(
 		return drainShardWorkersOrError(workers, workerWG, 0, workerErrCh)
 	}
 	c.draining.Store(true)
+	if c.admission != nil {
+		c.admission.stop()
+	}
 	defer c.draining.Store(false)
 
 	start := time.Now()

@@ -84,10 +84,10 @@ func (c *Consumer) getFencedShardIterator(ctx context.Context, shardID string, s
 	case checkpoint.RecoveryInitial:
 		// The recorded record was observed but not necessarily processed, so
 		// replay includes it.
-		return c.anchoredShardRead(ctx, shardID, position.Sequence, true)
+		return c.anchoredShardRead(ctx, shardID, position.Sequence, true, nil)
 	case checkpoint.RecoveryCheckpoint:
 		// Everything up to and including the checkpoint is persisted progress.
-		return c.anchoredShardRead(ctx, shardID, position.Sequence, false)
+		return c.anchoredShardRead(ctx, shardID, position.Sequence, false, nil)
 	}
 
 	// RecoveryFresh: nothing is persisted for this shard yet. Derive the same
@@ -130,8 +130,8 @@ func (c *Consumer) getCheckpointShardIterator(ctx context.Context, shardID strin
 // The page is returned unhandled and with no iterator, so the pass advances
 // past it only once its records are processed; an interrupted page is derived
 // again from unchanged recovery state.
-func (c *Consumer) anchoredShardRead(ctx context.Context, shardID, sequence string, inclusive bool) (string, *pendingShardPage, error) {
-	page, err := c.verifyShardAnchorPage(ctx, shardID, sequence)
+func (c *Consumer) anchoredShardRead(ctx context.Context, shardID, sequence string, inclusive bool, beforeWait func() error) (string, *pendingShardPage, error) {
+	page, err := c.verifyShardAnchorPage(ctx, shardID, sequence, beforeWait)
 	if err != nil {
 		return "", nil, err
 	}
