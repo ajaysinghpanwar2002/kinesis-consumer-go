@@ -18,6 +18,7 @@ type ackTracker struct {
 	ranges    list.List
 	sequence  string
 	completed uint64
+	changed   chan struct{}
 }
 
 // Each unfinished record occupies one range. Adjacent completed records collapse
@@ -26,6 +27,7 @@ type ackRange struct {
 	sequence string
 	count    uint64
 	done     bool
+	release  func()
 }
 
 type deliveryState struct {
@@ -39,12 +41,17 @@ func newAckTracker(shardID string, validate func(context.Context) error) *ackTra
 	if validate == nil {
 		panic("ack tracker requires ownership validation")
 	}
-	return &ackTracker{shardID: shardID, validate: validate}
+	return &ackTracker{shardID: shardID, validate: validate, changed: make(chan struct{}, 1)}
 }
 
 // append registers records in delivery order, including across fetched pages.
 // The caller must validate sequence anchors before registering records.
 func (t *ackTracker) append(record Record) Delivery {
+	return t.appendReserved(record, nil)
+}
+
+// release owns metadata only and must not call back into the tracker.
+func (t *ackTracker) appendReserved(record Record, release func()) Delivery {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	s := &deliveryState{tracker: t, stale: t.invalid}
@@ -53,7 +60,9 @@ func (t *ackTracker) append(record Record) Delivery {
 		if record.SequenceNumber != nil {
 			sequence = *record.SequenceNumber
 		}
-		s.element = t.ranges.PushBack(&ackRange{sequence: sequence, count: 1})
+		s.element = t.ranges.PushBack(&ackRange{sequence: sequence, count: 1, release: release})
+	} else if release != nil {
+		release()
 	}
 	return Delivery{Record: record, ShardID: t.shardID, state: s}
 }
@@ -90,6 +99,10 @@ func (t *ackTracker) ack(ctx context.Context, s *deliveryState) error {
 	s.element = nil
 	r := e.Value.(*ackRange)
 	r.done = true
+	if r.release != nil {
+		r.release()
+		r.release = nil
+	}
 	if prev := e.Prev(); prev != nil && prev.Value.(*ackRange).done {
 		r.count += prev.Value.(*ackRange).count
 		t.ranges.Remove(prev)
@@ -104,6 +117,10 @@ func (t *ackTracker) ack(ctx context.Context, s *deliveryState) error {
 		t.sequence = r.sequence
 		t.completed += r.count
 		t.ranges.Remove(e)
+	}
+	select {
+	case t.changed <- struct{}{}:
+	default:
 	}
 	return nil
 }
@@ -138,6 +155,11 @@ func (t *ackTracker) invalidate() {
 	t.invalid = true
 	// Remove individually to sever links held by outstanding application handles.
 	for e := t.ranges.Front(); e != nil; e = t.ranges.Front() {
+		r := e.Value.(*ackRange)
+		if r.release != nil {
+			r.release()
+			r.release = nil
+		}
 		t.ranges.Remove(e)
 	}
 }

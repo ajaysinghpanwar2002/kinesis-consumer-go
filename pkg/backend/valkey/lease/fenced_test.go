@@ -3,6 +3,9 @@ package lease
 import (
 	"context"
 	"errors"
+	valkey "github.com/valkey-io/valkey-go"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,4 +80,76 @@ func TestUnobservedHistoricalLeaseIsOutsideGuarantee(t *testing.T) {
 		t.Fatalf("documented historical snapshot case: %v", err)
 	}
 	old.Invalidate()
+}
+
+// blockBindingClient delays an actual Binding.Exec command while it owns the
+// mutation mutex. Validation uses the same client and lease, not a fake lease.
+type blockBindingClient struct {
+	valkey.Client
+	entered chan struct{}
+	unblock chan struct{}
+}
+
+func (c *blockBindingClient) Do(ctx context.Context, cmd valkey.Completed) valkey.ValkeyResult {
+	if slices.Contains(cmd.Commands(), "blocked-checkpoint") {
+		select {
+		case c.entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-c.unblock:
+		case <-ctx.Done():
+		}
+	}
+	return c.Client.Do(ctx, cmd)
+}
+
+func TestValidationIndependentOfBlockedBinding(t *testing.T) {
+	for _, lose := range []bool{false, true} {
+		t.Run(map[bool]string{false: "owned", true: "lost"}[lose], func(t *testing.T) {
+			m, server := newTestManager(t)
+			ctx := context.Background()
+			held, _, err := m.Acquire(ctx, "stream", "shard", "owner", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			l := held.(*valkeyLease)
+			client := &blockBindingClient{Client: l.client, entered: make(chan struct{}, 1), unblock: make(chan struct{})}
+			l.client = client
+			var unblock sync.Once
+			defer unblock.Do(func() { close(client.unblock) })
+			script := valkey.NewLuaScript(OwnershipScript + "return {'ok'}")
+			saved := make(chan error, 1)
+			go func() {
+				_, err := (&Binding{held: l}).Exec(ctx, script, nil, []string{"blocked-checkpoint"})
+				saved <- err
+			}()
+			<-client.entered
+			keys := m.keys("stream")
+			if lose {
+				server.HSet(keys.LeaseGenerations, "shard", "different-generation")
+			}
+			validationCtx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			err = l.Validate(validationCtx)
+			if lose {
+				if !errors.Is(err, core.ErrNotOwned) {
+					t.Fatalf("ownership loss blocked by checkpoint: %v", err)
+				}
+				server.HSet(keys.LeaseGenerations, "shard", l.Generation())
+				if err := l.Validate(validationCtx); !errors.Is(err, core.ErrNotOwned) {
+					t.Fatalf("revived: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("validation blocked by checkpoint: %v", err)
+			}
+			// Allow both EVALSHA and its initial NOSCRIPT fallback to finish.
+			unblock.Do(func() { close(client.unblock) })
+			if err := <-saved; lose && !errors.Is(err, core.ErrNotOwned) {
+				t.Fatalf("late binding success revived acquisition: %v", err)
+			} else if !lose && err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
