@@ -15,6 +15,7 @@ const (
 	metricCheckpointsSaved    = "kinesis_consumer.checkpoints_saved"
 	metricCheckpointFailures  = "kinesis_consumer.checkpoint_failures"
 	metricGetRecordsFailures  = "kinesis_consumer.get_records_failures"
+	metricRecoveryFailures    = "kinesis_consumer.recovery_failures"
 
 	metricLeaseAcquired         = "kinesis_consumer.lease_acquired"
 	metricLeaseReleased         = "kinesis_consumer.lease_released"

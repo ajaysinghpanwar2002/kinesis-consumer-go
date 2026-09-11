@@ -1,9 +1,9 @@
 # Fenced Valkey storage
 
 The Valkey lease manager implements `lease.FencedLease`; its checkpoint store
-implements `checkpoint.FencedStore`. Consumer integration is a later slice:
-the consumer still calls legacy checkpoint methods. Use sessions directly to
-exercise the fenced backend contracts.
+implements `checkpoint.FencedStore`. The consumer binds these sessions itself
+(see [fenced consumer recovery](fenced-recovery.md)); bind one directly only to
+exercise the backend contracts.
 
 ```go
 store, err := valkeycheckpoint.New(addr)
@@ -65,7 +65,8 @@ and progress regression observed by the session before any write. Missing,
 invalid, or inconsistent metadata returns `checkpoint.ErrRecoveryState`. Halt
 and reconcile; never fall back to `LATEST` or silently reinitialize. Losing both
 values and every initialization record can look like a new namespace. Iterator
-anchor verification and consumer error propagation belong to consumer integration.
+anchor verification and error propagation belong to the consumer; see
+[fenced consumer recovery](fenced-recovery.md).
 
 ## Durability assumptions
 

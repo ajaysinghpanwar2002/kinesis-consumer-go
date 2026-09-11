@@ -24,6 +24,10 @@ type tuningConfig struct {
 	shardLeaseReleaseTimeout time.Duration
 	shardCooldownPeriod      time.Duration
 	maxMovesPerRebalance     int
+	// anchorVerifyBudget bounds recovery-anchor verification. Zero selects
+	// defaultShardAnchorVerifyBudget; there is no option for it because the
+	// budget is a correctness bound, not a tuning knob.
+	anchorVerifyBudget time.Duration
 }
 
 func defaultTuning() tuningConfig {
@@ -95,6 +99,9 @@ func (t tuningConfig) validate() error {
 	}
 	if t.maxMovesPerRebalance < 1 {
 		return errors.New("maxMovesPerRebalance must be >= 1")
+	}
+	if t.anchorVerifyBudget < 0 {
+		return errors.New("anchor verify budget cannot be negative")
 	}
 	return nil
 }
