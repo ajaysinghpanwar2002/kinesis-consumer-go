@@ -206,8 +206,8 @@ writes, conditional updates keyed by sequence number).
 - **Record handler:** `HandlerFunc(ctx, Record)` called once per record
   (`Record` is the AWS SDK `types.Record`).
 - **Batch handler:** `WithBatchHandler(BatchHandlerFunc)` called once per
-  `GetRecords` page instead of per record. Batch mode has no per-record
-  isolation — one failing record fails the whole page.
+  `GetRecords` page, or per ordered prefix with `WithInFlightLimits`. A failing
+  batch callback retries its whole batch; it has no per-record isolation.
 - **GetRecords page size:** `WithBatching`'s `batchSize` (default 100) bounds the
   Kinesis `GetRecords` `Limit`.
 - **Retries:** `WithRetry(maxAttempts, backoff)` (default 3 attempts, 1s base)
@@ -339,6 +339,7 @@ Every knob has a working default, so a consumer runs with no options at all.
 | `WithBatching(batchSize, checkpointEvery)` | 100, 100 | GetRecords page size; checkpoint throttle |
 | `WithPolling(pollInterval, shardSyncInterval)` | 1s, 1m | GetRecords poll cadence; shard resync cadence |
 | `WithRetry(maxAttempts, backoff)` | 3, 1s | Handler retry attempts and linear base backoff |
+| `WithInFlightLimits(limits)` | disabled | [Record/byte budgets and fetch slots](in-flight-limits.md); ordered batch splitting |
 | `WithShardConcurrency(n)` | 1 | Concurrent record-handler calls per shard |
 | `WithFailurePolicy(policy)` | `fail-fast` | Post-retry poison handling |
 | `WithDLQRetry(maxAttempts, backoff)` | 3, 1s | DLQ-only publish retry attempts and linear base backoff |

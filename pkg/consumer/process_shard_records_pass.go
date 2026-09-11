@@ -127,8 +127,23 @@ func getRecordsErrorKind(err error) string {
 // resume from, and an error. A closed shard returns errShardCompleted after
 // persisting a completion checkpoint.
 func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, processedSinceCheckpoint int, iterator string) (string, int, string, error) {
+	admissionCtx, stopAdmission := c.admissionContext(ctx)
+	defer stopAdmission()
+	var slot *admissionReservation
+	defer func() { slot.release() }()
 	lastSeq := ""
 	count := processedSinceCheckpoint
+	// Slot waits during both polling and iterator recovery must flush with the
+	// live worker context; drain only cancels the admission context.
+	flushBeforeWait := func() error {
+		if count > 0 && lastSeq != "" {
+			if err := c.saveShardCheckpoint(ctx, shardID, lastSeq); err != nil {
+				return err
+			}
+			count = 0
+		}
+		return nil
+	}
 	readFailures := 0
 	session := shardSessionFrom(ctx)
 	var lastReadAt time.Time
@@ -138,11 +153,18 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 	// one to derive the position again from unchanged recovery state, rather
 	// than resuming past records it never delivered.
 	var pending *pendingShardPage
+	defer func() {
+		if pending != nil {
+			pending.slot.release()
+		}
+	}()
 	// Lazily seeded on the first retryable read failure; healthy passes never
 	// pay for it.
 	var backoffRng *rand.Rand
 
 	for {
+		slot.release()
+		slot = nil
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.Canceled) {
@@ -156,8 +178,11 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 		}
 
 		if iterator == "" && pending == nil {
-			derived, derivedPage, err := c.getShardIterator(ctx, shardID)
+			derived, derivedPage, err := c.getShardIterator(admissionCtx, shardID)
 			if err != nil {
+				if c.isDraining() && errors.Is(err, context.Canceled) {
+					return lastSeq, count, iterator, nil
+				}
 				return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 			}
 			if derived == "" && derivedPage == nil {
@@ -176,6 +201,7 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			// here, instead of reading again from a fresh iterator, is what
 			// keeps the resume point exact.
 			out = pending.output
+			slot = pending.slot
 			lastReadAt = pending.readAt
 			emptiedPage = pending.emptied
 			c.reporter.Timing(metricGetRecordsDuration, pending.took, c.shardTags(shardID))
@@ -185,19 +211,29 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			// catch-up loop with zero delay between non-empty pages manufactures
 			// the throttling that would otherwise kill the pass.
 			if wait := c.tuning.idleTimeBetweenReads - time.Since(lastReadAt); !lastReadAt.IsZero() && wait > 0 {
-				if err := c.sleep(ctx, wait); err != nil {
-					if errors.Is(ctx.Err(), context.Canceled) {
+				if err := c.sleep(admissionCtx, wait); err != nil {
+					if errors.Is(ctx.Err(), context.Canceled) || c.isDraining() {
 						return lastSeq, count, iterator, nil
 					}
 					return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 				}
 			}
 
+			var slotErr error
+			slot, slotErr = c.admission.acquireBeforeWait(admissionCtx, shardID, nil, true, flushBeforeWait)
+			if slotErr != nil {
+				if errors.Is(slotErr, context.Canceled) && (c.isDraining() || errors.Is(ctx.Err(), context.Canceled)) {
+					return lastSeq, count, iterator, nil
+				}
+				return lastSeq, count, "", slotErr
+			}
 			getRecordsStart := time.Now()
-			fetched, err := c.getRecords(ctx, iterator)
+			fetched, err := c.getRecords(admissionCtx, iterator)
 			lastReadAt = time.Now()
 			if err != nil {
-				if errors.Is(ctx.Err(), context.Canceled) {
+				slot.release()
+				slot = nil
+				if errors.Is(ctx.Err(), context.Canceled) || c.isDraining() {
 					return lastSeq, count, iterator, nil
 				}
 				// Count every failed read (per attempt) by kind; shutdown
@@ -215,8 +251,11 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 						// would replay every record since the last checkpoint; a
 						// successor, which has no local position, still recovers
 						// from persisted state.
-						_, refreshed, refreshErr := c.anchoredShardRead(ctx, shardID, lastSeq, false)
+						_, refreshed, refreshErr := c.anchoredShardRead(admissionCtx, shardID, lastSeq, false, flushBeforeWait)
 						if refreshErr != nil {
+							if c.isDraining() && errors.Is(refreshErr, context.Canceled) {
+								return lastSeq, count, iterator, nil
+							}
 							return lastSeq, count, "", fmt.Errorf("process shard records pass expired-iterator refresh %s: %w", shardID, refreshErr)
 						}
 						iterator, pending = "", refreshed
@@ -255,8 +294,8 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 						slog.Duration("backoff", backoff),
 						slog.Any("error", err),
 					)
-					if err := c.sleep(ctx, backoff); err != nil {
-						if errors.Is(ctx.Err(), context.Canceled) {
+					if err := c.sleep(admissionCtx, backoff); err != nil {
+						if errors.Is(ctx.Err(), context.Canceled) || c.isDraining() {
 							return lastSeq, count, iterator, nil
 						}
 						return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
@@ -266,7 +305,7 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 				return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 			}
 			c.reporter.Timing(metricGetRecordsDuration, time.Since(getRecordsStart), c.shardTags(shardID))
-			out = fetched
+			out = c.ownRecordsOutput(fetched)
 		}
 		readFailures = 0
 		// Health().Processing.LastReadSuccess: every successful read counts,
@@ -292,11 +331,13 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			}
 		}
 
-		pageLastSeq, pageCount, err := c.processRecordsPageWithCheckpoint(ctx, shardID, out, count)
+		pageLastSeq, pageCount, err := c.processBoundedPage(ctx, admissionCtx, shardID, out, count, slot, lastSeq)
 		if pageLastSeq != "" {
 			lastSeq = pageLastSeq
 		}
 		count = pageCount
+		slot.release()
+		slot = nil
 		if err != nil {
 			return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, err)
 		}

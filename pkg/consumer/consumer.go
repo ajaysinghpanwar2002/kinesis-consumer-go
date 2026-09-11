@@ -19,6 +19,7 @@ import (
 
 // Consumer owns Kinesis shard consumption for one worker process.
 type Consumer struct {
+	admission            *admissionController
 	cfg                  Config
 	client               KinesisAPI
 	store                checkpoint.Store
@@ -460,6 +461,7 @@ func New(cfg Config, client KinesisAPI, store checkpoint.Store, handler HandlerF
 		tuning:               opt.tuning,
 		logger:               logger,
 		reporter:             opt.reporter,
+		admission:            newAdmissionController(opt.inFlight),
 
 		ownedLeaseManagerCloser: ownedCloser,
 	}, nil
