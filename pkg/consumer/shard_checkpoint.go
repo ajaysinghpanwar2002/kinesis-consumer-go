@@ -2,9 +2,13 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
 )
 
 // readShardCheckpoint reads one checkpoint value through the store, retrying
@@ -45,9 +49,9 @@ func (c *Consumer) readShardCheckpoint(ctx context.Context, shardID string) (str
 	return "", fmt.Errorf("read shard checkpoint %s: %w", shardID, lastErr)
 }
 
-// saveCheckpointValueWithRetry writes one checkpoint value through the store,
-// retrying failures with the shared bounded retry policy (retryMaxAttempts /
-// retryBackoff) so a brief store blip on a due checkpoint does not escalate
+// saveCheckpointValueWithRetry writes one checkpoint value through
+// saveCheckpointValue, retrying failures with the shared bounded retry policy
+// (retryMaxAttempts / retryBackoff) so a brief store blip does not escalate
 // into a consumer-fatal worker error. Every failed attempt counts a
 // checkpoint failure so absorbed blips stay visible on dashboards. The
 // backoff wait aborts as soon as ctx is done and returns the ctx error, so a
@@ -63,9 +67,17 @@ func (c *Consumer) saveCheckpointValueWithRetry(ctx context.Context, shardID, va
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		err := c.store.Save(ctx, c.coordinationKey(), shardID, value)
+		err := c.saveCheckpointValue(ctx, shardID, value)
 		if err == nil {
 			return nil
+		}
+		if permanentCheckpointError(err) {
+			// Ownership has moved on, or the shard's recovery state is
+			// unusable. Neither can be retried into success, and neither is
+			// the transient store blip this counter tracks: the handoff is
+			// counted as a lost lease by the worker, and the recovery failure
+			// by the session that reported it.
+			return err
 		}
 		c.reporter.Counter(metricCheckpointFailures, 1, c.shardTags(shardID))
 		lastErr = err
@@ -79,6 +91,23 @@ func (c *Consumer) saveCheckpointValueWithRetry(ctx context.Context, shardID, va
 	}
 
 	return lastErr
+}
+
+// saveCheckpointValue writes one checkpoint value through the shard's fenced
+// session when it has one — so ownership is validated atomically with the
+// write and the value cannot land after the lease has moved — and through the
+// plain store otherwise.
+func (c *Consumer) saveCheckpointValue(ctx context.Context, shardID, value string) error {
+	if session := shardSessionFrom(ctx); session != nil {
+		return session.save(ctx, value)
+	}
+	return c.store.Save(ctx, c.coordinationKey(), shardID, value)
+}
+
+// permanentCheckpointError reports failures that no retry can resolve: the
+// lease is gone, or the shard's persisted recovery state is inconsistent.
+func permanentCheckpointError(err error) bool {
+	return errors.Is(err, lease.ErrNotOwned) || errors.Is(err, checkpoint.ErrRecoveryState)
 }
 
 func (c *Consumer) saveShardCheckpoint(ctx context.Context, shardID, sequenceNumber string) error {
