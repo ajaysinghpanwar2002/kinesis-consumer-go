@@ -15,7 +15,11 @@ func (c *Consumer) handleRecordsPage(ctx context.Context, shardID string, out *k
 	}
 
 	if c.batchHandler != nil {
-		if err := c.handleBatchWithRetry(ctx, shardID, out.Records); err != nil {
+		records := out.Records
+		if ctx.Value(admittedRecordsKey{}) != nil {
+			records = append([]Record(nil), records...)
+		}
+		if err := c.handleBatchWithRetry(ctx, shardID, records); err != nil {
 			return fmt.Errorf("handle records page %s: batch handler: %w", shardID, err)
 		}
 		return nil
@@ -30,8 +34,8 @@ func (c *Consumer) handleRecordsPage(ctx context.Context, shardID string, out *k
 		}
 		return nil
 	}
-	for _, record := range out.Records {
-		if err := c.handleRecordWithRetry(ctx, shardID, record); err != nil {
+	for i := range out.Records {
+		if err := c.handlePageRecord(ctx, shardID, out.Records, i); err != nil {
 			return fmt.Errorf("handle records page %s: record handler: %w", shardID, err)
 		}
 	}
@@ -51,8 +55,8 @@ func (c *Consumer) handleRecordsConcurrently(ctx context.Context, shardID string
 		workerLimit = len(records)
 	}
 	if workerLimit <= 1 {
-		for _, record := range records {
-			if err := c.handleRecordWithRetry(ctx, shardID, record); err != nil {
+		for i := range records {
+			if err := c.handlePageRecord(ctx, shardID, records, i); err != nil {
 				return err
 			}
 		}
@@ -70,18 +74,18 @@ func (c *Consumer) handleRecordsConcurrently(ctx context.Context, shardID string
 		wg       sync.WaitGroup
 	)
 
-	nextRecord := func() (Record, bool) {
+	nextRecord := func() (int, bool) {
 		if workerCtx.Err() != nil {
-			return Record{}, false
+			return 0, false
 		}
 		mu.Lock()
 		defer mu.Unlock()
 		if workerCtx.Err() != nil || next >= len(records) {
-			return Record{}, false
+			return 0, false
 		}
-		record := records[next]
+		index := next
 		next++
-		return record, true
+		return index, true
 	}
 
 	for range workerLimit {
@@ -102,11 +106,11 @@ func (c *Consumer) handleRecordsConcurrently(ctx context.Context, shardID string
 				}
 			}()
 			for {
-				record, ok := nextRecord()
+				index, ok := nextRecord()
 				if !ok {
 					return
 				}
-				if err := c.handleRecordWithRetry(workerCtx, shardID, record); err != nil {
+				if err := c.handlePageRecord(workerCtx, shardID, records, index); err != nil {
 					once.Do(func() {
 						firstErr = err
 						cancel()

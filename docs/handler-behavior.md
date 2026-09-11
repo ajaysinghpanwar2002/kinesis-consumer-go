@@ -15,7 +15,8 @@ handler := func(ctx context.Context, record consumer.Record) error {
 
 When a record handler is used, the consumer calls it once per Kinesis record. If
 `consumer.WithBatchHandler` is configured, the consumer calls the batch handler
-once per `GetRecords` response instead. The two modes are mutually exclusive:
+once per `GetRecords` response, or per capacity-limited prefix when
+`WithInFlightLimits` is enabled. The two modes are mutually exclusive:
 `consumer.New` returns an error when both a record handler and
 `WithBatchHandler` are provided.
 
@@ -196,8 +197,8 @@ stops assigning new records, waits for already-started handlers to return, and
 then returns the first error.
 
 `WithShardConcurrency` applies only to record handlers. Batch handlers are still
-called once per `GetRecords` response and are not split across worker goroutines
-by the consumer.
+called sequentially for each page or capacity-limited prefix; the consumer
+does not split batch callbacks across worker goroutines.
 
 When `WithShardConcurrency(n > 1)` is configured, record handlers can run
 concurrently and `DLQPublisher.Publish` can also be called concurrently if
@@ -205,3 +206,11 @@ multiple records exhaust retries. Handler and publisher implementations must be
 concurrency-safe.
 
 Keep `WithShardConcurrency(1)` when strict per-shard ordering matters.
+
+## Optional admission limits
+
+[`WithInFlightLimits`](in-flight-limits.md) splits fetched pages into ordered
+prefixes that fit record and byte budgets. Batch handlers receive one prefix
+per call. Automatic completion releases capacity before checkpoint persistence;
+concurrent record callbacks release their individual reservations as they
+finish. Unadmitted staging is discarded during drain and remains replayable.

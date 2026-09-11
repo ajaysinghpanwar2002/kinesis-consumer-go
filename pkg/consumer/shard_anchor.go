@@ -49,6 +49,7 @@ func (c *Consumer) shardAnchorVerifyBudget() time.Duration {
 // from, so retention cannot drop the anchor between proving the position and
 // consuming it.
 type pendingShardPage struct {
+	slot   *admissionReservation
 	output *kinesis.GetRecordsOutput
 	readAt time.Time
 	took   time.Duration
@@ -66,6 +67,9 @@ type pendingShardPage struct {
 func (p *pendingShardPage) dropLeadingRecord() {
 	if len(p.output.Records) == 0 {
 		return
+	}
+	if p.slot != nil {
+		p.output.Records[0] = Record{}
 	}
 	remainder := *p.output
 	remainder.Records = p.output.Records[1:]
@@ -89,8 +93,8 @@ func (p *pendingShardPage) dropLeadingRecord() {
 // anchor, a missing stream or shard, and an exhausted budget all produce
 // checkpoint.ErrRecoveryState, which halts the shard. Cancellation of the
 // caller's context is returned as itself: a shutdown is not a recovery failure.
-func (c *Consumer) verifyShardAnchorPage(ctx context.Context, shardID, sequence string) (*pendingShardPage, error) {
-	page, err := c.readShardAnchorPage(ctx, shardID, sequence)
+func (c *Consumer) verifyShardAnchorPage(ctx context.Context, shardID, sequence string, beforeWait func() error) (*pendingShardPage, error) {
+	page, err := c.readShardAnchorPage(ctx, shardID, sequence, beforeWait)
 	if err != nil {
 		// Verification errors never pass through a session, so this is the
 		// boundary that counts them.
@@ -99,11 +103,21 @@ func (c *Consumer) verifyShardAnchorPage(ctx context.Context, shardID, sequence 
 	return page, nil
 }
 
-func (c *Consumer) readShardAnchorPage(ctx context.Context, shardID, sequence string) (*pendingShardPage, error) {
+func (c *Consumer) readShardAnchorPage(ctx context.Context, shardID, sequence string, beforeWait func() error) (*pendingShardPage, error) {
 	if sequence == "" {
 		return nil, anchorRecoveryError(shardID, sequence, "recovery position has no sequence", nil)
 	}
 
+	slot, err := c.admission.acquireBeforeWait(ctx, shardID, nil, true, beforeWait)
+	if err != nil {
+		return nil, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			slot.release()
+		}
+	}()
 	budgetCtx, cancel := context.WithTimeout(ctx, c.shardAnchorVerifyBudget())
 	defer cancel()
 
@@ -172,7 +186,8 @@ func (c *Consumer) readShardAnchorPage(ctx context.Context, shardID, sequence st
 		if len(out.Records) > 0 {
 			first := aws.ToString(out.Records[0].SequenceNumber)
 			if first == sequence {
-				return &pendingShardPage{output: out, readAt: lastReadAt, took: lastReadAt.Sub(readStart)}, nil
+				transferred = true
+				return &pendingShardPage{output: c.ownRecordsOutput(out), slot: slot, readAt: lastReadAt, took: lastReadAt.Sub(readStart)}, nil
 			}
 			return nil, anchorRecoveryError(shardID, sequence,
 				fmt.Sprintf("anchor is no longer available; the shard now yields %s at that position", first), nil)

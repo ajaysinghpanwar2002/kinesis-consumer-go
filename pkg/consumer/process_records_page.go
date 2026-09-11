@@ -37,6 +37,13 @@ func (c *Consumer) processRecordsPage(ctx context.Context, shardID string, out *
 		return "", 0, nil
 	}
 
+	// Capture checkpoint identity before callbacks can modify their records.
+	lastSeq := aws.ToString(out.Records[len(out.Records)-1].SequenceNumber)
+	processed := len(out.Records)
+	if reservation, ok := ctx.Value(admittedRecordsKey{}).(*admissionReservation); ok {
+		defer reservation.release()
+		defer clear(out.Records)
+	}
 	if err := c.handleRecordsPage(ctx, shardID, out); err != nil {
 		return "", 0, fmt.Errorf("process records page %s: %w", shardID, err)
 	}
@@ -56,8 +63,7 @@ func (c *Consumer) processRecordsPage(ctx context.Context, shardID string, out *
 	// checkpoint advance.
 	c.processingHealth.recordProcessed(time.Now())
 
-	lastRecord := out.Records[len(out.Records)-1]
-	return aws.ToString(lastRecord.SequenceNumber), len(out.Records), nil
+	return lastSeq, processed, nil
 }
 
 func (c *Consumer) processRecordsPageWithCheckpoint(ctx context.Context, shardID string, out *kinesis.GetRecordsOutput, processedSinceCheckpoint int) (string, int, error) {
