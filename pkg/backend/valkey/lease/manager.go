@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	valkey "github.com/valkey-io/valkey-go"
@@ -302,7 +303,7 @@ type valkeyLease struct {
 	manager                            *Manager
 	stream, generation, generationsKey string
 	mu                                 ctxlock.Mutex
-	invalid                            bool
+	invalid                            atomic.Bool
 	client                             valkey.Client
 	ownersKey                          string
 	expiriesKey                        string
@@ -322,7 +323,7 @@ func (l *valkeyLease) Renew(ctx context.Context, ttl time.Duration) error {
 		return err
 	}
 	defer l.mu.Unlock()
-	if l.invalid {
+	if l.invalid.Load() {
 		return consumerlease.ErrNotOwned
 	}
 	if err := validateTTL(ttl); err != nil {
@@ -335,8 +336,8 @@ func (l *valkeyLease) Renew(ctx context.Context, ttl time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("renew lease %s: %w", l.shardID, err)
 	}
-	if res == 0 {
-		l.invalidateLocked()
+	if res == 0 || l.invalid.Load() {
+		l.markInvalid()
 		return consumerlease.ErrNotOwned
 	}
 	return nil
@@ -351,10 +352,10 @@ func (l *valkeyLease) Release(ctx context.Context) error {
 		return err
 	}
 	defer l.mu.Unlock()
-	if l.invalid {
+	if l.invalid.Load() {
 		return consumerlease.ErrNotOwned
 	}
-	defer l.invalidateLocked()
+	defer l.markInvalid()
 	resp := leaseReleaseScript.Exec(ctx, l.client,
 		[]string{l.ownersKey, l.expiriesKey, l.generationsKey}, []string{l.shardID, l.owner, "", l.generation})
 	res, err := resp.ToInt64()
@@ -362,7 +363,7 @@ func (l *valkeyLease) Release(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("release lease %s: %w", l.shardID, err)
 	}
-	if res == 0 {
+	if res == 0 || l.invalid.Load() {
 		return consumerlease.ErrNotOwned
 	}
 	return nil
