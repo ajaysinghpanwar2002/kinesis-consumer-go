@@ -19,7 +19,8 @@ No Java, no MultiLangDaemon.
 
 - Shard leasing with heartbeats and fair-share rebalancing.
 - Shard-aware checkpointing and reshard gating.
-- Record or batch handlers with configurable batching and retry.
+- Record or batch handlers with configurable batching and retry, plus opt-in
+  explicit acknowledgment for applications that complete work asynchronously.
 - Pluggable, bounded/retrying DLQ publisher interface with stable poison-record
   idempotency keys for downstream deduplication.
 - Optional graceful drain mode on shutdown (finish in-flight work, checkpoint, release lease).
@@ -41,9 +42,11 @@ go get github.com/ajaysinghpanwar2002/kinesis-consumer-go
 - [Features and capabilities](docs/features.md) — a complete, source-accurate inventory of what the library does (and what it does not yet do).
 - [Configuration reference](docs/configuration.md) — every `Config` field and `With*` option with defaults, effects, and validation rules.
 - [Handler failure policy, DLQ, and shard concurrency](docs/handler-behavior.md)
+- [Explicit acknowledgment](docs/explicit-processing.md) — `Delivery` handles, contiguous-prefix checkpointing, and the application shutdown order.
+- [Admission limits and staging](docs/in-flight-limits.md) — record/byte budgets, fetch slots, and what they do and do not bound.
 - [Logging](docs/logging.md) — enabling `WithLogger`, the complete structured event catalog with levels and attributes, and production guidance.
 - [Metrics](docs/metrics.md) — enabling `WithMetrics`, the complete metric and tag catalog, statsd wire conventions, and the Telegraf/InfluxDB/Grafana path.
-- [Fenced memory storage](docs/fenced-memory.md) — optional lease/session contracts, recovery state, and durability limits; consumer integration is pending.
+- [Fenced recovery](docs/fenced-recovery.md) — generation-fenced sessions, first-record protection, and anchor verification, with the [memory](docs/fenced-memory.md) and [Valkey](docs/fenced-valkey.md) backend contracts.
 - [Integration test suite](docs/testing.md) — a verifiable ledger of every integration scenario and the behavior it proves.
 
 ## Examples

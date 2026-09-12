@@ -4,15 +4,45 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint"
 	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease"
+	"github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/metrics"
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
-// explicitProcessor is a worker-scoped processing component. Slice 7 will own
-// its worker wiring: one page caller, one checkpoint runner, and cancellation
+// explicitProcessorKey carries a shard worker's explicit processor down its own
+// processing path, alongside the fenced session it owns. Like shardSessionKey
+// it is worker-scoped state rather than a dependency.
+type explicitProcessorKey struct{}
+
+func withExplicitProcessor(ctx context.Context, p *explicitProcessor) context.Context {
+	if p == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, explicitProcessorKey{}, p)
+}
+
+// explicitProcessorFrom returns the calling shard worker's explicit processor,
+// or nil when the consumer runs automatic handlers.
+func explicitProcessorFrom(ctx context.Context) *explicitProcessor {
+	p, _ := ctx.Value(explicitProcessorKey{}).(*explicitProcessor)
+	return p
+}
+
+// checkpointRequest asks the single checkpoint writer for an out-of-band write:
+// an eligible-progress flush, or the shard's terminal completion marker.
+type checkpointRequest struct {
+	complete bool
+	sequence string
+	result   chan error
+}
+
+// explicitProcessor is a worker-scoped processing component. runShardWorker
+// owns its wiring: one page caller, one checkpoint runner, and cancellation
 // only when completion work must stop. Successful callback return keeps ctx live.
 // No payload lives here: pages and active attempts own their own buffers.
 type explicitProcessor struct {
@@ -23,9 +53,21 @@ type explicitProcessor struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	interval time.Duration
-	flush    chan chan error
+	flush    chan checkpointRequest
 	done     chan struct{}
 	err      error // written by runCheckpoints, read only after done closes
+
+	// lost records that an ownership check answered ErrNotOwned. An
+	// asynchronous Ack can observe a takeover before lease renewal does, and
+	// the stop it triggers cancels renewal before renewal can report it, so
+	// without this the worker would see only the cancellation.
+	lost atomic.Bool
+
+	// fetched is the last sequence this acquisition fetched and fully
+	// admitted. An expired iterator resumes from it rather than from persisted
+	// recovery, which lags behind unacknowledged and unflushed progress.
+	fetchedMu sync.Mutex
+	fetched   string
 }
 
 func newExplicitProcessor(ctx context.Context, c *Consumer, shard string, held lease.Lease, handlers explicitHandlers, interval time.Duration) (*explicitProcessor, error) {
@@ -64,10 +106,19 @@ func newExplicitProcessor(ctx context.Context, c *Consumer, shard string, held l
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(withShardSession(ctx, session))
-	p := &explicitProcessor{c: c, handlers: handlers, session: session, ctx: ctx, cancel: cancel, interval: interval, flush: make(chan chan error), done: make(chan struct{})}
+	p := &explicitProcessor{c: c, handlers: handlers, session: session, ctx: ctx, cancel: cancel, interval: interval, flush: make(chan checkpointRequest), done: make(chan struct{})}
 	p.tracker = newAckTracker(shard, func(ctx context.Context) error {
+		// Processing is cancelled the instant the worker is stopped — immediate
+		// shutdown, drain deadline, shedding, lease loss — and this check is
+		// what makes handles stale from that instant rather than once the
+		// asynchronous stop finishes invalidating them. Nothing accepted after
+		// it could be persisted anyway: the checkpoint runner is stopping too.
+		if p.ctx.Err() != nil {
+			return ErrStaleDelivery
+		}
 		err := fenced.Validate(ctx)
 		if errors.Is(err, lease.ErrNotOwned) {
+			p.lost.Store(true)
 			p.stop()
 		}
 		return err
@@ -76,12 +127,36 @@ func newExplicitProcessor(ctx context.Context, c *Consumer, shard string, held l
 	return p, nil
 }
 
+// ownershipLost reports whether an ownership check found the lease gone. The
+// worker reads it after joining, so the handoff is reported as a handoff rather
+// than as the cancellation it produced.
+func (p *explicitProcessor) ownershipLost() bool { return p.lost.Load() }
+
+// recordFetched publishes the last sequence a fully admitted page carried.
+// Only the shard's processing goroutine writes it, but it is guarded anyway:
+// the cost is nothing next to the calls around it.
+func (p *explicitProcessor) recordFetched(sequence string) {
+	p.fetchedMu.Lock()
+	defer p.fetchedMu.Unlock()
+	p.fetched = sequence
+}
+
+// lastFetched returns the sequence an expired iterator resumes after, or an
+// empty string before this acquisition has admitted a whole page.
+func (p *explicitProcessor) lastFetched() string {
+	p.fetchedMu.Lock()
+	defer p.fetchedMu.Unlock()
+	return p.fetched
+}
+
 // stop is immediate invalidation, not graceful drain. The worker must flush
 // while its ownership context is live before calling this on a successful drain.
 func (p *explicitProcessor) stop() {
+	// Publish cancellation before handles become stale, so internal policy
+	// acknowledgments always observe the stop that invalidated them.
+	p.cancel()
 	p.tracker.invalidate()
 	// Session invalidation may wait for a save holding the backend lock.
-	p.cancel()
 	p.session.invalidate()
 }
 
@@ -165,15 +240,24 @@ func (p *explicitProcessor) processAttempt(deliveries []Delivery) error {
 		kind = handlerKindBatch
 	}
 	var cause error
+	tags := p.c.shardTags(p.session.shardID, metrics.Tag{Key: metricTagHandler, Value: kind})
 	attempts := p.c.retryMaxAttempts()
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if err := p.ctx.Err(); err != nil {
 			return err
 		}
+		if attempt > 1 {
+			p.c.reporter.Counter(metricHandlerRetries, 1, tags)
+		}
 		// The application owns its slice and may retain or alter it. Keep the
 		// original identities separately for atomic retry invalidation.
+		attemptStart := time.Now()
 		cause = p.callAttempt(kind, pending)
+		p.c.reporter.Timing(metricHandlerDuration, time.Since(attemptStart), tags)
 		if cause == nil {
+			// Delivered and returned successfully. Acknowledgment is the
+			// application's separate decision and is counted by checkpoints.
+			p.c.reporter.Counter(metricRecordsProcessed, int64(len(pending)), tags)
 			return p.ctx.Err()
 		}
 		next := p.tracker.retry(pending)
@@ -202,6 +286,13 @@ func (p *explicitProcessor) processAttempt(deliveries []Delivery) error {
 	}
 	for _, d := range pending {
 		if err := d.Ack(p.ctx); err != nil {
+			// A worker stop can invalidate policy handles after Skip/DLQ
+			// succeeds. Report that cancellation through the worker's stop
+			// path; application errors and live-session stale errors remain
+			// failures.
+			if errors.Is(err, ErrStaleDelivery) && p.ctx.Err() != nil {
+				return p.ctx.Err()
+			}
 			return err
 		}
 	}
@@ -240,9 +331,13 @@ func (p *explicitProcessor) runCheckpoints() {
 			err = save(false)
 		case <-ticker.C:
 			err = save(true)
-		case result := <-p.flush:
-			err = save(true)
-			result <- err
+		case request := <-p.flush:
+			if request.complete {
+				err = p.saveCompletion(request.sequence)
+			} else {
+				err = save(true)
+			}
+			request.result <- err
 		}
 		if err != nil {
 			// Immediate stop cancels backend I/O deliberately. Preserve actual
@@ -256,9 +351,15 @@ func (p *explicitProcessor) runCheckpoints() {
 }
 
 func (p *explicitProcessor) flushCheckpoint(ctx context.Context) error {
-	result := make(chan error, 1)
+	return p.requestCheckpoint(ctx, checkpointRequest{})
+}
+
+// requestCheckpoint hands one out-of-band write to the checkpoint runner, which
+// is the only writer, so it cannot race an interval or count-triggered save.
+func (p *explicitProcessor) requestCheckpoint(ctx context.Context, request checkpointRequest) error {
+	request.result = make(chan error, 1)
 	select {
-	case p.flush <- result:
+	case p.flush <- request:
 	case <-p.done:
 		if p.err != nil {
 			return p.err
@@ -268,11 +369,46 @@ func (p *explicitProcessor) flushCheckpoint(ctx context.Context) error {
 		return ctx.Err()
 	}
 	select {
-	case err := <-result:
+	case err := <-request.result:
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// saveCompletion persists the shard's terminal completion marker. Every
+// admitted delivery is acknowledged by the time the caller asks for it, so the
+// tracker's contiguous prefix is the final sequence; the caller's last fetched
+// sequence covers a shard that ended without this worker admitting anything.
+func (p *explicitProcessor) saveCompletion(sequence string) error {
+	if completed, _ := p.tracker.progress(); completed != "" {
+		sequence = completed
+	}
+	return p.c.saveShardCompletionCheckpoint(p.ctx, p.session.shardID, sequence)
+}
+
+// drain finishes a graceful shutdown for one shard: fetching and admission have
+// already stopped, so wait for every admitted delivery to be acknowledged and
+// then flush the contiguous completed prefix while ownership is still live. The
+// caller's context is the worker context, which a drain deadline, immediate
+// stop, shedding, or lease loss cancels — releasing the wait and leaving the
+// unfinished records replayable.
+func (p *explicitProcessor) drain(ctx context.Context) error {
+	if err := p.tracker.waitIdle(ctx); err != nil {
+		return err
+	}
+	return p.flushCheckpoint(ctx)
+}
+
+// complete ends a closed shard. Staged records are already admitted or
+// discarded and callbacks have returned, so only outstanding acknowledgments
+// remain; the completion marker is persisted after them, never across them, so
+// children stay blocked until this shard's progress is durable.
+func (p *explicitProcessor) complete(ctx context.Context, lastSequence string) error {
+	if err := p.tracker.waitIdle(ctx); err != nil {
+		return err
+	}
+	return p.requestCheckpoint(ctx, checkpointRequest{complete: true, sequence: lastSequence})
 }
 
 // A callback that ignores cancellation may outlive this call, but owns only
