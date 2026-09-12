@@ -12,6 +12,29 @@ released together and share the version numbers below.
 
 ## [Unreleased]
 
+### Added
+
+- Explicit acknowledgment mode: `WithExplicitHandler` and
+  `WithExplicitBatchHandler` deliver `Delivery` handles whose `Ack` is what
+  advances the checkpoint, so an application that completes work asynchronously
+  can tie progress to what is durable rather than to what was delivered.
+  Checkpoints cover the contiguous acknowledged prefix and flush on
+  `WithCheckpointInterval` (default one second) as well as the existing record
+  count. Graceful drain waits for outstanding acknowledgments and flushes before
+  releasing a lease, and a closed shard is completed only after them. The mode
+  requires a fenced checkpoint store paired with its lease manager and is always
+  bounded by admission limits. See
+  [docs/explicit-processing.md](docs/explicit-processing.md).
+- `WithInFlightLimits` bounds admitted records and payload bytes per shard and
+  per instance, plus fetched/staged pages, and splits batches into ordered
+  prefixes that fit. See [docs/in-flight-limits.md](docs/in-flight-limits.md).
+- Generation-fenced recovery for the built-in backends: per-shard sessions that
+  validate ownership atomically with every read and write, write-once inclusive
+  replay positions, recovery-anchor verification, and terminal completion
+  markers. See [docs/fenced-recovery.md](docs/fenced-recovery.md).
+- Exported `ErrStaleDelivery` and `ErrOversizedRecord` sentinels, and
+  `*OversizedRecordError`, for `errors.Is`/`errors.As` matching.
+
 ## [0.1.0] - 2026-07-20
 
 Initial public release. The library is pre-1.0: the API is frozen for this

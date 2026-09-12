@@ -4,8 +4,13 @@ This page documents the current public handler behavior in `pkg/consumer`.
 
 ## Handler Modes
 
-`consumer.New` requires either a record handler or a batch handler configured
-with `consumer.WithBatchHandler`.
+`consumer.New` requires exactly one handler mode: a record handler, a batch
+handler configured with `consumer.WithBatchHandler`, or one of the explicit
+handlers described in [explicit acknowledgment](explicit-processing.md). The
+sections below describe the two automatic modes, in which returning from the
+handler completes the record. Retries, the failure policy, and the DLQ behave
+the same way in explicit mode, except that a retry re-delivers only the records
+that were not acknowledged during the failed attempt.
 
 ```go
 handler := func(ctx context.Context, record consumer.Record) error {
@@ -196,9 +201,11 @@ On the first record-handler error, the consumer cancels the derived page context
 stops assigning new records, waits for already-started handlers to return, and
 then returns the first error.
 
-`WithShardConcurrency` applies only to record handlers. Batch handlers are still
-called sequentially for each page or capacity-limited prefix; the consumer
-does not split batch callbacks across worker goroutines.
+`WithShardConcurrency` applies only to automatic record handlers. Batch handlers
+are still called sequentially for each page or capacity-limited prefix; the
+consumer does not split batch callbacks across worker goroutines. `consumer.New`
+rejects the option in explicit mode, where concurrency comes from
+acknowledgments that are already concurrent and out of order.
 
 When `WithShardConcurrency(n > 1)` is configured, record handlers can run
 concurrently and `DLQPublisher.Publish` can also be called concurrently if

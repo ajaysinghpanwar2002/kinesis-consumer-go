@@ -20,8 +20,8 @@ so you can plan around the gaps.
 | Reshard ordering | Parent/child gating via `SHARD_END` completion markers |
 | Coordination | Shard leases with acquire/renew/release + worker heartbeats |
 | Rebalancing | Fair-share across workers with jitter, cooldown, bounded moves, overage shedding |
-| Checkpointing | Per-page, periodic (`checkpointEvery`), on-drain, and catch-up flush |
-| Handlers | Per-record or per-page batch handler |
+| Checkpointing | Per-page, periodic (`checkpointEvery`), on-drain, and catch-up flush; contiguous acknowledged prefix in explicit mode |
+| Handlers | Per-record or per-page batch handler; opt-in [explicit acknowledgment](explicit-processing.md) with `Delivery` handles |
 | Reliability | Configurable retry + failure policy (skip / fail-fast / send-to-DLQ) |
 | DLQ | Pluggable `DLQPublisher` with rich poison-record metadata |
 | Throughput | Per-shard record-handler concurrency |
@@ -339,7 +339,9 @@ Every knob has a working default, so a consumer runs with no options at all.
 | `WithBatching(batchSize, checkpointEvery)` | 100, 100 | GetRecords page size; checkpoint throttle |
 | `WithPolling(pollInterval, shardSyncInterval)` | 1s, 1m | GetRecords poll cadence; shard resync cadence |
 | `WithRetry(maxAttempts, backoff)` | 3, 1s | Handler retry attempts and linear base backoff |
-| `WithInFlightLimits(limits)` | disabled | [Record/byte budgets and fetch slots](in-flight-limits.md); ordered batch splitting |
+| `WithInFlightLimits(limits)` | disabled (always on in explicit mode) | [Record/byte budgets and fetch slots](in-flight-limits.md); ordered batch splitting |
+| `WithExplicitHandler(handler)` / `WithExplicitBatchHandler(handler)` | none | [Explicit acknowledgment](explicit-processing.md) through `Delivery` handles |
+| `WithCheckpointInterval(interval)` | 1s | Explicit-mode flush cadence for the acknowledged prefix |
 | `WithShardConcurrency(n)` | 1 | Concurrent record-handler calls per shard |
 | `WithFailurePolicy(policy)` | `fail-fast` | Post-retry poison handling |
 | `WithDLQRetry(maxAttempts, backoff)` | 3, 1s | DLQ-only publish retry attempts and linear base backoff |

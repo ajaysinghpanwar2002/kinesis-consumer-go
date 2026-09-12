@@ -26,7 +26,7 @@ func (c *Consumer) processShardRecordsLoop(ctx context.Context, shardID string) 
 		default:
 		}
 		if c.isDraining() {
-			if err := c.checkpointOnDrain(ctx, shardID, lastSeq, processedSinceCheckpoint); err != nil {
+			if err := c.finishShardDrain(ctx, shardID, lastSeq, processedSinceCheckpoint); err != nil {
 				return lastSeq, processedSinceCheckpoint, fmt.Errorf("process shard records loop %s: %w", shardID, err)
 			}
 			return lastSeq, processedSinceCheckpoint, nil
@@ -46,7 +46,7 @@ func (c *Consumer) processShardRecordsLoop(ctx context.Context, shardID string) 
 			return lastSeq, processedSinceCheckpoint, fmt.Errorf("process shard records loop %s: %w", shardID, err)
 		}
 		if c.isDraining() {
-			if err := c.checkpointOnDrain(ctx, shardID, lastSeq, processedSinceCheckpoint); err != nil {
+			if err := c.finishShardDrain(ctx, shardID, lastSeq, processedSinceCheckpoint); err != nil {
 				return lastSeq, processedSinceCheckpoint, fmt.Errorf("process shard records loop %s: %w", shardID, err)
 			}
 			return lastSeq, processedSinceCheckpoint, nil

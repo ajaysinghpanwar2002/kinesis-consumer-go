@@ -213,6 +213,14 @@ func (s *fakeStream) trimLocked(count int) {
 	s.trimmed += count
 }
 
+// getRecordsCalls reports how many reads the stream has served, which is how a
+// test observes read pacing.
+func (s *fakeStream) getRecordsCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getRecordsN
+}
+
 func (s *fakeStream) iteratorRequests() []kinesis.GetShardIteratorInput {
 	s.mu.Lock()
 	defer s.mu.Unlock()
