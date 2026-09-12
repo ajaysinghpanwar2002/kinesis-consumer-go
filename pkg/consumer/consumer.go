@@ -61,6 +61,9 @@ type Consumer struct {
 	syncHealth       healthSignalState
 	heartbeatHealth  healthSignalState
 	processingHealth processingProgressState
+	observation      observationState
+	checkpointHealth healthSignalState
+	recoveryHealth   healthSignalState
 
 	// lifecycleMu guards the closed/start/run state shared between Start and
 	// Close. startClaimed is permanent: endRun clears only the active handles,
@@ -118,6 +121,8 @@ func (c *Consumer) Start(ctx context.Context) (err error) {
 	// never release the lease manager while the heartbeat loop might still use
 	// it.
 	defer c.endRun(runDone)
+	stopObservations := c.startObservations()
+	defer stopObservations()
 	defer cancel()
 
 	// The worker-liveness heartbeat gets its own lifetime, ending only when

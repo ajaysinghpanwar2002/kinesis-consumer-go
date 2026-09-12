@@ -96,7 +96,7 @@ func (c *Consumer) bindShardSession(ctx context.Context, shardID string, shardLe
 		}
 		// Both built-in stores validate recovery state inside Bind, so this is
 		// where corrupt metadata surfaces at startup.
-		return nil, c.observeRecoveryFailure(shardID, fmt.Errorf("bind shard session %s: %w", shardID, err))
+		return nil, c.observeRecoveryFailure(ctx, shardID, fmt.Errorf("bind shard session %s: %w", shardID, err))
 	}
 	session := &shardSession{c: c, session: bound, shardID: shardID}
 	c.logger.Debug("fenced shard session bound",
@@ -109,7 +109,13 @@ func (c *Consumer) bindShardSession(ctx context.Context, shardID string, shardLe
 // called at each boundary where such an error first surfaces — session binding,
 // session operations, and anchor verification — so every failure is counted
 // exactly once.
-func (c *Consumer) observeRecoveryFailure(shardID string, err error) error {
+func (c *Consumer) observeRecoveryFailure(ctx context.Context, shardID string, err error) error {
+	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		return err
+	}
+	if err != nil && !errors.Is(err, lease.ErrNotOwned) {
+		c.recoveryHealth.recordFailure(err)
+	}
 	if errors.Is(err, checkpoint.ErrRecoveryState) {
 		c.reporter.Counter(metricRecoveryFailures, 1, c.shardTags(shardID))
 		c.logger.Error("shard recovery state is unusable",
@@ -174,8 +180,8 @@ func permanentRecoveryError(err error) bool {
 	return permanentCheckpointError(err) || errors.Is(err, lease.ErrLeaseMismatch)
 }
 
-func (s *shardSession) observe(err error) error {
-	return s.c.observeRecoveryFailure(s.shardID, err)
+func (s *shardSession) observe(ctx context.Context, err error) error {
+	return s.c.observeRecoveryFailure(ctx, s.shardID, err)
 }
 
 func (s *shardSession) setFresh(fresh bool) {
@@ -203,9 +209,12 @@ func (s *shardSession) recovery(ctx context.Context) (checkpoint.RecoveryPositio
 		return nil
 	})
 	if err != nil {
-		return checkpoint.RecoveryPosition{}, s.observe(err)
+		return checkpoint.RecoveryPosition{}, s.observe(ctx, err)
 	}
 	s.setFresh(position.Kind == checkpoint.RecoveryFresh)
+	if position.Kind == checkpoint.RecoveryCheckpoint {
+		s.c.observation.recovered(s.shardID, position.Sequence)
+	}
 	return position, nil
 }
 
@@ -223,15 +232,21 @@ func (s *shardSession) initialize(ctx context.Context, sequence string) (checkpo
 		return nil
 	})
 	if err != nil {
-		return checkpoint.RecoveryPosition{}, s.observe(err)
+		return checkpoint.RecoveryPosition{}, s.observe(ctx, err)
 	}
 	s.setFresh(position.Kind == checkpoint.RecoveryFresh)
+	if position.Kind == checkpoint.RecoveryCheckpoint {
+		s.c.observation.recovered(s.shardID, position.Sequence)
+	}
 	return position, nil
 }
 
 func (s *shardSession) save(ctx context.Context, value string) error {
 	if err := s.session.Save(ctx, value); err != nil {
-		return s.observe(err)
+		if errors.Is(err, checkpoint.ErrRecoveryState) {
+			return s.observe(ctx, err)
+		}
+		return err
 	}
 	// A persisted checkpoint supersedes any initial replay position, so the
 	// shard can never need one again.

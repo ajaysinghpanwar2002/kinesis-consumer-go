@@ -14,6 +14,11 @@ released together and share the version numbers below.
 
 ### Added
 
+- Admission pressure and pause gauges, periodic blocked-state reporting, and
+  checkpoint-covered record counts. Health now includes checkpoint/recovery
+  failures and per-shard accepted/persisted progress and pressure snapshots.
+  Worker exit clears its gauges. See [metrics and health](docs/metrics.md).
+
 - Explicit acknowledgment mode: `WithExplicitHandler` and
   `WithExplicitBatchHandler` deliver `Delivery` handles whose `Ack` is what
   advances the checkpoint, so an application that completes work asynchronously

@@ -116,6 +116,10 @@ func TestBoundedRecoverySlotWaitFlushesCompletedProgress(t *testing.T) {
 			wantErr, wantCount := error(context.Canceled), 0
 			if failSave {
 				wantErr, wantCount = saveErr, 1
+				health := f.consumer.Health()
+				if !errors.Is(health.Checkpoint.LastFailure, saveErr) || health.Recovery.Failures != 0 || health.Recovery.LastError != nil {
+					t.Fatalf("checkpoint-only outage was classified as recovery: %+v", health)
+				}
 			}
 			if !errors.Is(result.err, wantErr) || result.sequence != "100" || result.count != wantCount {
 				t.Fatalf("pass = %+v", result)

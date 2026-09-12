@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // InFlightLimits bounds admitted records and their payload bytes. Zero fields
@@ -74,14 +75,17 @@ type admissionRequest struct {
 // shards. Grants reserve capacity before waking the waiter, so new arrivals
 // cannot steal it. No callback, backend call, or wait holds this lock.
 type admissionController struct {
-	mu      sync.Mutex
-	limits  InFlightLimits
-	total   admissionUsage
-	shards  map[string]admissionUsage
-	slots   int
-	queue   []*admissionRequest
-	stopCtx context.Context
-	stop    context.CancelFunc
+	mu           sync.Mutex
+	limits       InFlightLimits
+	total        admissionUsage
+	shards       map[string]admissionUsage
+	slots        int
+	queue        []*admissionRequest
+	reservations map[*admissionReservation]struct{}
+	stages       map[string]*admissionReservation
+	pauses       map[string]*pauseState
+	stopCtx      context.Context
+	stop         context.CancelFunc
 }
 
 func newAdmissionController(limits *InFlightLimits) *admissionController {
@@ -89,7 +93,7 @@ func newAdmissionController(limits *InFlightLimits) *admissionController {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &admissionController{limits: *limits, shards: make(map[string]admissionUsage), stopCtx: ctx, stop: cancel}
+	return &admissionController{limits: *limits, reservations: make(map[*admissionReservation]struct{}), stages: make(map[string]*admissionReservation), pauses: make(map[string]*pauseState), shards: make(map[string]admissionUsage), stopCtx: ctx, stop: cancel}
 }
 
 // A reservation retains sizes only, never payloads. Each record may release
@@ -100,6 +104,9 @@ type admissionReservation struct {
 	sizes      []int
 	released   []bool
 	slot       bool
+	admitted   time.Time
+	staged     int
+	remaining  int
 }
 
 func (a *admissionController) acquire(ctx context.Context, shard string, sizes []int, slot bool) (*admissionReservation, error) {
@@ -161,6 +168,7 @@ func (a *admissionController) compactQueue() {
 }
 
 func (a *admissionController) schedule() {
+	defer a.updatePauses(time.Now())
 	if a.stopCtx.Err() != nil {
 		return
 	}
@@ -189,18 +197,24 @@ func (a *admissionController) schedule() {
 			remaining = append(remaining, r)
 			continue
 		}
-		reservation := &admissionReservation{controller: a, shard: r.shard, slot: r.slot}
+		reservation := &admissionReservation{controller: a, shard: r.shard, slot: r.slot, admitted: time.Now()}
+		a.reservations[reservation] = struct{}{}
 		if r.slot {
 			a.slots++
+			a.stages[r.shard] = reservation
 		} else {
 			reservation.sizes = append([]int(nil), r.sizes[:n]...)
 			reservation.released = make([]bool, n)
+			reservation.remaining = n
 			usage := a.shards[r.shard]
 			usage.records += n
 			usage.bytes += bytes
 			a.shards[r.shard] = usage
 			a.total.records += n
 			a.total.bytes += bytes
+			if held := a.stages[r.shard]; held != nil {
+				held.staged = max(0, held.staged-bytes)
+			}
 		}
 		r.reservation = reservation
 		close(r.ready)
@@ -236,12 +250,19 @@ func (r *admissionReservation) releaseRecordLocked(i int) {
 	}
 	r.controller.total.records--
 	r.controller.total.bytes -= size
+	r.remaining--
+	if r.remaining == 0 {
+		delete(r.controller.reservations, r)
+	}
 }
 
 func (r *admissionReservation) releaseLocked() {
 	if r.slot {
 		r.controller.slots--
 		r.slot = false
+		r.staged = 0
+		delete(r.controller.stages, r.shard)
+		delete(r.controller.reservations, r)
 	}
 	for i := range r.sizes {
 		r.releaseRecordLocked(i)

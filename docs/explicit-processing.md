@@ -108,3 +108,8 @@ reshard cannot deliver a child's records before the parent's are persisted.
 - [Fenced recovery](fenced-recovery.md) and the
   [Valkey durability contract](fenced-valkey.md)
 - [Handler behavior](handler-behavior.md)
+
+For asynchronous processing, inspect `Health().Shards` to distinguish the
+contiguous accepted sequence from the persisted sequence. Pressure gauges keep
+updating while acknowledgments are delayed; `records_checkpointed` counts only
+backend-confirmed progress. See [metrics and health](metrics.md#health-snapshots).
