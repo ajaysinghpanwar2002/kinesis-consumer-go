@@ -21,6 +21,10 @@ type Health struct {
 	ShardSync  ShardSyncHealth
 	Heartbeat  HeartbeatHealth
 	Processing ProcessingHealth
+	Checkpoint CheckpointHealth
+	Recovery   RecoveryHealth
+	Pressure   PressureHealth
+	Shards     map[string]ShardHealth
 }
 
 // ProcessingHealth describes record-delivery progress across all owned
@@ -94,7 +98,14 @@ type HeartbeatHealth struct {
 func (c *Consumer) Health() Health {
 	syncFailures, syncLastSuccess, syncErr := c.syncHealth.snapshot()
 	hbFailures, hbLastSuccess, hbErr := c.heartbeatHealth.snapshot()
+	shards, pressure := c.observationSnapshot(time.Now())
+	failures, lastSuccess, checkpointErr := c.checkpointHealth.snapshot()
+	recoveryFailures, _, recoveryErr := c.recoveryHealth.snapshot()
+	lastProgress, _ := c.observation.progressSnapshot(time.Now())
 	return Health{
+		Checkpoint: CheckpointHealth{ConsecutiveFailures: failures, LastSuccess: lastSuccess, LastError: checkpointErr, LastProgress: lastProgress, LastFailure: c.observation.checkpointFailure()},
+		Recovery:   RecoveryHealth{Failures: recoveryFailures, LastError: recoveryErr},
+		Shards:     shards, Pressure: pressure,
 		ShardSync: ShardSyncHealth{
 			ConsecutiveFailures: syncFailures,
 			LastSuccess:         syncLastSuccess,

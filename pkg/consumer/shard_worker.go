@@ -12,6 +12,8 @@ import (
 )
 
 func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLease lease.Lease) error {
+	c.observation.begin(shardID)
+	defer c.finishObservations(shardID)
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -62,6 +64,9 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 		return c.stopWorkerAfterFailedBind(ctx, shardID, shardLease, bindErr, &leaseLost, renewErrCh)
 	}
 	sessionSlot.set(session)
+	if processor != nil {
+		c.observation.setTracker(shardID, processor.tracker)
+	}
 
 	processCtx := workerCtx
 	if session != nil {

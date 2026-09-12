@@ -321,6 +321,7 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			c.reporter.Timing(metricGetRecordsDuration, time.Since(getRecordsStart), c.shardTags(shardID))
 			out = c.ownRecordsOutput(fetched)
 		}
+		slot.stage(out.Records)
 		readFailures = 0
 		// Health().Processing.LastReadSuccess: every successful read counts,
 		// including empty tip pages — the signal is "the delivery loop is
