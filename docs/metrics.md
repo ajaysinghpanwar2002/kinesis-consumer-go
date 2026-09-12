@@ -110,6 +110,7 @@ only where shown in the catalog.
 | `policy` | `skip` (currently used only by `records_skipped`) |
 | `kind` | `acquire`, `claim`, or `shed` for rebalance outcomes; `throttle`, `expired`, or `other` for GetRecords failures |
 | `outcome` | `clean` or `error` for worker stops |
+| `reason` | `count`, `bytes`, or `fetch_slots` for admission pauses |
 
 Owner and donor identifiers are deliberately not tags. Default owner IDs
 contain a process ID and nanosecond timestamp, so retaining them would create
@@ -213,3 +214,69 @@ For streams with very large shard counts, monitor InfluxDB series cardinality
 and retention, and narrow the dashboard's shard selector during investigation.
 Do not add sequence numbers, record keys, error text, process owner IDs, donor
 IDs, or other unbounded values as tags in custom reporters.
+
+## Pressure and checkpoint progress
+
+The following gauges are emitted once per second with consumer tags and, for
+owned shards, with the additional `shard` tag. Reporting continues during
+blocked handlers, admission waits, checkpoint I/O, and graceful drain. Worker
+exit clears shard gauges; consumer exit clears consumer gauges. Reporters must
+return promptly as required by `metrics.Reporter`.
+
+| Metric (under `kinesis_consumer.`) | Meaning |
+| --- | --- |
+| `unacknowledged_records` | Admitted records awaiting Ack; automatic mode counts incomplete callbacks when admission limits are enabled. |
+| `unacknowledged_bytes` | Their original payload bytes, captured before application access. |
+| `oldest_unacknowledged_age_seconds` | Age since admission of the oldest outstanding reservation; zero when none remain. Retries preserve this age. |
+| `staged_bytes` | Fetched payload bytes awaiting admission, including recovery-anchor pages. Excludes network requests and SDK decoding before a page returns. |
+| `fetch_slots` | Occupied fetch/staging slots, including requests in flight. |
+| `paused_shards` | Shards waiting for count, byte, or fetch-slot capacity. |
+| `pause_duration_seconds` | Current uninterrupted capacity-pause duration, zero while unpaused. |
+| `paused_seconds` | Cumulative paused seconds, including the current pause. This is a gauge, reset on acquisition/consumer exit. |
+| `checkpoint_progress_age_seconds` | Time since a confirmed write covered additional records; starts at worker/consumer start until first progress. |
+
+Pause durations are emitted both without `reason` and with each of the three
+bounded reason values. A wait can be blocked by both count and bytes. Consumer
+pause time measures wall time with any paused shard, so overlapping pauses are
+counted once. Per-reason consumer time likewise measures the union for that
+reason; do not sum reasons to calculate total paused time.
+
+`kinesis_consumer.records_checkpointed` is a shard counter of records covered
+by successful writes during the acquisition. It advances only after backend
+confirmation, includes completion-marker writes, and does not count a record
+again when a later flush or completion marker covers it. It counts records
+processed in this acquisition, including replay, rather than globally unique
+records. Existing `checkpoint_failures` counts failed retryable attempts.
+
+Pressure is available in explicit mode and automatic mode with admission limits.
+Automatic mode without limits has zero pressure fields. Admission metrics do not
+measure RSS, SDK allocations, active callback references after Ack, or buffers
+retained by the application. See [in-flight limits](in-flight-limits.md).
+
+## Health snapshots
+
+`Consumer.Health()` now includes:
+
+- `Checkpoint`: consecutive failed write attempts, last successful write,
+  last write that covered additional records, current error, and `LastFailure`.
+  Any successful write clears the consecutive count and current error;
+  `LastFailure` retains the latest failure even after a successful retry or a
+  different shard's write. These observations survive worker exit.
+- `Recovery`: cumulative recovery failures and the latest error, retained after
+  worker exit. Requested cancellation and ordinary ownership loss are excluded.
+- `Pressure`: consumer pressure and pause durations as described above.
+- `Shards`: snapshots for current acquisitions, removed when workers exit.
+  Each has pressure, checkpoint health, `AcceptedSequence`, `PersistedSequence`,
+  `PersistedRecords`, `Completed`, and `TimeSinceCheckpointProgress`.
+
+Sequences are strings and never metric values or tags. Accepted progress is the
+contiguous completed prefix: acknowledging later records across a gap releases
+capacity but does not advance it. Persisted progress advances only after a
+confirmed backend write. A recovered fenced checkpoint seeds both sequence fields
+without claiming a new write or counting historical records. Successful writes
+of an unchanged position refresh write health but do not refresh progress age.
+
+Snapshots are safe to read concurrently and their maps are independent copies.
+Signals may advance independently while a snapshot is being collected. As with
+other health fields, callers choose alert thresholds; an idle shard naturally
+has an increasing checkpoint-progress age.

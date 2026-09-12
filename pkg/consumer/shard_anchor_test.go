@@ -175,6 +175,9 @@ func TestVerifyShardAnchorPageFailsWhenBudgetIsSpent(t *testing.T) {
 	if !errors.Is(err, checkpoint.ErrRecoveryState) {
 		t.Fatalf("verifyShardAnchorPage() error = %v, want %v", err, checkpoint.ErrRecoveryState)
 	}
+	if health := cons.Health().Recovery; health.Failures != 1 || !errors.Is(health.LastError, checkpoint.ErrRecoveryState) {
+		t.Fatalf("verification budget failure missing from health: %+v", health)
+	}
 	if !strings.Contains(err.Error(), "could not be verified within") {
 		t.Fatalf("error = %v, want it to report the exhausted budget", err)
 	}

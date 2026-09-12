@@ -58,6 +58,7 @@ const (
 	metricTagPolicy        = "policy"
 	metricTagKind          = "kind"
 	metricTagOutcome       = "outcome"
+	metricTagReason        = "reason"
 )
 
 // rebalance_moves / rebalance_skips kind tag values.
@@ -96,3 +97,16 @@ func (c *Consumer) shardTags(shardID string, extra ...metrics.Tag) []metrics.Tag
 	tags = append(tags, metrics.Tag{Key: metricTagShard, Value: shardID})
 	return append(tags, extra...)
 }
+
+const (
+	metricRecordsCheckpointed     = "kinesis_consumer.records_checkpointed"
+	metricUnacknowledgedRecords   = "kinesis_consumer.unacknowledged_records"
+	metricUnacknowledgedBytes     = "kinesis_consumer.unacknowledged_bytes"
+	metricOldestUnacknowledgedAge = "kinesis_consumer.oldest_unacknowledged_age_seconds"
+	metricStagedBytes             = "kinesis_consumer.staged_bytes"
+	metricFetchSlots              = "kinesis_consumer.fetch_slots"
+	metricPausedShards            = "kinesis_consumer.paused_shards"
+	metricPauseDuration           = "kinesis_consumer.pause_duration_seconds"
+	metricPausedSeconds           = "kinesis_consumer.paused_seconds"
+	metricCheckpointProgressAge   = "kinesis_consumer.checkpoint_progress_age_seconds"
+)

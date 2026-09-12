@@ -94,11 +94,27 @@ func (p *pendingShardPage) dropLeadingRecord() {
 // checkpoint.ErrRecoveryState, which halts the shard. Cancellation of the
 // caller's context is returned as itself: a shutdown is not a recovery failure.
 func (c *Consumer) verifyShardAnchorPage(ctx context.Context, shardID, sequence string, beforeWait func() error) (*pendingShardPage, error) {
+	// The pre-wait callback flushes automatic checkpoint progress. Its errors
+	// already have checkpoint observations and must not be counted as recovery.
+	var flushErr error
+	if beforeWait != nil {
+		flush := beforeWait
+		beforeWait = func() error { flushErr = flush(); return flushErr }
+	}
 	page, err := c.readShardAnchorPage(ctx, shardID, sequence, beforeWait)
+	if flushErr != nil {
+		return nil, err
+	}
+	// Admission can observe its stop before admissionContext's AfterFunc
+	// propagates cancellation. That drain is not a recovery failure even
+	// while the supplied context is still live.
+	if c.admission != nil && c.admission.stopCtx.Err() != nil && errors.Is(err, c.admission.stopCtx.Err()) {
+		return nil, err
+	}
 	if err != nil {
 		// Verification errors never pass through a session, so this is the
 		// boundary that counts them.
-		return nil, c.observeRecoveryFailure(shardID, err)
+		return nil, c.observeRecoveryFailure(ctx, shardID, err)
 	}
 	return page, nil
 }
@@ -181,6 +197,7 @@ func (c *Consumer) readShardAnchorPage(ctx context.Context, shardID, sequence st
 			// pass, so the retry resumes from the same position.
 			continue
 		}
+		slot.stage(out.Records)
 		failures = 0
 
 		if len(out.Records) > 0 {

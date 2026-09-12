@@ -69,7 +69,13 @@ func (c *Consumer) saveCheckpointValueWithRetry(ctx context.Context, shardID, va
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		err := c.saveCheckpointValue(ctx, shardID, value)
 		if err == nil {
+			c.checkpointHealth.recordSuccess(time.Now())
+			c.observation.checkpointResult(shardID, nil)
 			return nil
+		}
+		if ctx.Err() == nil {
+			c.checkpointHealth.recordFailure(err)
+			c.observation.checkpointResult(shardID, err)
 		}
 		if permanentCheckpointError(err) {
 			// Ownership has moved on, or the shard's recovery state is
@@ -120,6 +126,7 @@ func (c *Consumer) saveShardCheckpoint(ctx context.Context, shardID, sequenceNum
 	}
 	c.reporter.Timing(metricCheckpointSaveDuration, time.Since(start), c.shardTags(shardID))
 	c.reporter.Counter(metricCheckpointsSaved, 1, c.shardTags(shardID))
+	c.recordPersisted(shardID, sequenceNumber, false)
 	c.logger.Debug("shard checkpoint saved", slog.String("shard", shardID), slog.String("sequence", sequenceNumber))
 	return nil
 }
@@ -133,6 +140,7 @@ func (c *Consumer) saveShardCompletionCheckpoint(ctx context.Context, shardID, s
 	c.reporter.Timing(metricCheckpointSaveDuration, time.Since(start), c.shardTags(shardID))
 	c.reporter.Counter(metricCheckpointsSaved, 1, c.shardTags(shardID))
 	c.reporter.Counter(metricShardsCompleted, 1, c.shardTags(shardID))
+	c.recordPersisted(shardID, sequenceNumber, true)
 	c.logger.Info("shard completed", slog.String("shard", shardID), slog.String("checkpoint", checkpoint))
 	return nil
 }

@@ -41,6 +41,7 @@ func (c *Consumer) processBoundedPage(ctx, admissionCtx context.Context, shardID
 	if c.admission == nil {
 		return c.processRecordsPageWithCheckpoint(ctx, shardID, out, count)
 	}
+	slot.stage(out.Records)
 	defer clear(out.Records)
 	sizes := make([]int, len(out.Records))
 	for i := range out.Records {
