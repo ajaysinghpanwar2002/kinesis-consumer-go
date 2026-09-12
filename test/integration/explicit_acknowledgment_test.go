@@ -131,9 +131,22 @@ func TestExplicitAcknowledgmentDrainFlushesAndResumes(t *testing.T) {
 		stopC1()
 		t.Fatalf("C1 did not reach its stop threshold; missing %d/%d", len(missing), stopAtLeast)
 	}
+	health := cons.Health()
+	if len(health.Shards) != 1 || !health.Checkpoint.LastSuccess.IsZero() {
+		t.Fatalf("before drain: expected one owned shard and no checkpoint writes: %+v", health)
+	}
+	for _, shard := range health.Shards {
+		if shard.PersistedRecords != 0 || shard.PersistedSequence != "" || shard.Pressure.UnacknowledgedRecords > admittedPerShard {
+			t.Fatalf("pre-drain progress/pressure: %+v", shard)
+		}
+	}
 	// Stop the consumer first, then the application's own worker. Start returns
 	// only once every admitted delivery has been acknowledged and flushed.
 	stopC1()
+	health = cons.Health()
+	if len(health.Shards) != 0 || health.Pressure.UnacknowledgedRecords != 0 || health.Pressure.FetchSlots != 0 || health.Checkpoint.LastSuccess.IsZero() || health.Checkpoint.LastProgress.IsZero() {
+		t.Fatalf("drain did not persist progress and clear worker pressure: %+v", health)
+	}
 	stopWorker()
 	<-workerDone
 	ackMu.Lock()

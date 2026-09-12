@@ -62,6 +62,7 @@ func (c *Consumer) processRecordsPage(ctx context.Context, shardID string, out *
 	// handler success, or a skip/DLQ policy outcome that lets the page
 	// checkpoint advance.
 	c.processingHealth.recordProcessed(time.Now())
+	c.observation.accept(shardID, lastSeq, uint64(processed))
 
 	return lastSeq, processed, nil
 }

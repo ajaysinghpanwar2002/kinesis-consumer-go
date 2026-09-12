@@ -98,7 +98,7 @@ func newExplicitProcessor(ctx context.Context, c *Consumer, shard string, held l
 		return err
 	})
 	if err != nil {
-		return nil, c.observeRecoveryFailure(shard, err)
+		return nil, c.observeRecoveryFailure(ctx, shard, err)
 	}
 	session := &shardSession{c: c, session: bound, shardID: shard}
 	if _, err := session.recovery(ctx); err != nil {
@@ -164,6 +164,7 @@ func (p *explicitProcessor) stop() {
 // until this function releases it, and must discard the page after any error.
 // admissionCtx may stop fetching/admission without canceling completion work.
 func (p *explicitProcessor) processPage(admissionCtx context.Context, records []Record, slot *admissionReservation) error {
+	slot.stage(records)
 	defer clear(records)
 	defer slot.release()
 	if len(records) == 0 {
@@ -319,6 +320,7 @@ func (p *explicitProcessor) runCheckpoints() {
 		if err := p.c.saveShardCheckpoint(p.ctx, p.session.shardID, sequence); err != nil {
 			return err
 		}
+		p.c.recordExplicitPersisted(p.session.shardID, sequence, completed, completed-persisted)
 		persisted = completed
 		return nil
 	}
@@ -333,7 +335,12 @@ func (p *explicitProcessor) runCheckpoints() {
 			err = save(true)
 		case request := <-p.flush:
 			if request.complete {
+				sequence, completed := p.tracker.progress()
 				err = p.saveCompletion(request.sequence)
+				if err == nil {
+					p.c.recordExplicitPersisted(p.session.shardID, sequence, completed, completed-persisted)
+					persisted = completed
+				}
 			} else {
 				err = save(true)
 			}
