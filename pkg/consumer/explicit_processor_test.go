@@ -38,6 +38,25 @@ func explicitTestProcessor(t *testing.T, limits InFlightLimits, handlers explici
 	return p, store, held
 }
 
+func TestExplicitStopCancelsBeforeReleasingInvalidatedWork(t *testing.T) {
+	p, _, _ := explicitTestProcessor(t, InFlightLimits{}, explicitHandlers{
+		record: func(context.Context, Delivery) error { return nil },
+	}, 100, time.Hour)
+	var contextAtRelease error
+	d := p.tracker.appendReserved(testPage(1).Records[0], func() {
+		// Invalidation releases admission capacity and wakes other work. Its
+		// cancellation must already be visible to internal policy Acks.
+		contextAtRelease = p.ctx.Err()
+	})
+	p.stop()
+	if !errors.Is(contextAtRelease, context.Canceled) {
+		t.Fatalf("context at invalidation release = %v, want cancellation already visible", contextAtRelease)
+	}
+	if err := d.Ack(context.Background()); !errors.Is(err, ErrStaleDelivery) {
+		t.Fatalf("Ack after stop = %v, want stale delivery", err)
+	}
+}
+
 func TestExplicitDelayedAckGapAndInterval(t *testing.T) {
 	var delivered []Delivery
 	var callbackCtx context.Context
@@ -256,32 +275,41 @@ func TestExplicitStopAbandonsUncooperativeCallback(t *testing.T) {
 	}
 }
 
-func TestExplicitConfigurationGate(t *testing.T) {
+func TestExplicitHandlerModeResolution(t *testing.T) {
 	record := func(context.Context, Delivery) error { return nil }
 	batch := func(context.Context, []Delivery) error { return nil }
 	cases := []struct {
-		name string
-		opts []Option
-		want error
+		name     string
+		opts     []Option
+		explicit bool
+		wantErr  bool
 	}{
-		{"record", []Option{WithExplicitHandler(record)}, ErrExplicitModeUnavailable},
-		{"batch", []Option{WithExplicitBatchHandler(batch), WithCheckpointInterval(time.Second)}, ErrExplicitModeUnavailable},
-		{"both", []Option{WithExplicitHandler(record), WithExplicitBatchHandler(batch)}, nil},
-		{"nil", []Option{WithExplicitHandler(nil)}, nil},
-		{"interval", []Option{WithCheckpointInterval(0)}, nil},
+		{name: "record", opts: []Option{WithExplicitHandler(record)}, explicit: true},
+		{name: "batch", opts: []Option{WithExplicitBatchHandler(batch), WithCheckpointInterval(time.Second)}, explicit: true},
+		{name: "both explicit modes", opts: []Option{WithExplicitHandler(record), WithExplicitBatchHandler(batch)}, wantErr: true},
+		{name: "explicit and automatic", opts: []Option{WithExplicitHandler(record), WithBatchHandler(func(context.Context, []Record) error { return nil })}, wantErr: true},
+		{name: "nil handler", opts: []Option{WithExplicitHandler(nil)}, wantErr: true},
+		{name: "non-positive interval", opts: []Option{WithCheckpointInterval(0)}, wantErr: true},
+		{name: "interval without explicit mode", opts: []Option{WithCheckpointInterval(time.Second)}, wantErr: true},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			o, err := applyOptions(tt.opts)
 			if err == nil {
-				_, _, err = resolveHandlers(nil, o)
+				_, _, explicit, resolveErr := resolveHandlers(nil, o)
+				err = resolveErr
+				if err == nil && explicit.enabled() != tt.explicit {
+					t.Fatalf("explicit=%v, want %v", explicit.enabled(), tt.explicit)
+				}
 			}
-			if err == nil || (tt.want != nil && !errors.Is(err, tt.want)) {
-				t.Fatalf("err=%v", err)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err=%v, wantErr=%v", err, tt.wantErr)
 			}
 		})
 	}
 }
+
+var errExplicitCheckpointUnavailable = errors.New("checkpoint unavailable")
 
 type explicitFaultStore struct {
 	checkpoint.FencedStore
@@ -319,7 +347,7 @@ func (s *explicitFaultSession) Save(ctx context.Context, seq string) error {
 		}
 	}
 	if attempt <= s.failures {
-		return errors.New("checkpoint unavailable")
+		return errExplicitCheckpointUnavailable
 	}
 	return s.Session.Save(ctx, seq)
 }

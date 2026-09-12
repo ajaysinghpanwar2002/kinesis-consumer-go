@@ -142,3 +142,10 @@ connection for its assertions.
 | --- | --- | --- |
 | IT-29 | `TestValkeyOutageStopsRunWithHeartbeatStaleWhileWorkerKeyLive` | A Valkey outage is survivable at first (heartbeat failures recorded, run alive), then stops the run with `ErrHeartbeatStale` while the worker key written by the last successful heartbeat is still live — before peers may treat the worker as dead. |
 | IT-30 | `TestValkeyOutageStopsRunWithShardSyncStale` | A Valkey outage fails shard-sync passes survivably (failures recorded, run alive) until `WithShardSyncMaxStaleness` lapses, then stops the run with `ErrShardSyncStale`. |
+
+### Group K — Admission limits and explicit acknowledgment
+
+| IT | Test | Proves |
+| --- | --- | --- |
+| IT-31 | `TestInFlightLimitsSplitBatchesAcrossShardsAndResume` | With `WithInFlightLimits`, batches are split into ordered prefixes that never exceed the per-shard or per-instance record/byte budgets, every record is delivered exactly once, and a successor resumes through the fenced anchor path under the same one-slot budget. |
+| IT-32 | `TestExplicitAcknowledgmentDrainFlushesAndResumes` | In explicit mode a graceful stop waits for the acknowledgments an application completion worker still owes, flushes the acknowledged prefix while the shard is still owned, and a successor resumes strictly after it with zero replay — with the timed and counted checkpoint triggers disabled, so the drain flush is the only possible writer. |

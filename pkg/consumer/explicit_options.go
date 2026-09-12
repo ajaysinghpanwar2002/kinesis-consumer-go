@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// ErrExplicitModeUnavailable identifies explicit configuration before worker
-// lifecycle integration is available. New rejects this mode in this release.
-var ErrExplicitModeUnavailable = errors.New("explicit handler mode awaits lifecycle integration")
-
 type explicitHandlers struct {
 	record func(context.Context, Delivery) error
 	batch  func(context.Context, []Delivery) error
@@ -30,9 +26,15 @@ func (h explicitHandlers) validate(record HandlerFunc, batch BatchHandlerFunc) e
 	return nil
 }
 
-// WithExplicitHandler configures explicit record processing with a nil
-// constructor handler. Returning nil does not acknowledge a delivery.
-// New currently returns ErrExplicitModeUnavailable until lifecycle support lands.
+// WithExplicitHandler configures explicit record processing. The constructor
+// handler must be nil and no other handler option may be set. Returning nil
+// does not acknowledge a delivery and does not cancel its completion context:
+// the application acknowledges each Delivery when its own work is durable,
+// from the handler or from a worker that outlives it.
+//
+// Explicit mode requires a checkpoint store with fenced sessions and a lease
+// manager that is a fenced pair with it. It is always bounded: without
+// WithInFlightLimits the documented explicit defaults apply.
 func WithExplicitHandler(handler func(context.Context, Delivery) error) Option {
 	return func(o *options) error {
 		if handler == nil {
@@ -44,8 +46,9 @@ func WithExplicitHandler(handler func(context.Context, Delivery) error) Option {
 }
 
 // WithExplicitBatchHandler configures explicit batch processing. Each delivery
-// must be acknowledged independently. New currently rejects explicit mode with
-// ErrExplicitModeUnavailable until lifecycle support lands.
+// in the slice carries its own acknowledgment handle and must be acknowledged
+// independently; the slice itself belongs to the application. The requirements
+// of WithExplicitHandler apply unchanged.
 func WithExplicitBatchHandler(handler func(context.Context, []Delivery) error) Option {
 	return func(o *options) error {
 		if handler == nil {
@@ -56,9 +59,9 @@ func WithExplicitBatchHandler(handler func(context.Context, []Delivery) error) O
 	}
 }
 
-// WithCheckpointInterval sets the explicit-mode checkpoint interval. It must be
-// positive; the default is one second. Automatic mode uses count-based flushing
-// and rejects this option.
+// WithCheckpointInterval sets how often explicit mode flushes the contiguous
+// acknowledged prefix. It must be positive; the default is one second.
+// Automatic mode uses count-based flushing and rejects this option.
 func WithCheckpointInterval(interval time.Duration) Option {
 	return func(o *options) error {
 		if interval <= 0 {
