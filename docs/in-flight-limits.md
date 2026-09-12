@@ -1,9 +1,9 @@
 # Admission limits and staging
 
 `WithInFlightLimits` opts automatic record and batch handlers into bounded
-admission. Consumers without this option keep their existing behavior. Explicit
-handlers are not yet available; these budgets prepare the admission path for
-that mode.
+admission. Consumers without this option keep their existing behavior.
+[Explicit acknowledgment](explicit-processing.md) is always bounded: without
+this option it uses the same values as its defaults.
 
 ```go
 consumer.WithInFlightLimits(consumer.InFlightLimits{
@@ -23,13 +23,15 @@ before the application receives the record; changing a record in a callback
 does not change its accounting. Zero-byte records still consume record budget.
 
 A batch receives the largest ordered prefix that fits the currently available
-budgets. A later prefix may have a different size. With record handlers,
-`WithShardConcurrency` still controls concurrent callbacks within each admitted
-prefix. Admission preserves source order; concurrent callbacks may finish out
-of order. An automatic record's capacity is released when its handler and
-failure policy finish. Batch capacity is released when the batch finishes.
-Retries keep the reservation. A failure discards unfinished work for replay.
-Capacity release precedes checkpoint persistence. Completed prefixes can be
+budgets. A later prefix may have a different size. With automatic record
+handlers, `WithShardConcurrency` still controls concurrent callbacks within each
+admitted prefix. Admission preserves source order; concurrent callbacks may
+finish out of order. An automatic record's capacity is released when its handler
+and failure policy finish. Batch capacity is released when the batch finishes.
+In explicit mode each record's capacity is released when its acknowledgment is
+accepted, independently of the other records in its prefix and of any checkpoint
+write. Retries keep the reservation. A failure discards unfinished work for
+replay. Capacity release precedes checkpoint persistence. Completed prefixes can be
 checkpointed before a later prefix finishes; a failed prefix cannot advance
 the checkpoint past itself.
 

@@ -25,6 +25,8 @@ type Consumer struct {
 	store                checkpoint.Store
 	handler              HandlerFunc
 	batchHandler         BatchHandlerFunc
+	explicit             explicitHandlers
+	checkpointInterval   time.Duration
 	failurePolicy        FailurePolicy
 	dlqPublisher         DLQPublisher
 	dlqRetryAttempts     int
@@ -408,9 +410,14 @@ func New(cfg Config, client KinesisAPI, store checkpoint.Store, handler HandlerF
 		return nil, err
 	}
 
-	handler, batchHandler, err := resolveHandlers(handler, opt)
+	handler, batchHandler, explicit, err := resolveHandlers(handler, opt)
 	if err != nil {
 		return nil, err
+	}
+	if explicit.enabled() {
+		if err := validateExplicitDependencies(store, &opt); err != nil {
+			return nil, err
+		}
 	}
 
 	resolvedCfg, streamName, err := finalizeConfig(cfg)
@@ -447,6 +454,8 @@ func New(cfg Config, client KinesisAPI, store checkpoint.Store, handler HandlerF
 		store:                store,
 		handler:              handler,
 		batchHandler:         batchHandler,
+		explicit:             explicit,
+		checkpointInterval:   opt.checkpointInterval,
 		failurePolicy:        opt.failurePolicy,
 		dlqPublisher:         opt.dlqPublisher,
 		dlqRetryAttempts:     opt.dlqRetryAttempts,
@@ -477,24 +486,51 @@ func validateConstructorInputs(client KinesisAPI, store checkpoint.Store) error 
 	return nil
 }
 
-func resolveHandlers(handler HandlerFunc, opt options) (HandlerFunc, BatchHandlerFunc, error) {
+func resolveHandlers(handler HandlerFunc, opt options) (HandlerFunc, BatchHandlerFunc, explicitHandlers, error) {
 	if opt.explicit.enabled() {
 		if err := opt.explicit.validate(handler, opt.batchHandler); err != nil {
-			return nil, nil, err
+			return nil, nil, explicitHandlers{}, err
 		}
-		return nil, nil, ErrExplicitModeUnavailable
+		return nil, nil, opt.explicit, nil
 	}
 	if opt.checkpointInterval != 0 {
-		return nil, nil, errors.New("checkpoint interval requires explicit mode")
+		return nil, nil, explicitHandlers{}, errors.New("checkpoint interval requires explicit mode")
 	}
 
 	if handler == nil && opt.batchHandler == nil {
-		return nil, nil, errors.New("handler is required (provide WithBatchHandler for batch processing)")
+		return nil, nil, explicitHandlers{}, errors.New("handler is required (provide WithBatchHandler for batch processing)")
 	}
 	if handler != nil && opt.batchHandler != nil {
-		return nil, nil, errors.New("provide either a record handler or WithBatchHandler, not both")
+		return nil, nil, explicitHandlers{}, errors.New("provide either a record handler or WithBatchHandler, not both")
 	}
-	return handler, opt.batchHandler, nil
+	return handler, opt.batchHandler, explicitHandlers{}, nil
+}
+
+// validateExplicitDependencies rejects an explicit configuration that cannot
+// satisfy the mode's recovery and admission requirements, and fills in the
+// documented explicit admission defaults when the caller did not set limits.
+//
+// Fencing is what makes an acknowledgment safe: every ownership check,
+// checkpoint, and recovery write must be atomic with its validation, so an
+// unfenced store can never run this mode. The lease side is per-acquisition —
+// lease.FencedLease is a property of a lease, not of a Manager — so a lease
+// manager that is not a fenced pair with the store is reported by the first
+// shard that binds rather than here.
+func validateExplicitDependencies(store checkpoint.Store, opt *options) error {
+	if _, ok := store.(checkpoint.FencedStore); !ok {
+		return errors.New("explicit handler mode requires a checkpoint store with fenced sessions")
+	}
+	if opt.tuning.shardConcurrency != 1 {
+		return errors.New("shard concurrency applies to automatic handlers; explicit deliveries are acknowledged concurrently instead")
+	}
+	if opt.inFlight == nil {
+		// Explicit mode is always bounded: admission is what releases capacity
+		// on acceptance, so its defaults apply even without WithInFlightLimits.
+		if err := WithInFlightLimits(InFlightLimits{})(opt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func finalizeConfig(cfg Config) (Config, string, error) {

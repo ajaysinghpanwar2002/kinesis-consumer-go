@@ -19,6 +19,11 @@ type ackTracker struct {
 	sequence  string
 	completed uint64
 	changed   chan struct{}
+	// unfinished counts ranges that are not yet done. A drain waits on it to
+	// reach zero, which is what "every admitted delivery is acknowledged"
+	// means: retry replaces a delivery's handle but not its range.
+	unfinished int
+	idle       chan struct{}
 }
 
 // Each unfinished record occupies one range. Adjacent completed records collapse
@@ -41,7 +46,7 @@ func newAckTracker(shardID string, validate func(context.Context) error) *ackTra
 	if validate == nil {
 		panic("ack tracker requires ownership validation")
 	}
-	return &ackTracker{shardID: shardID, validate: validate, changed: make(chan struct{}, 1)}
+	return &ackTracker{shardID: shardID, validate: validate, changed: make(chan struct{}, 1), idle: make(chan struct{}, 1)}
 }
 
 // append registers records in delivery order, including across fetched pages.
@@ -61,6 +66,7 @@ func (t *ackTracker) appendReserved(record Record, release func()) Delivery {
 			sequence = *record.SequenceNumber
 		}
 		s.element = t.ranges.PushBack(&ackRange{sequence: sequence, count: 1, release: release})
+		t.unfinished++
 	} else if release != nil {
 		release()
 	}
@@ -99,6 +105,7 @@ func (t *ackTracker) ack(ctx context.Context, s *deliveryState) error {
 	s.element = nil
 	r := e.Value.(*ackRange)
 	r.done = true
+	t.finished()
 	if r.release != nil {
 		r.release()
 		r.release = nil
@@ -153,6 +160,8 @@ func (t *ackTracker) invalidate() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.invalid = true
+	t.unfinished = 0
+	t.wakeIdle()
 	// Remove individually to sever links held by outstanding application handles.
 	for e := t.ranges.Front(); e != nil; e = t.ranges.Front() {
 		r := e.Value.(*ackRange)
@@ -161,6 +170,44 @@ func (t *ackTracker) invalidate() {
 			r.release = nil
 		}
 		t.ranges.Remove(e)
+	}
+}
+
+// finished records one range completing and wakes a waiting drain when the
+// tracker holds no unfinished delivery at all.
+func (t *ackTracker) finished() {
+	t.unfinished--
+	if t.unfinished == 0 {
+		t.wakeIdle()
+	}
+}
+
+func (t *ackTracker) wakeIdle() {
+	select {
+	case t.idle <- struct{}{}:
+	default:
+	}
+}
+
+// waitIdle blocks until every delivery this tracker handed out has been
+// accepted, or until the session is invalidated — an invalidated session has
+// no acknowledgment left that could still be accepted. Cancellation is
+// returned as itself so a drain deadline, immediate stop, shedding, or lease
+// loss releases the waiter instead of stranding it behind an application that
+// never acknowledges.
+func (t *ackTracker) waitIdle(ctx context.Context) error {
+	for {
+		t.mu.Lock()
+		done := t.invalid || t.unfinished == 0
+		t.mu.Unlock()
+		if done {
+			return nil
+		}
+		select {
+		case <-t.idle:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 

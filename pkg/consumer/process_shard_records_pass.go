@@ -146,6 +146,20 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 	}
 	readFailures := 0
 	session := shardSessionFrom(ctx)
+	processor := explicitProcessorFrom(ctx)
+	// resumeSequence is where an expired iterator refreshes from. It is not
+	// lastSeq: lastSeq is this pass's own progress, and the loop reads an empty
+	// one as "nothing happened, wait a poll interval". Passes are not the unit
+	// of ownership though — the acquisition is — so in explicit mode, where
+	// progress persists long after it is fetched, the position comes from the
+	// processor. Seeding lastSeq with it instead would make every idle pass
+	// look productive and drop the poll interval entirely.
+	resumeSequence := func() string {
+		if processor != nil {
+			return processor.lastFetched()
+		}
+		return lastSeq
+	}
 	var lastReadAt time.Time
 	// A page already read on this shard's behalf — recovery reads the anchor
 	// itself — that still has to be handled. It is only ever held together with
@@ -245,13 +259,13 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 					// The held iterator outlived its ~5-minute TTL (e.g. a large
 					// pollInterval or a slow handler stretched the gap between
 					// reads).
-					if session != nil && lastSeq != "" {
+					if resume := resumeSequence(); session != nil && resume != "" {
 						// Still the same worker generation, so resume from what
 						// this worker last fetched. Re-reading persisted state
 						// would replay every record since the last checkpoint; a
 						// successor, which has no local position, still recovers
 						// from persisted state.
-						_, refreshed, refreshErr := c.anchoredShardRead(admissionCtx, shardID, lastSeq, false, flushBeforeWait)
+						_, refreshed, refreshErr := c.anchoredShardRead(admissionCtx, shardID, resume, false, flushBeforeWait)
 						if refreshErr != nil {
 							if c.isDraining() && errors.Is(refreshErr, context.Canceled) {
 								return lastSeq, count, iterator, nil
@@ -331,11 +345,18 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 			}
 		}
 
-		pageLastSeq, pageCount, err := c.processBoundedPage(ctx, admissionCtx, shardID, out, count, slot, lastSeq)
+		var pageLastSeq string
+		var err error
+		if processor != nil {
+			// The processor owns admission, delivery, and checkpointing for
+			// this shard, so the pass keeps no processed-since-checkpoint count.
+			pageLastSeq, err = c.processExplicitPage(admissionCtx, processor, out, slot)
+		} else {
+			pageLastSeq, count, err = c.processBoundedPage(ctx, admissionCtx, shardID, out, count, slot, lastSeq)
+		}
 		if pageLastSeq != "" {
 			lastSeq = pageLastSeq
 		}
-		count = pageCount
 		slot.release()
 		slot = nil
 		if err != nil {
@@ -348,7 +369,7 @@ func (c *Consumer) processShardRecordsPass(ctx context.Context, shardID string, 
 		}
 
 		if pageEndsShard(out) {
-			if err := c.saveShardCompletionCheckpoint(ctx, shardID, lastSeq); err != nil {
+			if err := c.completeShard(ctx, shardID, lastSeq); err != nil {
 				return lastSeq, count, "", fmt.Errorf("process shard records pass completion checkpoint %s: %w", shardID, err)
 			}
 			return lastSeq, count, "", fmt.Errorf("process shard records pass %s: %w", shardID, errShardCompleted)

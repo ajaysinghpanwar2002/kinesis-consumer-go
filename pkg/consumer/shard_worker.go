@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -54,7 +55,7 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 	// expire an owned lease before the shard ever read a record. Renewal also
 	// cancels workerCtx when ownership moves, so a bind in progress stops
 	// instead of finishing against a lease that is gone.
-	session, bindErr := c.bindShardSession(workerCtx, shardID, shardLease)
+	session, processor, bindErr := c.bindShardProcessing(workerCtx, shardID, shardLease)
 	if bindErr != nil {
 		stopRenew()
 		<-renewDone
@@ -69,6 +70,21 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 		// that ignored its cancellation.
 		defer session.invalidate()
 		processCtx = withShardSession(workerCtx, session)
+	}
+	if processor != nil {
+		// The two directions are deliberate. Stopping this worker — immediate
+		// shutdown, drain timeout, shedding, or lease loss — must invalidate
+		// outstanding handles and wake blocked work at once, not only once the
+		// processing goroutine happens to unwind. And a processor that stopped
+		// itself, because ownership moved or its checkpoint writes were
+		// exhausted, must stop the worker with it: that is what wakes a fetch
+		// or a read-pacing sleep it cannot otherwise reach.
+		defer processor.stop()
+		stopProcessorOnWorkerStop := context.AfterFunc(workerCtx, processor.stop)
+		defer stopProcessorOnWorkerStop()
+		stopWorkerOnProcessorStop := context.AfterFunc(processor.ctx, cancel)
+		defer stopWorkerOnProcessorStop()
+		processCtx = withExplicitProcessor(processCtx, processor)
 	}
 
 	processErrCh := make(chan error, 1)
@@ -122,6 +138,20 @@ func (c *Consumer) runShardWorker(ctx context.Context, shardID string, shardLeas
 		select {
 		case err = <-processErrCh:
 		default:
+		}
+	}
+	if processor != nil {
+		// An exhausted checkpoint write is the cause of the cancellation the
+		// processing path reports while winding down, so it wins over it.
+		if checkpointErr := processor.wait(); checkpointErr != nil && (err == nil || errors.Is(err, context.Canceled)) {
+			err = checkpointErr
+		}
+		// An acknowledgment's ownership check can see the takeover before lease
+		// renewal does, and it stops this worker — which stops renewal — before
+		// renewal can report it. Name that cause so the cancellation it caused
+		// travels the shard-local handoff path below instead of failing the run.
+		if processor.ownershipLost() && (err == nil || errors.Is(err, context.Canceled)) {
+			err = fmt.Errorf("shard %s acknowledgment found the lease gone: %w", shardID, lease.ErrNotOwned)
 		}
 	}
 
@@ -181,6 +211,24 @@ func (c *Consumer) runShardRecordsLoop(ctx context.Context, shardID string) erro
 
 	_, _, err := process(ctx, shardID)
 	return err
+}
+
+// bindShardProcessing binds the shard's recovery session for this acquisition.
+// Automatic mode keeps the optional fenced session, including the unfenced
+// legacy combinations. Explicit mode instead builds its processor, which owns
+// the fenced session it requires and starts this shard's checkpoint runner; a
+// lease manager that is not a fenced pair with the store is reported here
+// rather than silently downgraded.
+func (c *Consumer) bindShardProcessing(ctx context.Context, shardID string, shardLease lease.Lease) (*shardSession, *explicitProcessor, error) {
+	if !c.explicit.enabled() {
+		session, err := c.bindShardSession(ctx, shardID, shardLease)
+		return session, nil, err
+	}
+	processor, err := newExplicitProcessor(ctx, c, shardID, shardLease, c.explicit, c.checkpointInterval)
+	if err != nil {
+		return nil, nil, fmt.Errorf("bind explicit shard processing %s: %w", shardID, err)
+	}
+	return processor.session, processor, nil
 }
 
 // stopWorkerAfterFailedBind winds up a worker whose lease renewal started but

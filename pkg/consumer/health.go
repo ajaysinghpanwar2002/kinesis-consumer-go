@@ -40,7 +40,9 @@ type ProcessingHealth struct {
 	LastReadSuccess time.Time
 	// LastRecordProcessed is when a page of records last finished processing
 	// — handler success, or a skip/DLQ failure-policy outcome that lets the
-	// page checkpoint advance. On a healthy consumer with no incoming traffic
+	// page checkpoint advance. In explicit handler mode it is when a page's
+	// handlers last returned; acknowledgment and checkpoint persistence are
+	// separate and later. On a healthy consumer with no incoming traffic
 	// this goes stale while LastReadSuccess stays fresh; the pair
 	// distinguishes "no traffic" from "not processing". Zero until the first
 	// processed page.
