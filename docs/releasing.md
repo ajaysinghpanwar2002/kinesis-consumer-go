@@ -33,7 +33,7 @@ matched pair.
 ## How local development resolves the modules
 
 The published `go.mod` files require the sibling modules at their real release
-version (for example the backend requires the core at `v0.1.0`) with **no
+version (for example the backend requires the core at `v0.2.0`) with **no
 `replace` directives** — that is what a third party gets, and it resolves
 against the published tags.
 
@@ -42,8 +42,8 @@ fetched from the network. Local development bridges the gap with `replace`
 directives in **`go.work`**:
 
 ```
-replace github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.1.0 => .
-replace github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.1.0 => ./pkg/backend/valkey
+replace github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.2.0 => .
+replace github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.2.0 => ./pkg/backend/valkey
 ```
 
 `go.work` is never included in a published module zip, so these replacements
@@ -60,12 +60,10 @@ Between releases, backend changes may require core APIs newer than the latest
 release tag. Pin the backend to a reachable core commit's Go pseudo-version and
 record its checksums with `GOWORK=off go mod tidy`; do not leave a release pin that
 cannot build the backend independently. Add a matching `go.work` replacement so
-workspace development still uses the local core. Slice 3 currently pins core
-`v0.1.1-0.20260910080014-ead049a1d854`, which contains its fenced APIs and v3 keys.
-The example and integration modules retain their matched released dependency
-pins outside workspace mode. At the next coordinated release, replace the
-interim pseudo-version and remove its workspace replacement along with the other
-version updates below.
+workspace development still uses the local core. At a coordinated release,
+replace the interim pseudo-version and remove its workspace replacement along
+with the other version updates below. The v0.2.0 release pins all intra-repo
+requires and workspace replacements to v0.2.0.
 
 
 ## Cutting a release
@@ -108,16 +106,26 @@ version updates below.
      github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey@vX.Y.Z
    ```
 
-8. After the first release only: run `make tidy` and commit the result.
-   `pkg/backend/valkey/go.sum` cannot contain hashes for the core module
-   until a published tag exists, so the first release unblocks
-   `go mod tidy` from recording them. CI's tidy gate (`make tidy-check`)
-   and the `GOWORK=off` backend job skip a module that pins an unpublished
-   intra-repo version **only while no release tag exists on `origin`**
-   (the bootstrap state); the moment the first tags are pushed they
-   enforce unconditionally — expect both to fail until this `make tidy`
-   commit lands, and expect an unpublished pin (e.g. pins bumped to the
-   next version before its tags are pushed) to fail them thereafter.
+8. Verify `make tidy-check` and `make test-gowork-off` against the public tags.
+   Record new intra-repo checksums for every release, not just the first.
+   Checksums can be prepared before publication from candidate module archives
+   built with Go's module-zip rules in an isolated local file proxy. Build the
+   core archive first, tidy the backend against it, then build the backend
+   archive (including the root LICENSE) and tidy the example and integration
+   modules. Use a separate module cache and disable the public checksum database
+   only for these unpublished candidate modules. Do not put local replacements
+   in the published `go.mod` files. Any subsequent core source change requires
+   regenerating dependent checksums; any backend change requires regenerating
+   its consumers' checksums. Verify them against the public checksum database
+   after publication with a fresh module cache.
+
+For subsequent releases, CI's tidy and standalone-backend gates require the new
+pins to be published; they do not skip unpublished versions once release tags
+exist. Run the full local gate and isolated candidate-module validation, then
+obtain independent review before committing and publishing the matched tags.
+Publish the release branch and tags before expecting its PR CI to pass. Verify
+public resolution and green CI before merging the release PR. Never move a
+published version tag to repair a release.
 
 ## First release: repository setup
 
