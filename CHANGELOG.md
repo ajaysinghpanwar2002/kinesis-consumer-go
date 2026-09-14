@@ -12,6 +12,8 @@ released together and share the version numbers below.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-14
+
 ### Added
 
 - Process-termination recovery and asynchronous merge-parent integration tests,
@@ -44,6 +46,16 @@ released together and share the version numbers below.
 - Exported `ErrStaleDelivery` and `ErrOversizedRecord` sentinels, and
   `*OversizedRecordError`, for `errors.Is`/`errors.As` matching.
 
+### Changed
+
+- The Valkey backend now uses the v3 coordination layout and rejects older
+  layouts with `ErrIncompatibleLayout`. Stop old consumers before upgrading;
+  mixed-version writers and automatic migration are unsupported. See
+  [layout and offline resets](docs/fenced-valkey.md#layout-and-offline-resets).
+- Both modules are released at v0.2.0. The backend now requires core v0.2.0,
+  replacing its interim pseudo-version. Existing automatic handler APIs remain
+  the default; explicit acknowledgment mode is opt-in.
+
 ## [0.1.0] - 2026-07-20
 
 Initial public release. The library is pre-1.0: the API is frozen for this
@@ -75,5 +87,6 @@ line but may still change in a future minor version (see
 - Exported `ErrDrainTimeout` and `ErrNoShards` sentinels for `errors.Is`
   matching on `Start`'s errors.
 
-[Unreleased]: https://github.com/ajaysinghpanwar2002/kinesis-consumer-go/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ajaysinghpanwar2002/kinesis-consumer-go/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ajaysinghpanwar2002/kinesis-consumer-go/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ajaysinghpanwar2002/kinesis-consumer-go/releases/tag/v0.1.0
