@@ -3,6 +3,50 @@
 A pure Go library for consuming Kinesis streams with shard leasing, shard-aware checkpointing, and reshard-aware ordering.
 No Java, no MultiLangDaemon.
 
+## Quickstart
+
+Requires **Go 1.26 or later**. Add the core module and, if using Valkey, the
+separate backend module to your application's Go module:
+
+```bash
+go get github.com/ajaysinghpanwar2002/kinesis-consumer-go@v0.2.0
+go get github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey@v0.2.0
+```
+
+Try the existing consumer against an existing Kinesis stream and a reachable
+Valkey server:
+
+```bash
+git clone https://github.com/ajaysinghpanwar2002/kinesis-consumer-go.git
+cd kinesis-consumer-go/examples/valkey
+go run . -stream-name my-stream -region ap-south-1 \
+  -consumer-group my-app -valkey-addr localhost:6379
+```
+
+Replace the stream, region, and Valkey address with your values. This example
+reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally
+`AWS_SESSION_TOKEN` from your environment; the credentials must permit reading
+the stream. On a first run, the example starts at the latest position and skips
+records already in the stream. After the consumer starts polling, publish new
+records to the stream to see them logged. Press Ctrl-C to stop.
+
+For a complete program using the standard AWS credential chain (including IAM
+roles), see [Getting started](docs/getting-started.md). API documentation:
+[core consumer](https://pkg.go.dev/github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer)
+and [Valkey checkpoint store](https://pkg.go.dev/github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey/checkpoint).
+
+## Status and compatibility
+
+The current release is **v0.2.0**. Before v1.0, minor releases may include
+breaking API changes; patch releases are intended for compatible fixes.
+Pin your dependency versions and review the [changelog](CHANGELOG.md) before
+upgrading. Keep the core and Valkey backend on matching release versions.
+
+Delivery is at least once, so handlers should tolerate duplicate records.
+Consumption uses polling; enhanced fan-out and built-in KPL deaggregation are
+not supported. See [capabilities and limitations](docs/features.md) before
+choosing it for your workload.
+
 ## Why this library
 
 - Native Go, single process. No JVM sidecar or MultiLangDaemon.
@@ -29,12 +73,6 @@ No Java, no MultiLangDaemon.
 - Opt-in metrics with a dependency-free UDP statsd reporter and packaged
   Telegraf, InfluxDB, and Grafana assets (silent by default).
 - LocalStack + Valkey workflow for local testing.
-
-## Install
-
-```bash
-go get github.com/ajaysinghpanwar2002/kinesis-consumer-go
-```
 
 ## Documentation
 

@@ -1,0 +1,22 @@
+name: Feature request
+description: Describe a use case and the change that would help.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case or problem
+      description: What are you trying to accomplish, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the change and any API or compatibility implications you foresee.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include workarounds you have tried, if any.

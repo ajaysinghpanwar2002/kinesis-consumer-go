@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/ajaysinghpanwar2002/kinesis-consumer-go/security/advisories/new
+    about: Please do not report suspected vulnerabilities in public issues.
