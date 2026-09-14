@@ -1,0 +1,39 @@
+name: Bug report
+description: Report unexpected library behavior with a reproducible example.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For suspected vulnerabilities, use [private reporting](https://github.com/ajaysinghpanwar2002/kinesis-consumer-go/security/advisories/new).
+        Remove credentials, account identifiers, and customer data from all examples and logs.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Versions and environment
+      description: Include core/backend versions, Go version, OS, backend/server version, and AWS Kinesis or LocalStack.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce
+      description: Provide minimal code, relevant configuration, and steps to reproduce. Include worker count and shard concurrency when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or errors
+      render: text

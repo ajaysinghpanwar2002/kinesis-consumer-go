@@ -1,5 +1,23 @@
 Thanks for taking the time to contribute! This project is intended to be a clean, native Go library for consuming Kinesis streams.
 
+## Proposing a change
+
+Search existing issues and pull requests first. Open an issue to discuss large
+features or API changes before implementing them; small fixes can go straight
+to a pull request.
+
+1. Fork the repository and create a branch from `main` in your fork.
+2. Make a focused change. Add regression coverage for behavior changes and
+   update documentation when public behavior or APIs change.
+3. Run the relevant checks below and explain the results in your pull request.
+4. Open the pull request against this repository's `main` branch. Link the
+   related issue and respond to review feedback.
+
+Follow the [code of conduct](CODE_OF_CONDUCT.md). Use the bug-report or
+feature-request forms for public issues; follow the [security policy](SECURITY.md)
+for suspected vulnerabilities. Remove credentials and customer data from
+examples and logs before posting.
+
 ## Development setup
 
 This repository is a Go workspace with four modules: core, the Valkey backend
