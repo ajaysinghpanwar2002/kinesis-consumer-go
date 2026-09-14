@@ -1,0 +1,8 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/ajaysinghpanwar2002/kinesis-consumer-go/test/integration
+cpu: Apple M4 Pro
+BenchmarkOwnershipValidation/memory-14         	28722349	        41.75 ns/op	       0 B/op	       0 allocs/op
+BenchmarkOwnershipValidation/valkey-14         	    7912	    145680 ns/op	     422 B/op	       4 allocs/op
+PASS
+ok  	github.com/ajaysinghpanwar2002/kinesis-consumer-go/test/integration	4.501s

@@ -49,3 +49,7 @@ It requires Docker and free loopback ports 17000–17002 and 17379. Each test
 creates and removes its own containers and volumes. `make integration` remains
 the LocalStack/Kinesis consumer suite. See [Valkey recovery](docs/fenced-valkey.md)
 for the supported durability profile and development reset procedure.
+
+Processing load measurements are opt-in and run separately from correctness
+gates. See [performance and retained memory](docs/performance.md) for the full
+matrix, ownership microbenchmark, heap profiles, and reproducible commands.

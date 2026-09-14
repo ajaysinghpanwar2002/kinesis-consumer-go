@@ -38,6 +38,8 @@ go get github.com/ajaysinghpanwar2002/kinesis-consumer-go
 
 ## Documentation
 
+- [Performance and retained memory](docs/performance.md) — measurement method, load matrix, and heap profiles.
+- [Validation matrix](docs/validation-matrix.md) — acknowledgment, recovery, admission, lifecycle, and backend coverage.
 - [Getting started](docs/getting-started.md) — install, a minimal copy-paste-runnable consumer, multi-worker coordination, and graceful shutdown.
 - [Features and capabilities](docs/features.md) — a complete, source-accurate inventory of what the library does (and what it does not yet do).
 - [Configuration reference](docs/configuration.md) — every `Config` field and `With*` option with defaults, effects, and validation rules.
