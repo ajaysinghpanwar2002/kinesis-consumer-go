@@ -21,7 +21,7 @@ cons, err := consumer.New(cfg, client, store, handler, consumer.WithLeaseManager
 The Valkey backend qualifies the same way — pass its `LeaseManager()` provider,
 or let the consumer create the manager from the store.
 
-Three combinations keep the original unfenced behavior instead:
+For automatic handlers, three combinations keep the original unfenced behavior instead:
 
 - a store that does not implement `checkpoint.FencedStore`;
 - a lease manager whose leases are not `lease.FencedLease`;
@@ -35,6 +35,9 @@ configuration mistake rather than an error, because it is exactly what an
 unfenced deployment already looks like; the consumer logs a warning naming the
 shard and carries on. Pair the two halves — or use the store's `LeaseManager()`
 provider — to get fencing.
+
+Explicit mode requires a matching fenced pair and rejects these combinations;
+it never downgrades to unfenced processing. See [explicit acknowledgment](explicit-processing.md).
 
 Any other binding failure stops the shard. A fenced backend whose recovery state
 cannot be read is never downgraded to the unfenced path, because that path would

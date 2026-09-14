@@ -1,0 +1,156 @@
+
+gap-retry-false-512.pprof
+File: consumer.test
+Type: inuse_space
+Time: 2026-09-12 20:13:27 IST
+Showing nodes accounting for 317.12kB, 96.94% of 327.14kB total
+Dropped 113 nodes (cum <= 1.63kB)
+Showing top 12 nodes out of 46
+      flat  flat%   sum%        cum   cum%
+  256.14kB 78.30% 78.30%   265.29kB 81.09%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.TestExplicitRetainedHeapAcrossGap.func1
+   52.53kB 16.06% 94.35%    52.53kB 16.06%  runtime.mallocgc
+    2.59kB  0.79% 95.15%     3.34kB  1.02%  testing.(*T).Run
+    1.86kB  0.57% 95.72%     1.86kB  0.57%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).callAttempt
+    1.80kB  0.55% 96.26%     1.80kB  0.55%  regexp.onePassCopy
+       1kB  0.31% 96.57%     1.91kB  0.58%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.boundedTestConsumer
+    0.80kB  0.24% 96.81%     6.48kB  1.98%  testing.runTests
+    0.18kB 0.055% 96.87%     3.59kB  1.10%  regexp.compile
+    0.13kB 0.041% 96.91%     3.79kB  1.16%  testing.newMatcher
+    0.05kB 0.014% 96.92%     5.06kB  1.55%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.explicitTestProcessor
+    0.02kB 0.0072% 96.93%     3.95kB  1.21%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).processPage
+    0.02kB 0.0072% 96.94%     6.63kB  2.03%  testing.(*M).Run
+
+gap-retry-false-64.pprof
+File: consumer.test
+Type: inuse_space
+Time: 2026-09-12 20:13:27 IST
+Showing nodes accounting for 308.43kB, 96.52% of 319.55kB total
+Dropped 116 nodes (cum <= 1.60kB)
+Showing top 12 nodes out of 43
+      flat  flat%   sum%        cum   cum%
+  256.12kB 80.15% 80.15%   264.52kB 82.78%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.TestExplicitRetainedHeapAcrossGap.func1
+   45.71kB 14.30% 94.46%    45.71kB 14.30%  runtime.mallocgc
+    2.59kB  0.81% 95.27%     3.34kB  1.05%  testing.(*T).Run
+    1.80kB  0.56% 95.83%     1.80kB  0.56%  regexp.onePassCopy
+       1kB  0.31% 96.14%     1.91kB   0.6%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.boundedTestConsumer
+    0.80kB  0.25% 96.39%     6.48kB  2.03%  testing.runTests
+    0.18kB 0.056% 96.45%     3.59kB  1.12%  regexp.compile
+    0.13kB 0.042% 96.49%     3.79kB  1.19%  testing.newMatcher
+    0.05kB 0.015% 96.50%     5.06kB  1.58%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.explicitTestProcessor
+    0.02kB 0.0073% 96.51%     3.18kB     1%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).processPage
+    0.02kB 0.0073% 96.52%     6.63kB  2.08%  testing.(*M).Run
+         0     0% 96.52%     1.77kB  0.55%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.TestExplicitRetainedHeapAcrossGap
+
+gap-retry-true-512.pprof
+File: consumer.test
+Type: inuse_space
+Time: 2026-09-12 20:13:27 IST
+Showing nodes accounting for 319.44kB, 96.93% of 329.55kB total
+Dropped 116 nodes (cum <= 1.65kB)
+Showing top 12 nodes out of 46
+      flat  flat%   sum%        cum   cum%
+  256.14kB 77.73% 77.73%   265.80kB 80.66%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.TestExplicitRetainedHeapAcrossGap.func1
+   54.30kB 16.48% 94.20%    54.30kB 16.48%  runtime.mallocgc
+    2.59kB  0.79% 94.99%     3.39kB  1.03%  testing.(*T).Run
+    2.41kB  0.73% 95.72%     2.41kB  0.73%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).callAttempt
+    1.80kB  0.55% 96.26%     1.80kB  0.55%  regexp.onePassCopy
+       1kB   0.3% 96.57%     1.91kB  0.58%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.boundedTestConsumer
+    0.80kB  0.24% 96.81%     6.48kB  1.97%  testing.runTests
+    0.18kB 0.055% 96.86%     3.59kB  1.09%  regexp.compile
+    0.13kB  0.04% 96.90%     3.79kB  1.15%  testing.newMatcher
+    0.05kB 0.014% 96.92%     5.03kB  1.53%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.explicitTestProcessor
+    0.02kB 0.0071% 96.93%     4.49kB  1.36%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).processPage
+    0.02kB 0.0071% 96.93%     6.63kB  2.01%  testing.(*M).Run
+
+gap-retry-true-64.pprof
+File: consumer.test
+Type: inuse_space
+Time: 2026-09-12 20:13:27 IST
+Showing nodes accounting for 318.23kB, 96.92% of 328.36kB total
+Dropped 116 nodes (cum <= 1.64kB)
+Showing top 12 nodes out of 46
+      flat  flat%   sum%        cum   cum%
+  256.12kB 78.00% 78.00%   265.59kB 80.88%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.TestExplicitRetainedHeapAcrossGap.func1
+   53.33kB 16.24% 94.24%    53.33kB 16.24%  runtime.mallocgc
+    2.59kB  0.79% 95.03%     3.39kB  1.03%  testing.(*T).Run
+    2.19kB  0.67% 95.70%     2.19kB  0.67%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).callAttempt
+    1.80kB  0.55% 96.25%     1.80kB  0.55%  regexp.onePassCopy
+       1kB   0.3% 96.55%     1.91kB  0.58%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.boundedTestConsumer
+    0.80kB  0.24% 96.79%     6.48kB  1.97%  testing.runTests
+    0.18kB 0.055% 96.85%     3.59kB  1.09%  regexp.compile
+    0.13kB  0.04% 96.89%     3.79kB  1.15%  testing.newMatcher
+    0.05kB 0.014% 96.90%     5.03kB  1.53%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.explicitTestProcessor
+    0.02kB 0.0071% 96.91%     4.27kB  1.30%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).processPage
+    0.02kB 0.0071% 96.92%     6.63kB  2.02%  testing.(*M).Run
+
+staged.pprof
+File: consumer.test
+Type: inuse_space
+Time: 2026-09-12 20:13:27 IST
+Showing nodes accounting for 31MB, 99.77% of 31.07MB total
+Dropped 150 nodes (cum <= 0.16MB)
+      flat  flat%   sum%        cum   cum%
+      31MB 99.77% 99.77%       31MB 99.78%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.TestExplicitRetainedHeapStagingAndStop.func2
+
+stopped.pprof
+File: consumer.test
+Type: inuse_space
+Time: 2026-09-12 20:13:27 IST
+Showing nodes accounting for 66.46kB, 93.01% of 71.45kB total
+Dropped 67 nodes (cum <= 0.36kB)
+Showing top 12 nodes out of 77
+      flat  flat%   sum%        cum   cum%
+   54.30kB 75.99% 75.99%    54.30kB 75.99%  runtime.mallocgc
+    2.41kB  3.37% 79.36%     2.41kB  3.37%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).callAttempt
+    1.80kB  2.51% 81.87%     1.80kB  2.51%  regexp.onePassCopy
+    1.38kB  1.92% 83.80%     1.38kB  1.92%  regexp/syntax.(*compiler).inst (inline)
+    1.35kB  1.89% 85.69%     1.98kB  2.77%  testing.(*T).Run
+       1kB  1.40% 87.09%     1.91kB  2.67%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.boundedTestConsumer
+    0.92kB  1.29% 88.38%     0.92kB  1.29%  testing.(*common).Cleanup
+    0.88kB  1.22% 89.60%     0.88kB  1.22%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/lease.(*MemoryManager).setLeaseLocked
+    0.80kB  1.12% 90.72%     6.48kB  9.08%  testing.runTests
+    0.62kB  0.87% 91.59%     1.08kB  1.51%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*admissionController).schedule
+    0.56kB  0.79% 92.38%     0.56kB  0.79%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/checkpoint.(*memorySession).Initialize.func1
+    0.45kB  0.63% 93.01%     0.45kB  0.63%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*admissionController).updatePauses
+
+worker-gap.pprof
+File: consumer.test
+Type: inuse_space
+Time: 2026-09-12 20:13:27 IST
+Showing nodes accounting for 420.59kB, 94.55% of 444.85kB total
+Dropped 156 nodes (cum <= 2.22kB)
+Showing top 12 nodes out of 64
+      flat  flat%   sum%        cum   cum%
+     256kB 57.55% 57.55%   263.84kB 59.31%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*heapStream).GetRecords
+   64.25kB 14.44% 71.99%    80.25kB 18.04%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.newFakeStream
+   58.44kB 13.14% 85.13%    58.44kB 13.14%  runtime.mallocgc
+   16.05kB  3.61% 88.73%    16.05kB  3.61%  github.com/aws/aws-sdk-go-v2/aws.String (inline)
+   10.50kB  2.36% 91.09%    10.50kB  2.36%  math/rand.newSource
+    6.41kB  1.44% 92.54%     7.82kB  1.76%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*fakeStream).newIteratorLocked
+    3.39kB  0.76% 93.30%     3.39kB  0.76%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).callAttempt
+    2.25kB  0.51% 93.80%     3.12kB   0.7%  context.(*cancelCtx).propagateCancel
+    0.86kB  0.19% 94.00%     2.66kB   0.6%  context.withCancel (inline)
+    0.85kB  0.19% 94.19%     4.04kB  0.91%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*Consumer).runShardWorker
+    0.80kB  0.18% 94.37%     4.34kB  0.97%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*Consumer).Start
+    0.80kB  0.18% 94.55%     6.48kB  1.46%  testing.runTests
+
+worker-stopped.pprof
+File: consumer.test
+Type: inuse_space
+Time: 2026-09-12 20:13:27 IST
+Showing nodes accounting for 406.48kB, 95.34% of 426.35kB total
+Dropped 149 nodes (cum <= 2.13kB)
+Showing top 12 nodes out of 52
+      flat  flat%   sum%        cum   cum%
+     256kB 60.04% 60.04%   263.82kB 61.88%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*heapStream).GetRecords
+   64.25kB 15.07% 75.11%    80.25kB 18.82%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.newFakeStream (inline)
+   58.91kB 13.82% 88.93%    58.91kB 13.82%  runtime.mallocgc
+   16.03kB  3.76% 92.69%    16.03kB  3.76%  github.com/aws/aws-sdk-go-v2/aws.String (inline)
+    6.41kB  1.50% 94.19%     7.82kB  1.83%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*fakeStream).newIteratorLocked
+    3.39kB   0.8% 94.99%     3.39kB   0.8%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*explicitProcessor).callAttempt
+    0.80kB  0.19% 95.18%     6.48kB  1.52%  testing.runTests
+    0.36kB 0.084% 95.26%    84.23kB 19.76%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.TestExplicitRetainedHeapWorker
+    0.18kB 0.042% 95.30%     3.59kB  0.84%  regexp.compile
+    0.13kB 0.031% 95.33%     3.79kB  0.89%  testing.newMatcher
+    0.02kB 0.0055% 95.34%     6.63kB  1.56%  testing.(*M).Run
+         0     0% 95.34%   264.45kB 62.03%  github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer.(*Consumer).getRecords
