@@ -3,8 +3,8 @@ module github.com/ajaysinghpanwar2002/kinesis-consumer-go/examples/valkey
 go 1.26
 
 require (
-	github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.1.0
-	github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.1.0
+	github.com/ajaysinghpanwar2002/kinesis-consumer-go v0.2.0
+	github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/backend/valkey v0.2.0
 	github.com/aws/aws-sdk-go-v2 v1.42.1
 	github.com/aws/aws-sdk-go-v2/service/kinesis v1.45.1
 )
