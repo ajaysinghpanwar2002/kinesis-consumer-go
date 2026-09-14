@@ -1,0 +1,18 @@
+=== RUN   TestExplicitRetainedHeapAcrossGap
+=== RUN   TestExplicitRetainedHeapAcrossGap/retry=false
+    retained_heap_test.go:89: suffix=63 allocated_payload=16777216 retained_delta=273328
+    retained_heap_test.go:89: suffix=511 allocated_payload=134217728 retained_delta=281096
+=== RUN   TestExplicitRetainedHeapAcrossGap/retry=true
+    retained_heap_test.go:89: suffix=63 allocated_payload=16777216 retained_delta=265200
+    retained_heap_test.go:89: suffix=511 allocated_payload=134217728 retained_delta=266416
+--- PASS: TestExplicitRetainedHeapAcrossGap (0.06s)
+    --- PASS: TestExplicitRetainedHeapAcrossGap/retry=false (0.04s)
+    --- PASS: TestExplicitRetainedHeapAcrossGap/retry=true (0.03s)
+=== RUN   TestExplicitRetainedHeapStagingAndStop
+    retained_heap_test.go:152: staged_delta=32509808 stopped_delta=1584
+--- PASS: TestExplicitRetainedHeapStagingAndStop (0.02s)
+=== RUN   TestExplicitRetainedHeapWorker
+    retained_heap_test.go:217: worker allocated_payload=134217728 live_delta=303616 stopped_delta=284672
+--- PASS: TestExplicitRetainedHeapWorker (0.05s)
+PASS
+ok  	github.com/ajaysinghpanwar2002/kinesis-consumer-go/pkg/consumer	0.714s

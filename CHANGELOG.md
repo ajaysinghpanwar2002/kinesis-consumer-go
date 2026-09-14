@@ -14,6 +14,10 @@ released together and share the version numbers below.
 
 ### Added
 
+- Process-termination recovery and asynchronous merge-parent integration tests,
+  retained-heap regressions, and an opt-in memory/Valkey load matrix. See
+  [performance](docs/performance.md) and [validation coverage](docs/validation-matrix.md).
+
 - Admission pressure and pause gauges, periodic blocked-state reporting, and
   checkpoint-covered record counts. Health now includes checkpoint/recovery
   failures and per-shard accepted/persisted progress and pressure snapshots.
