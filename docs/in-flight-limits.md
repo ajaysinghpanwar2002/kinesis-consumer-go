@@ -70,8 +70,8 @@ Admitted-payload budgets exclude staging, SDK decoding, active callback
 references, tracking metadata, and buffers retained by the application. Four
 fetch slots bound simultaneous fetched/staged pages, not total process memory.
 The library clears its consumed staging and record-callback slots without
-clearing application-owned data or batch slices. Heap profiling and measured
-memory/performance results remain part of the later validation slice.
+clearing application-owned data or batch slices. See [performance and retained memory](performance.md) for measured heap
+retention across gaps, retries, staging, and stopped workers.
 
 Application batches must flush on a timer as well as a size threshold. Waiting
 only for a batch size larger than the available capacity can stall processing.
